@@ -10,6 +10,7 @@
 
 use servo_arc::{Arc, UniqueArc};
 use std::{ops, ptr, fmt, mem};
+use std::fmt::Write;
 
 #[cfg(feature = "servo")] use euclid::SideOffsets2D;
 #[cfg(feature = "gecko")] use crate::gecko_bindings::structs::{self, NonCustomCSSPropertyId};
@@ -1721,6 +1722,77 @@ impl ComputedValues {
         }
     }
 
+    /// Writes the (resolved or computed) value of the given property as a string in `dest`.
+    pub fn computed_or_resolved_property_value(
+        &self,
+        property_id: PropertyId,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        match property_id {
+            PropertyId::Custom(name) => {
+                let Some(value) = self
+                    .custom_properties
+                    .inherited
+                    .get(&name)
+                    .or_else(|| self.custom_properties.non_inherited.get(&name))
+                else {
+                    return Ok(());
+                };
+                if let Some(c) = context {
+                    c.for_property = PropertyId::Custom(name);
+                    c.current_longhand = None;
+                    return value
+                        .clone()
+                        .to_resolved_value(c)
+                        .to_css(&mut CssWriter::new(dest));
+                }
+                value.to_css(&mut CssWriter::new(dest))
+            },
+            PropertyId::NonCustom(id) => match id.longhand_or_shorthand() {
+                Ok(longhand) => self.computed_or_resolved_value(longhand, context, dest),
+                Err(shorthand) => {
+                    if let Some(c) = context.as_deref_mut() {
+                        c.for_property = PropertyId::NonCustom(id);
+                    }
+                    self.computed_or_resolved_shorthand_value(shorthand, context, dest)
+                },
+            },
+        }
+    }
+
+    fn computed_or_resolved_shorthand_value(
+        &self,
+        shorthand: ShorthandId,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        let mut values = Vec::new();
+        for longhand in shorthand.longhands() {
+            let mut value = String::new();
+            self.computed_or_resolved_value(longhand, context.as_deref_mut(), &mut value)?;
+            if value.is_empty() {
+                return Ok(());
+            }
+            values.push(value);
+        }
+
+        match shorthand {
+            % for shorthand in data.shorthands:
+            % if shorthand.kind == "four_sides":
+            ShorthandId::${shorthand.camel_case} => {
+                serialize_four_sides_shorthand_values(&values, dest)
+            },
+            % elif shorthand.kind == "two_properties":
+            ShorthandId::${shorthand.camel_case} => {
+                serialize_two_property_shorthand_values(&values, dest)
+            },
+            % endif
+            % endfor
+            _ => Ok(()),
+        }
+    }
+
     /// Returns the computed value of the given longhand as a
     /// [`TypedValueList`], if supported.
     pub fn property_value_to_typed_value_list(
@@ -1827,6 +1899,46 @@ impl ComputedValues {
     pub fn transition_properties<'a>(&'a self) -> TransitionPropertyIterator<'a> {
         TransitionPropertyIterator::from_style(self)
     }
+}
+
+fn serialize_four_sides_shorthand_values(
+    values: &[String],
+    dest: &mut CssStringWriter,
+) -> fmt::Result {
+    if values.len() != 4 {
+        return Ok(());
+    }
+    dest.write_str(&values[0])?;
+    if values[1] == values[0] && values[2] == values[0] && values[3] == values[0] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[1])?;
+    if values[2] == values[0] && values[3] == values[1] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[2])?;
+    if values[3] == values[1] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[3])
+}
+
+fn serialize_two_property_shorthand_values(
+    values: &[String],
+    dest: &mut CssStringWriter,
+) -> fmt::Result {
+    if values.len() != 2 {
+        return Ok(());
+    }
+    dest.write_str(&values[0])?;
+    if values[1] == values[0] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[1])
 }
 
 #[cfg(feature = "servo")]
