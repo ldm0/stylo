@@ -45,6 +45,7 @@ pub enum PseudoElement {
     After = 0,
     Before,
     Selection,
+    Checkmark,
     // If/when :first-letter is added, update is_first_letter accordingly.
 
     // If/when :first-line is added, update is_first_line accordingly.
@@ -96,6 +97,7 @@ impl ToCss for PseudoElement {
             After => "::after",
             Before => "::before",
             Selection => "::selection",
+            Checkmark => "::checkmark",
             FirstLetter => "::first-letter",
             Backdrop => "::backdrop",
             DetailsContent => "::details-content",
@@ -127,7 +129,7 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
 }
 
 /// The number of eager pseudo-elements. Keep this in sync with cascade_type.
-pub const EAGER_PSEUDO_COUNT: usize = 4;
+pub const EAGER_PSEUDO_COUNT: usize = 5;
 
 impl PseudoElement {
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
@@ -254,6 +256,7 @@ impl PseudoElement {
         match *self {
             PseudoElement::After
             | PseudoElement::Before
+            | PseudoElement::Checkmark
             | PseudoElement::FirstLetter
             | PseudoElement::Selection => PseudoElementCascadeType::Eager,
             PseudoElement::Backdrop
@@ -708,6 +711,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "after" => After,
             "backdrop" => Backdrop,
             "selection" => Selection,
+            "checkmark" => Checkmark,
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
             "marker" => Marker,
