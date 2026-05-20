@@ -15,7 +15,7 @@ use crate::invalidation::element::element_wrapper::ElementSnapshot;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::{ComputedValues, PropertyFlags};
 use crate::selector_parser::AttrValue as SelectorAttrValue;
-use crate::selector_parser::{PseudoElementCascadeType, SelectorParser};
+use crate::selector_parser::{Direction, PseudoElementCascadeType, SelectorParser};
 use crate::values::{AtomIdent, AtomString};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
 use cssparser::{
@@ -384,6 +384,8 @@ pub enum NonTSPseudoClass {
     Indeterminate,
     Invalid,
     Lang(Lang),
+    /// The `:dir` pseudo-class.
+    Dir(Direction),
     Link,
     Modal,
     MozMeterOptimum,
@@ -440,6 +442,11 @@ impl ToCss for NonTSPseudoClass {
             serialize_identifier(lang, dest)?;
             return dest.write_char(')');
         }
+        if let Dir(ref dir) = *self {
+            dest.write_str(":dir(")?;
+            style_traits::ToCss::to_css(dir, &mut style_traits::CssWriter::new(dest))?;
+            return dest.write_char(')');
+        }
 
         dest.write_str(match *self {
             Self::Active => ":active",
@@ -482,7 +489,7 @@ impl ToCss for NonTSPseudoClass {
             Self::UserValid => ":user-valid",
             Self::Valid => ":valid",
             Self::Visited => ":visited",
-            Self::Lang(_) => unreachable!(),
+            Self::Lang(_) | Self::Dir(_) => unreachable!(),
         })
     }
 }
@@ -508,6 +515,7 @@ impl NonTSPseudoClass {
             Self::InRange => ElementState::INRANGE,
             Self::Indeterminate => ElementState::INDETERMINATE,
             Self::Invalid => ElementState::INVALID,
+            Self::Dir(ref dir) => dir.element_state(),
             Self::Link => ElementState::UNVISITED,
             Self::Modal => ElementState::MODAL,
             Self::MozMeterOptimum => ElementState::OPTIMUM,
@@ -595,7 +603,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
 
     #[inline]
     fn parse_has(&self) -> bool {
-        false
+        true
     }
 
     #[inline]
@@ -675,6 +683,9 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         let pseudo_class = match_ignore_ascii_case! { &name,
             "lang" if !after_part => {
                 NonTSPseudoClass::Lang(parser.expect_ident_or_string()?.as_ref().into())
+            },
+            "dir" if !after_part => {
+                NonTSPseudoClass::Dir(Direction::parse(parser)?)
             },
             "state" => {
                 let result = AtomIdent::from(parser.expect_ident()?.as_ref());
