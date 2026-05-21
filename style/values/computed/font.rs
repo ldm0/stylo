@@ -27,7 +27,7 @@ use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use num_traits::abs;
 use num_traits::cast::AsPrimitive;
 use std::fmt::{self, Write};
-use style_traits::{CssWriter, ParseError, ToCss, ToTyped, TypedValue};
+use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss, ToTyped, TypedValue};
 use thin_vec::ThinVec;
 
 pub use crate::values::computed::Length as MozScriptMinSize;
@@ -438,6 +438,14 @@ impl FontFamily {
         #[cfg(feature = "gecko")]
         generic_font_family!(MOZ_EMOJI, MozEmoji);
         generic_font_family!(SYSTEM_UI, SystemUi);
+        generic_font_family!(GENERIC_FANGSONG, GenericFangsong);
+        generic_font_family!(GENERIC_KAI, GenericKai);
+        generic_font_family!(GENERIC_KHMER_MUL, GenericKhmerMul);
+        generic_font_family!(GENERIC_NASTALIQ, GenericNastaliq);
+        generic_font_family!(WEBKIT_GENERIC_FANGSONG, WebkitGenericFangsong);
+        generic_font_family!(WEBKIT_GENERIC_KAI, WebkitGenericKai);
+        generic_font_family!(WEBKIT_GENERIC_KHMER_MUL, WebkitGenericKhmerMul);
+        generic_font_family!(WEBKIT_GENERIC_NASTALIQ, WebkitGenericNastaliq);
 
         let family = match generic {
             GenericFontFamily::None => {
@@ -454,6 +462,14 @@ impl FontFamily {
             #[cfg(feature = "gecko")]
             GenericFontFamily::MozEmoji => &*MOZ_EMOJI,
             GenericFontFamily::SystemUi => &*SYSTEM_UI,
+            GenericFontFamily::GenericFangsong => &*GENERIC_FANGSONG,
+            GenericFontFamily::GenericKai => &*GENERIC_KAI,
+            GenericFontFamily::GenericKhmerMul => &*GENERIC_KHMER_MUL,
+            GenericFontFamily::GenericNastaliq => &*GENERIC_NASTALIQ,
+            GenericFontFamily::WebkitGenericFangsong => &*WEBKIT_GENERIC_FANGSONG,
+            GenericFontFamily::WebkitGenericKai => &*WEBKIT_GENERIC_KAI,
+            GenericFontFamily::WebkitGenericKhmerMul => &*WEBKIT_GENERIC_KHMER_MUL,
+            GenericFontFamily::WebkitGenericNastaliq => &*WEBKIT_GENERIC_NASTALIQ,
         };
         debug_assert_eq!(
             *family.families.iter().next().unwrap(),
@@ -614,7 +630,6 @@ fn math_enabled(context: &ParserContext) -> bool {
     Hash,
     MallocSizeOf,
     PartialEq,
-    Parse,
     ToCss,
     ToComputedValue,
     ToResolvedValue,
@@ -631,19 +646,87 @@ pub enum GenericFontFamily {
     None = 0,
     Serif,
     SansSerif,
-    #[parse(aliases = "-moz-fixed")]
     Monospace,
     Cursive,
     Fantasy,
     #[cfg(feature = "gecko")]
-    #[parse(condition = "math_enabled")]
     Math,
-    #[parse(condition = "system_ui_enabled")]
     SystemUi,
+    #[css(keyword = "generic(fangsong)")]
+    GenericFangsong,
+    #[css(keyword = "generic(kai)")]
+    GenericKai,
+    #[css(keyword = "generic(khmer-mul)")]
+    GenericKhmerMul,
+    #[css(keyword = "generic(nastaliq)")]
+    GenericNastaliq,
+    #[css(keyword = "-webkit-generic(fangsong)")]
+    WebkitGenericFangsong,
+    #[css(keyword = "-webkit-generic(kai)")]
+    WebkitGenericKai,
+    #[css(keyword = "-webkit-generic(khmer-mul)")]
+    WebkitGenericKhmerMul,
+    #[css(keyword = "-webkit-generic(nastaliq)")]
+    WebkitGenericNastaliq,
     /// An internal value for emoji font selection.
     #[css(skip)]
     #[cfg(feature = "gecko")]
     MozEmoji,
+}
+
+impl Parse for GenericFontFamily {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(generic) =
+            input.try_parse(|input| parse_generic_font_function(input, "generic", false))
+        {
+            return Ok(generic);
+        }
+        if let Ok(generic) =
+            input.try_parse(|input| parse_generic_font_function(input, "-webkit-generic", true))
+        {
+            return Ok(generic);
+        }
+
+        let ident = input.expect_ident_cloned()?;
+        match_ignore_ascii_case! { &ident,
+            "serif" => Ok(Self::Serif),
+            "sans-serif" => Ok(Self::SansSerif),
+            "monospace" | "-moz-fixed" => Ok(Self::Monospace),
+            "cursive" => Ok(Self::Cursive),
+            "fantasy" => Ok(Self::Fantasy),
+            #[cfg(feature = "gecko")]
+            "math" if math_enabled(context) => Ok(Self::Math),
+            "system-ui" if system_ui_enabled(context) => Ok(Self::SystemUi),
+            _ => Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+        }
+    }
+}
+
+fn parse_generic_font_function<'i, 't>(
+    input: &mut Parser<'i, 't>,
+    name: &str,
+    webkit_prefixed: bool,
+) -> Result<GenericFontFamily, ParseError<'i>> {
+    input.expect_function_matching(name)?;
+    input.parse_nested_block(|input| {
+        let family = input.expect_ident_cloned()?;
+        let generic = match_ignore_ascii_case! { &family,
+            "fangsong" if webkit_prefixed => GenericFontFamily::WebkitGenericFangsong,
+            "kai" if webkit_prefixed => GenericFontFamily::WebkitGenericKai,
+            "khmer-mul" if webkit_prefixed => GenericFontFamily::WebkitGenericKhmerMul,
+            "nastaliq" if webkit_prefixed => GenericFontFamily::WebkitGenericNastaliq,
+            "fangsong" => GenericFontFamily::GenericFangsong,
+            "kai" => GenericFontFamily::GenericKai,
+            "khmer-mul" => GenericFontFamily::GenericKhmerMul,
+            "nastaliq" => GenericFontFamily::GenericNastaliq,
+            _ => return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
+        };
+        input.expect_exhausted()?;
+        Ok(generic)
+    })
 }
 
 impl GenericFontFamily {
@@ -652,7 +735,18 @@ impl GenericFontFamily {
     /// the user. See bug 789788 and bug 1730098.
     pub(crate) fn valid_for_user_font_prioritization(self) -> bool {
         match self {
-            Self::None | Self::Cursive | Self::Fantasy | Self::SystemUi => false,
+            Self::None
+            | Self::Cursive
+            | Self::Fantasy
+            | Self::SystemUi
+            | Self::GenericFangsong
+            | Self::GenericKai
+            | Self::GenericKhmerMul
+            | Self::GenericNastaliq
+            | Self::WebkitGenericFangsong
+            | Self::WebkitGenericKai
+            | Self::WebkitGenericKhmerMul
+            | Self::WebkitGenericNastaliq => false,
             #[cfg(feature = "gecko")]
             Self::Math | Self::MozEmoji => false,
             Self::Serif | Self::SansSerif | Self::Monospace => true,
