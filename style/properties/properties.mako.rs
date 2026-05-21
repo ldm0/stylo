@@ -1638,7 +1638,7 @@ impl ComputedValues {
     /// Returns the pseudo-element that this style represents.
     #[cfg(feature = "servo")]
     pub fn pseudo(&self) -> Option<PseudoElement> {
-        self.pseudo
+        self.pseudo.clone()
     }
 
     /// Returns true if this is the style for a pseudo-element.
@@ -2676,7 +2676,7 @@ impl<'a> StyleBuilder<'a> {
 
     /// Returns whether we're a pseudo-elements style.
     pub fn is_pseudo_element(&self) -> bool {
-        self.pseudo.map_or(false, |p| !p.is_anon_box())
+        self.pseudo.as_ref().map_or(false, |p| !p.is_anon_box())
     }
 
     /// Returns the style we're getting reset properties from.
@@ -3003,7 +3003,7 @@ macro_rules! longhand_properties_idents {
 #[cfg(feature = "gecko")]
 size_of_test!(ComputedValues, 248);
 #[cfg(feature = "servo")]
-size_of_test!(ComputedValues, 224);
+size_of_test!(ComputedValues, 232);
 
 // FFI relies on this.
 size_of_test!(Option<Arc<ComputedValues>>, 8);

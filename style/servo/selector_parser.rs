@@ -28,21 +28,17 @@ use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstrain
 use selectors::parser::SelectorParseErrorKind;
 use selectors::visitor::SelectorVisitor;
 use std::fmt;
-use std::mem;
 use std::ops::{Deref, DerefMut};
 use style_traits::{ParseError, StyleParseErrorKind};
 
 /// A pseudo-element, both public and private.
 ///
 /// NB: If you add to this list, be sure to update `each_simple_pseudo_element` too.
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, ToShmem,
-)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, ToShmem)]
 #[allow(missing_docs)]
-#[repr(usize)]
 pub enum PseudoElement {
     // Eager pseudos. Keep these first so that eager_index() works.
-    After = 0,
+    After,
     Before,
     Selection,
     Checkmark,
@@ -59,6 +55,7 @@ pub enum PseudoElement {
     // Non-eager pseudos.
     Backdrop,
     DetailsContent,
+    Highlight(AtomIdent),
     Marker,
 
     // Implemented pseudos. These pseudo elements are representing the
@@ -87,7 +84,7 @@ pub enum PseudoElement {
 }
 
 /// The count of all pseudo-elements.
-pub const PSEUDO_COUNT: usize = PseudoElement::ServoTableWrapper as usize + 1;
+pub const PSEUDO_COUNT: usize = 25;
 
 impl ToCss for PseudoElement {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result
@@ -95,32 +92,39 @@ impl ToCss for PseudoElement {
         W: fmt::Write,
     {
         use self::PseudoElement::*;
-        dest.write_str(match *self {
-            After => "::after",
-            Before => "::before",
-            Selection => "::selection",
-            Checkmark => "::checkmark",
-            FirstLetter => "::first-letter",
-            Backdrop => "::backdrop",
-            DetailsContent => "::details-content",
-            Marker => "::marker",
-            ColorSwatch => "::color-swatch",
-            FileSelectorButton => "::file-selector-button",
-            Picker => "::picker(select)",
-            PickerIcon => "::picker-icon",
-            Placeholder => "::placeholder",
-            SliderFill => "::slider-fill",
-            SliderTrack => "::slider-track",
-            SliderThumb => "::slider-thumb",
-            ServoTextControlInnerContainer => "::-servo-text-control-inner-container",
-            ServoTextControlInnerEditor => "::-servo-text-control-inner-editor",
-            ServoAnonymousBox => "::-servo-anonymous-box",
-            ServoAnonymousTable => "::-servo-anonymous-table",
-            ServoAnonymousTableCell => "::-servo-anonymous-table-cell",
-            ServoAnonymousTableRow => "::-servo-anonymous-table-row",
-            ServoTableGrid => "::-servo-table-grid",
-            ServoTableWrapper => "::-servo-table-wrapper",
-        })
+        match self {
+            After => dest.write_str("::after"),
+            Before => dest.write_str("::before"),
+            Selection => dest.write_str("::selection"),
+            Checkmark => dest.write_str("::checkmark"),
+            FirstLetter => dest.write_str("::first-letter"),
+            Backdrop => dest.write_str("::backdrop"),
+            DetailsContent => dest.write_str("::details-content"),
+            Highlight(name) => {
+                dest.write_str("::highlight(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            Marker => dest.write_str("::marker"),
+            ColorSwatch => dest.write_str("::color-swatch"),
+            FileSelectorButton => dest.write_str("::file-selector-button"),
+            Picker => dest.write_str("::picker(select)"),
+            PickerIcon => dest.write_str("::picker-icon"),
+            Placeholder => dest.write_str("::placeholder"),
+            SliderFill => dest.write_str("::slider-fill"),
+            SliderTrack => dest.write_str("::slider-track"),
+            SliderThumb => dest.write_str("::slider-thumb"),
+            ServoTextControlInnerContainer => {
+                dest.write_str("::-servo-text-control-inner-container")
+            },
+            ServoTextControlInnerEditor => dest.write_str("::-servo-text-control-inner-editor"),
+            ServoAnonymousBox => dest.write_str("::-servo-anonymous-box"),
+            ServoAnonymousTable => dest.write_str("::-servo-anonymous-table"),
+            ServoAnonymousTableCell => dest.write_str("::-servo-anonymous-table-cell"),
+            ServoAnonymousTableRow => dest.write_str("::-servo-anonymous-table-row"),
+            ServoTableGrid => dest.write_str("::-servo-table-grid"),
+            ServoTableWrapper => dest.write_str("::-servo-table-wrapper"),
+        }
     }
 }
 
@@ -140,13 +144,39 @@ impl PseudoElement {
     #[inline]
     pub fn eager_index(&self) -> usize {
         debug_assert!(self.is_eager());
-        self.clone() as usize
+        self.index()
     }
 
     /// An index for this pseudo-element to be indexed in an enumerated array.
     #[inline]
     pub fn index(&self) -> usize {
-        self.clone() as usize
+        match self {
+            PseudoElement::After => 0,
+            PseudoElement::Before => 1,
+            PseudoElement::Selection => 2,
+            PseudoElement::Checkmark => 3,
+            PseudoElement::FirstLetter => 4,
+            PseudoElement::Backdrop => 5,
+            PseudoElement::DetailsContent => 6,
+            PseudoElement::Highlight(_) => 7,
+            PseudoElement::Marker => 8,
+            PseudoElement::ColorSwatch => 9,
+            PseudoElement::FileSelectorButton => 10,
+            PseudoElement::Picker => 11,
+            PseudoElement::PickerIcon => 12,
+            PseudoElement::Placeholder => 13,
+            PseudoElement::SliderFill => 14,
+            PseudoElement::SliderThumb => 15,
+            PseudoElement::SliderTrack => 16,
+            PseudoElement::ServoTextControlInnerContainer => 17,
+            PseudoElement::ServoTextControlInnerEditor => 18,
+            PseudoElement::ServoAnonymousBox => 19,
+            PseudoElement::ServoAnonymousTable => 20,
+            PseudoElement::ServoAnonymousTableCell => 21,
+            PseudoElement::ServoAnonymousTableRow => 22,
+            PseudoElement::ServoTableGrid => 23,
+            PseudoElement::ServoTableWrapper => 24,
+        }
     }
 
     /// An array of `None`, one per pseudo-element.
@@ -157,10 +187,14 @@ impl PseudoElement {
     /// Creates a pseudo-element from an eager index.
     #[inline]
     pub fn from_eager_index(i: usize) -> Self {
-        assert!(i < EAGER_PSEUDO_COUNT);
-        let result: PseudoElement = unsafe { mem::transmute(i) };
-        debug_assert!(result.is_eager());
-        result
+        match i {
+            0 => PseudoElement::After,
+            1 => PseudoElement::Before,
+            2 => PseudoElement::Selection,
+            3 => PseudoElement::Checkmark,
+            4 => PseudoElement::FirstLetter,
+            _ => panic!("invalid eager pseudo-element index {i}"),
+        }
     }
 
     /// Whether the current pseudo element is ::before or ::after.
@@ -178,31 +212,31 @@ impl PseudoElement {
     /// Whether this pseudo-element is the ::marker pseudo.
     #[inline]
     pub fn is_marker(&self) -> bool {
-        *self == PseudoElement::Marker
+        matches!(self, PseudoElement::Marker)
     }
 
     /// Whether this pseudo-element is the ::selection pseudo.
     #[inline]
     pub fn is_selection(&self) -> bool {
-        *self == PseudoElement::Selection
+        matches!(self, PseudoElement::Selection)
     }
 
     /// Whether this pseudo-element is the ::before pseudo.
     #[inline]
     pub fn is_before(&self) -> bool {
-        *self == PseudoElement::Before
+        matches!(self, PseudoElement::Before)
     }
 
     /// Whether this pseudo-element is the ::after pseudo.
     #[inline]
     pub fn is_after(&self) -> bool {
-        *self == PseudoElement::After
+        matches!(self, PseudoElement::After)
     }
 
     /// Whether the current pseudo element is :first-letter
     #[inline]
     pub fn is_first_letter(&self) -> bool {
-        *self == PseudoElement::FirstLetter
+        matches!(self, PseudoElement::FirstLetter)
     }
 
     /// Whether the current pseudo element is :first-line
@@ -215,7 +249,7 @@ impl PseudoElement {
     /// inside an `<input>` element.
     #[inline]
     pub fn is_color_swatch(&self) -> bool {
-        *self == PseudoElement::ColorSwatch
+        matches!(self, PseudoElement::ColorSwatch)
     }
 
     /// Whether this pseudo-element is eagerly-cascaded.
@@ -257,7 +291,7 @@ impl PseudoElement {
     /// `EMPTY_PSEUDO_ARRAY` in `style/data.rs`
     #[inline]
     pub fn cascade_type(&self) -> PseudoElementCascadeType {
-        match *self {
+        match self {
             PseudoElement::After
             | PseudoElement::Before
             | PseudoElement::Checkmark
@@ -266,6 +300,7 @@ impl PseudoElement {
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
             | PseudoElement::FileSelectorButton
+            | PseudoElement::Highlight(_)
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
             | PseudoElement::Marker
@@ -325,7 +360,7 @@ impl PseudoElement {
 
     /// Whether this pseudo-element is the ::highlight pseudo.
     pub fn is_highlight(&self) -> bool {
-        false
+        matches!(self, PseudoElement::Highlight(_))
     }
 
     /// Whether this pseudo-element is the ::target-text pseudo.
@@ -790,6 +825,12 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         parser: &mut CssParser<'i, 't>,
     ) -> Result<PseudoElement, ParseError<'i>> {
         match_ignore_ascii_case! { &name,
+            "highlight" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::Highlight(name));
+                }
+            },
             "picker" => {
                 let picker_element = parser.expect_ident()?.as_ref();
                 if picker_element.eq_ignore_ascii_case("select") && parser.is_exhausted() {
