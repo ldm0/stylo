@@ -1558,6 +1558,10 @@ impl Stylist {
         };
 
         let mut declarations = ApplicableDeclarationList::new();
+        let exact_pseudo_matching = |candidate: &PseudoElement| candidate == pseudo;
+        let matching_fn = matching_fn.or(Some(
+            &exact_pseudo_matching as &dyn Fn(&PseudoElement) -> bool,
+        ));
         let mut matching_context = MatchingContext::<'_, E::Impl>::new(
             MatchingMode::ForStatelessPseudoElement,
             None,
