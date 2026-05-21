@@ -55,8 +55,15 @@ pub enum PseudoElement {
     // Non-eager pseudos.
     Backdrop,
     DetailsContent,
+    GrammarError,
     Highlight(AtomIdent),
     Marker,
+    SpellingError,
+    ViewTransition,
+    ViewTransitionGroup(AtomIdent),
+    ViewTransitionImagePair(AtomIdent),
+    ViewTransitionOld(AtomIdent),
+    ViewTransitionNew(AtomIdent),
 
     // Implemented pseudos. These pseudo elements are representing the
     // elements within an UA shadow DOM, and matching the elements with
@@ -84,7 +91,7 @@ pub enum PseudoElement {
 }
 
 /// The count of all pseudo-elements.
-pub const PSEUDO_COUNT: usize = 25;
+pub const PSEUDO_COUNT: usize = 32;
 
 impl ToCss for PseudoElement {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result
@@ -100,12 +107,35 @@ impl ToCss for PseudoElement {
             FirstLetter => dest.write_str("::first-letter"),
             Backdrop => dest.write_str("::backdrop"),
             DetailsContent => dest.write_str("::details-content"),
+            GrammarError => dest.write_str("::grammar-error"),
             Highlight(name) => {
                 dest.write_str("::highlight(")?;
                 serialize_identifier(name, dest)?;
                 dest.write_char(')')
             },
             Marker => dest.write_str("::marker"),
+            SpellingError => dest.write_str("::spelling-error"),
+            ViewTransition => dest.write_str("::view-transition"),
+            ViewTransitionGroup(name) => {
+                dest.write_str("::view-transition-group(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionImagePair(name) => {
+                dest.write_str("::view-transition-image-pair(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionOld(name) => {
+                dest.write_str("::view-transition-old(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionNew(name) => {
+                dest.write_str("::view-transition-new(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
             ColorSwatch => dest.write_str("::color-swatch"),
             FileSelectorButton => dest.write_str("::file-selector-button"),
             Picker => dest.write_str("::picker(select)"),
@@ -132,7 +162,15 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
     fn parses_as_element_backed(&self) -> bool {
-        matches!(self, Self::DetailsContent | Self::Picker)
+        matches!(
+            self,
+            Self::DetailsContent
+                | Self::Picker
+                | Self::ViewTransitionGroup(_)
+                | Self::ViewTransitionImagePair(_)
+                | Self::ViewTransitionOld(_)
+                | Self::ViewTransitionNew(_)
+        )
     }
 }
 
@@ -158,24 +196,31 @@ impl PseudoElement {
             PseudoElement::FirstLetter => 4,
             PseudoElement::Backdrop => 5,
             PseudoElement::DetailsContent => 6,
-            PseudoElement::Highlight(_) => 7,
-            PseudoElement::Marker => 8,
-            PseudoElement::ColorSwatch => 9,
-            PseudoElement::FileSelectorButton => 10,
-            PseudoElement::Picker => 11,
-            PseudoElement::PickerIcon => 12,
-            PseudoElement::Placeholder => 13,
-            PseudoElement::SliderFill => 14,
-            PseudoElement::SliderThumb => 15,
-            PseudoElement::SliderTrack => 16,
-            PseudoElement::ServoTextControlInnerContainer => 17,
-            PseudoElement::ServoTextControlInnerEditor => 18,
-            PseudoElement::ServoAnonymousBox => 19,
-            PseudoElement::ServoAnonymousTable => 20,
-            PseudoElement::ServoAnonymousTableCell => 21,
-            PseudoElement::ServoAnonymousTableRow => 22,
-            PseudoElement::ServoTableGrid => 23,
-            PseudoElement::ServoTableWrapper => 24,
+            PseudoElement::GrammarError => 7,
+            PseudoElement::Highlight(_) => 8,
+            PseudoElement::Marker => 9,
+            PseudoElement::SpellingError => 10,
+            PseudoElement::ViewTransition => 11,
+            PseudoElement::ViewTransitionGroup(_) => 12,
+            PseudoElement::ViewTransitionImagePair(_) => 13,
+            PseudoElement::ViewTransitionOld(_) => 14,
+            PseudoElement::ViewTransitionNew(_) => 15,
+            PseudoElement::ColorSwatch => 16,
+            PseudoElement::FileSelectorButton => 17,
+            PseudoElement::Picker => 18,
+            PseudoElement::PickerIcon => 19,
+            PseudoElement::Placeholder => 20,
+            PseudoElement::SliderFill => 21,
+            PseudoElement::SliderThumb => 22,
+            PseudoElement::SliderTrack => 23,
+            PseudoElement::ServoTextControlInnerContainer => 24,
+            PseudoElement::ServoTextControlInnerEditor => 25,
+            PseudoElement::ServoAnonymousBox => 26,
+            PseudoElement::ServoAnonymousTable => 27,
+            PseudoElement::ServoAnonymousTableCell => 28,
+            PseudoElement::ServoAnonymousTableRow => 29,
+            PseudoElement::ServoTableGrid => 30,
+            PseudoElement::ServoTableWrapper => 31,
         }
     }
 
@@ -300,11 +345,18 @@ impl PseudoElement {
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
             | PseudoElement::FileSelectorButton
+            | PseudoElement::GrammarError
             | PseudoElement::Highlight(_)
             | PseudoElement::Picker
             | PseudoElement::PickerIcon
             | PseudoElement::Marker
             | PseudoElement::Placeholder
+            | PseudoElement::SpellingError
+            | PseudoElement::ViewTransition
+            | PseudoElement::ViewTransitionGroup(_)
+            | PseudoElement::ViewTransitionImagePair(_)
+            | PseudoElement::ViewTransitionOld(_)
+            | PseudoElement::ViewTransitionNew(_)
             | PseudoElement::DetailsContent
             | PseudoElement::SliderFill
             | PseudoElement::SliderThumb
@@ -389,6 +441,10 @@ impl PseudoElement {
                     | Self::ColorSwatch
                     | Self::FileSelectorButton
                     | Self::Picker
+                    | Self::ViewTransitionGroup(_)
+                    | Self::ViewTransitionImagePair(_)
+                    | Self::ViewTransitionOld(_)
+                    | Self::ViewTransitionNew(_)
                     | Self::SliderFill
                     | Self::SliderThumb
                     | Self::SliderTrack
@@ -756,11 +812,14 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "checkmark" => Checkmark,
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
+            "grammar-error" => GrammarError,
             "marker" => Marker,
             "details-content" => DetailsContent,
             "color-swatch" => ColorSwatch,
             "picker-icon" => PickerIcon,
             "placeholder" => Placeholder,
+            "spelling-error" => SpellingError,
+            "view-transition" => ViewTransition,
             "-servo-text-control-inner-container" => {
                 if !self.in_user_agent_stylesheet() {
                     return Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
@@ -835,6 +894,30 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
                 let picker_element = parser.expect_ident()?.as_ref();
                 if picker_element.eq_ignore_ascii_case("select") && parser.is_exhausted() {
                     return Ok(PseudoElement::Picker);
+                }
+            },
+            "view-transition-group" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionGroup(name));
+                }
+            },
+            "view-transition-image-pair" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionImagePair(name));
+                }
+            },
+            "view-transition-old" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionOld(name));
+                }
+            },
+            "view-transition-new" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionNew(name));
                 }
             },
             _ => {},
