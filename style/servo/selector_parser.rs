@@ -66,6 +66,8 @@ pub enum PseudoElement {
     // their appropriate styles.
     ColorSwatch,
     FileSelectorButton,
+    Picker,
+    PickerIcon,
     Placeholder,
     SliderFill,
     SliderThumb,
@@ -104,6 +106,8 @@ impl ToCss for PseudoElement {
             Marker => "::marker",
             ColorSwatch => "::color-swatch",
             FileSelectorButton => "::file-selector-button",
+            Picker => "::picker(select)",
+            PickerIcon => "::picker-icon",
             Placeholder => "::placeholder",
             SliderFill => "::slider-fill",
             SliderTrack => "::slider-track",
@@ -124,7 +128,7 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
     fn parses_as_element_backed(&self) -> bool {
-        matches!(self, Self::DetailsContent)
+        matches!(self, Self::DetailsContent | Self::Picker)
     }
 }
 
@@ -262,6 +266,8 @@ impl PseudoElement {
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
             | PseudoElement::FileSelectorButton
+            | PseudoElement::Picker
+            | PseudoElement::PickerIcon
             | PseudoElement::Marker
             | PseudoElement::Placeholder
             | PseudoElement::DetailsContent
@@ -347,6 +353,7 @@ impl PseudoElement {
                 Self::Placeholder
                     | Self::ColorSwatch
                     | Self::FileSelectorButton
+                    | Self::Picker
                     | Self::SliderFill
                     | Self::SliderThumb
                     | Self::SliderTrack
@@ -717,6 +724,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "marker" => Marker,
             "details-content" => DetailsContent,
             "color-swatch" => ColorSwatch,
+            "picker-icon" => PickerIcon,
             "placeholder" => Placeholder,
             "-servo-text-control-inner-container" => {
                 if !self.in_user_agent_stylesheet() {
@@ -774,6 +782,27 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         };
 
         Ok(pseudo_element)
+    }
+
+    fn parse_functional_pseudo_element<'t>(
+        &self,
+        name: CowRcStr<'i>,
+        parser: &mut CssParser<'i, 't>,
+    ) -> Result<PseudoElement, ParseError<'i>> {
+        match_ignore_ascii_case! { &name,
+            "picker" => {
+                let picker_element = parser.expect_ident()?.as_ref();
+                if picker_element.eq_ignore_ascii_case("select") && parser.is_exhausted() {
+                    return Ok(PseudoElement::Picker);
+                }
+            },
+            _ => {},
+        }
+        Err(
+            parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
+                name,
+            )),
+        )
     }
 
     fn default_namespace(&self) -> Option<Namespace> {
