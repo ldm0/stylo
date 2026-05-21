@@ -1789,6 +1789,9 @@ impl ComputedValues {
             },
             % endif
             % endfor
+            ShorthandId::TextDecoration => {
+                serialize_text_decoration_shorthand_values(&values, dest)
+            },
             _ => Ok(()),
         }
     }
@@ -1939,6 +1942,37 @@ fn serialize_two_property_shorthand_values(
     }
     dest.write_char(' ')?;
     dest.write_str(&values[1])
+}
+
+fn serialize_text_decoration_shorthand_values(
+    values: &[String],
+    dest: &mut CssStringWriter,
+) -> fmt::Result {
+    let [color, line, style, ..] = values else {
+        return Ok(());
+    };
+    let mut first = true;
+    let mut write_part = |part: &str| -> fmt::Result {
+        if !first {
+            dest.write_char(' ')?;
+        }
+        first = false;
+        dest.write_str(part)
+    };
+
+    let is_solid_style = style == "solid";
+    let is_current_color = color.eq_ignore_ascii_case("currentcolor");
+    let is_none = line == "none";
+    if (is_solid_style && is_current_color) || !is_none {
+        write_part(line)?;
+    }
+    if !is_solid_style {
+        write_part(style)?;
+    }
+    if !is_current_color {
+        write_part(color)?;
+    }
+    Ok(())
 }
 
 #[cfg(feature = "servo")]

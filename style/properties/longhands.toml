@@ -1478,6 +1478,24 @@ spec = "https://drafts.csswg.org/css-flexbox/#order-property"
 servo_restyle_damage = "rebuild_box"
 affects = "layout"
 
+[reading-flow]
+struct = "position"
+engine = "servo"
+spec = "https://drafts.csswg.org/css-display-4/#reading-flow"
+animation_type = "discrete"
+servo_restyle_damage = "rebuild_box"
+affects = "layout"
+keyword = { values = ["normal", "flex-visual", "flex-flow", "grid-rows", "grid-columns", "grid-order", "source-order"] }
+
+[reading-order]
+type = "Integer"
+initial = "0"
+struct = "position"
+engine = "servo"
+spec = "https://drafts.csswg.org/css-display-4/#reading-flow"
+servo_restyle_damage = "rebuild_box"
+affects = "layout"
+
 [outline-color]
 type = "Color"
 initial = "computed_value::T::currentcolor()"
