@@ -1767,6 +1767,10 @@ impl ComputedValues {
         mut context: Option<&mut resolved::Context>,
         dest: &mut CssStringWriter,
     ) -> fmt::Result {
+        if shorthand == ShorthandId::TextDecoration {
+            return self.computed_or_resolved_text_decoration_shorthand_value(context, dest);
+        }
+
         let mut values = Vec::new();
         for longhand in shorthand.longhands() {
             let mut value = String::new();
@@ -1789,11 +1793,38 @@ impl ComputedValues {
             },
             % endif
             % endfor
-            ShorthandId::TextDecoration => {
-                serialize_text_decoration_shorthand_values(&values, dest)
-            },
             _ => Ok(()),
         }
+    }
+
+    fn computed_or_resolved_text_decoration_shorthand_value(
+        &self,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        let color = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::TextDecorationColor);
+                self.clone_text_decoration_color().to_resolved_value(context)
+            },
+            None => self.clone_text_decoration_color(),
+        };
+        let text_decoration_color =
+            longhands::text_decoration_color::SpecifiedValue::from_computed_value(&color);
+        let text_decoration_line =
+            longhands::text_decoration_line::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_line(),
+            );
+        let text_decoration_style =
+            longhands::text_decoration_style::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_style(),
+            );
+        let longhands = shorthands::text_decoration::LonghandsToSerialize {
+            text_decoration_color: &text_decoration_color,
+            text_decoration_line: &text_decoration_line,
+            text_decoration_style: &text_decoration_style,
+        };
+        longhands.to_css(&mut CssWriter::new(dest))
     }
 
     /// Returns the computed value of the given longhand as a
@@ -1942,37 +1973,6 @@ fn serialize_two_property_shorthand_values(
     }
     dest.write_char(' ')?;
     dest.write_str(&values[1])
-}
-
-fn serialize_text_decoration_shorthand_values(
-    values: &[String],
-    dest: &mut CssStringWriter,
-) -> fmt::Result {
-    let [color, line, style, ..] = values else {
-        return Ok(());
-    };
-    let mut first = true;
-    let mut write_part = |part: &str| -> fmt::Result {
-        if !first {
-            dest.write_char(' ')?;
-        }
-        first = false;
-        dest.write_str(part)
-    };
-
-    let is_solid_style = style == "solid";
-    let is_current_color = color.eq_ignore_ascii_case("currentcolor");
-    let is_none = line == "none";
-    if (is_solid_style && is_current_color) || !is_none {
-        write_part(line)?;
-    }
-    if !is_solid_style {
-        write_part(style)?;
-    }
-    if !is_current_color {
-        write_part(color)?;
-    }
-    Ok(())
 }
 
 #[cfg(feature = "servo")]
