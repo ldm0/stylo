@@ -566,7 +566,9 @@ where
             &mut matching_context,
         );
 
-        if applicable_declarations.is_empty() {
+        if applicable_declarations.is_empty()
+            && !matches!(self.pseudo_resolution, PseudoElementResolution::Force)
+        {
             return None;
         }
 
