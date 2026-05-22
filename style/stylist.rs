@@ -2479,7 +2479,7 @@ impl MallocSizeOf for ExtraStyleData {
 
 /// Sibling-sensitive selector dependencies exposed for Lightmount's style
 /// invalidation summary.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct LightmountSiblingInvalidationSummary {
     /// Class tokens whose mutation can affect sibling selector invalidation.
     pub class_dependencies: Vec<Atom>,
@@ -2531,7 +2531,8 @@ impl LightmountSiblingInvalidationSummary {
         self.unknown_dependency = true;
     }
 
-    fn extend(&mut self, other: LightmountSiblingInvalidationSummary) {
+    /// Merge another sibling invalidation summary into this one.
+    pub fn extend(&mut self, other: LightmountSiblingInvalidationSummary) {
         self.class_dependencies.extend(other.class_dependencies);
         self.id_dependencies.extend(other.id_dependencies);
         self.attribute_dependencies
@@ -2539,6 +2540,31 @@ impl LightmountSiblingInvalidationSummary {
         self.focus_dependency |= other.focus_dependency;
         self.target_dependency |= other.target_dependency;
         self.unknown_dependency |= other.unknown_dependency;
+    }
+
+    /// Returns whether mutating this class token can affect sibling selector
+    /// invalidation.
+    #[inline]
+    pub fn has_class_dependency(&self, class: &Atom) -> bool {
+        self.class_dependencies
+            .iter()
+            .any(|candidate| candidate == class)
+    }
+
+    /// Returns whether mutating this id can affect sibling selector
+    /// invalidation.
+    #[inline]
+    pub fn has_id_dependency(&self, id: &Atom) -> bool {
+        self.id_dependencies.iter().any(|candidate| candidate == id)
+    }
+
+    /// Returns whether mutating this attribute can affect sibling selector
+    /// invalidation.
+    #[inline]
+    pub fn has_attribute_dependency(&self, attribute: &LocalName) -> bool {
+        self.attribute_dependencies
+            .iter()
+            .any(|candidate| candidate == attribute)
     }
 }
 
