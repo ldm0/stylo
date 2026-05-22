@@ -330,6 +330,12 @@ pub struct InvalidationMap {
     pub other_attribute_affecting_selectors: LocalNameDependencyMap,
     /// A map of CSS custom states
     pub custom_state_affecting_selectors: CustomStateDependencyMap,
+    /// Whether this map contains a sibling-sensitive dependency that is not
+    /// keyed by id/class/attribute/state. Normal invalidation does not need
+    /// type/universal keys for Servo's own restyle flow, but embedders that
+    /// consume dependency summaries need to know that DOM child-list mutations
+    /// still require later-sibling fallback.
+    pub unkeyed_sibling_dependency: bool,
 }
 
 /// Tree-structural pseudoclasses that we care about for (Relative selector) invalidation.
@@ -437,6 +443,7 @@ impl InvalidationMap {
             document_state_selectors: Vec::new(),
             other_attribute_affecting_selectors: LocalNameDependencyMap::default(),
             custom_state_affecting_selectors: CustomStateDependencyMap::default(),
+            unkeyed_sibling_dependency: false,
         }
     }
 
@@ -470,6 +477,7 @@ impl InvalidationMap {
         self.document_state_selectors.clear();
         self.other_attribute_affecting_selectors.clear();
         self.custom_state_affecting_selectors.clear();
+        self.unkeyed_sibling_dependency = false;
     }
 
     /// Shrink the capacity of hash maps if needed.
@@ -542,6 +550,10 @@ struct PerCompoundState {
 
     /// The state this compound selector is affected by.
     element_state: ElementState,
+
+    /// Whether this compound added a dependency keyed by id/class/attribute or
+    /// state. Type and universal selectors intentionally do not set this.
+    added_entry: bool,
 }
 
 impl PerCompoundState {
@@ -549,6 +561,7 @@ impl PerCompoundState {
         Self {
             offset,
             element_state: ElementState::empty(),
+            added_entry: false,
         }
     }
 }
@@ -1002,6 +1015,8 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
                 return false;
             }
 
+            self.note_unkeyed_sibling_dependency_if_needed();
+
             if let Some(state) = self
                 .relative_inner_collector
                 .as_ref()
@@ -1031,6 +1046,25 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
             }
             index += 1; // account for the combinator
         }
+    }
+}
+
+impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
+    fn note_unkeyed_sibling_dependency_if_needed(&mut self) {
+        if self.relative_inner_collector.is_some() || self.compound_state.added_entry {
+            return;
+        }
+        let dependency = self.dependency();
+        if lightmount_dependency_is_sibling_sensitive(&dependency) {
+            self.map.unkeyed_sibling_dependency = true;
+        }
+    }
+}
+
+fn lightmount_dependency_is_sibling_sensitive(dependency: &Dependency) -> bool {
+    match dependency.invalidation_kind() {
+        DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Siblings) => true,
+        _ => dependency.right_combinator_is_next_sibling(),
     }
 }
 
@@ -1159,6 +1193,7 @@ impl<'a, 'b, 'c> SelectorVisitor for SelectorDependencyCollector<'a, 'b, 'c> {
         match on_simple_selector(s, self.quirks_mode, self) {
             Ok(result) => {
                 if let ComponentVisitResult::Handled(state) = result {
+                    self.compound_state.added_entry = true;
                     if let Some(inner_collector_state) = self.relative_inner_collector.as_mut() {
                         inner_collector_state.relative_compound_state.added_entry = true;
                         inner_collector_state
@@ -1182,6 +1217,7 @@ impl<'a, 'b, 'c> SelectorVisitor for SelectorDependencyCollector<'a, 'b, 'c> {
         local_name: &LocalName,
         local_name_lower: &LocalName,
     ) -> bool {
+        self.compound_state.added_entry = true;
         if let Some(state) = self.relative_inner_collector.as_mut() {
             state.relative_compound_state.added_entry = true;
         }

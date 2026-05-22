@@ -350,6 +350,9 @@ pub(crate) fn lightmount_sibling_summary_for_invalidation_map(
     map: &InvalidationMap,
 ) -> LightmountSiblingInvalidationSummary {
     let mut summary = LightmountSiblingInvalidationSummary::default();
+    if map.unkeyed_sibling_dependency {
+        summary.note_unknown_dependency();
+    }
     for (class, dependencies) in map.class_to_selector.iter() {
         if lightmount_dependencies_have_sibling_sensitive(dependencies) {
             summary.class_dependencies.push(class.clone());
@@ -406,6 +409,9 @@ pub(crate) fn lightmount_dependency_summary_for_invalidation_map(
     map: &InvalidationMap,
 ) -> LightmountDependencyInvalidationSummary {
     let mut summary = LightmountDependencyInvalidationSummary::default();
+    if map.unkeyed_sibling_dependency {
+        summary.mark_unknown_dependency();
+    }
     for (class, dependencies) in map.class_to_selector.iter() {
         summary.note_class_dependency(
             class.clone(),
