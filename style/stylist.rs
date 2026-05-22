@@ -59,10 +59,10 @@ use crate::stylesheets::scope_rule::{
 };
 use crate::stylesheets::UrlExtraData;
 use crate::stylesheets::{
-    CounterStyleRule, CssRule, CssRuleRef, EffectiveRulesIterator, FontFaceRule,
-    FontFeatureValuesRule, FontPaletteValuesRule, Origin, OriginSet, PagePseudoClassFlags,
-    PageRule, PerOrigin, PerOriginIter, PositionTryRule, StylesheetContents, StylesheetInDocument,
-    ViewTransitionRule,
+    AllRules, CounterStyleRule, CssRule, CssRuleRef, EffectiveRules, FontFaceRule,
+    FontFeatureValuesRule, FontPaletteValuesRule, NestedRuleIterationCondition, Origin, OriginSet,
+    PagePseudoClassFlags, PageRule, PerOrigin, PerOriginIter, PositionTryRule, RulesIterator,
+    StylesheetContents, StylesheetInDocument, ViewTransitionRule,
 };
 use crate::stylesheets::{CustomMediaEvaluator, CustomMediaMap};
 #[cfg(feature = "gecko")]
@@ -4289,7 +4289,7 @@ impl CascadeData {
         Ok(())
     }
 
-    fn add_rule_list<S>(
+    fn add_rule_list<C, S>(
         &mut self,
         rules: std::slice::Iter<CssRule>,
         device: &Device,
@@ -4303,6 +4303,7 @@ impl CascadeData {
         mut difference: Option<&mut CascadeDataDifference>,
     ) -> Result<(), AllocErr>
     where
+        C: NestedRuleIterationCondition + 'static,
         S: StylesheetInDocument + 'static,
     {
         for rule in rules {
@@ -4468,7 +4469,7 @@ impl CascadeData {
                 // effective.
                 if cfg!(debug_assertions) {
                     let mut effective = false;
-                    let children = EffectiveRulesIterator::<&CustomMediaMap>::children(
+                    let children = RulesIterator::<C, &CustomMediaMap>::children(
                         rule,
                         device,
                         quirks_mode,
@@ -4483,7 +4484,7 @@ impl CascadeData {
             }
 
             let mut effective = false;
-            let children = EffectiveRulesIterator::<&CustomMediaMap>::children(
+            let children = RulesIterator::<C, &CustomMediaMap>::children(
                 rule,
                 device,
                 quirks_mode,
@@ -4698,7 +4699,7 @@ impl CascadeData {
             }
 
             if !children.is_empty() {
-                self.add_rule_list(
+                self.add_rule_list::<C, S>(
                     children.iter(),
                     device,
                     quirks_mode,
@@ -4790,7 +4791,7 @@ impl CascadeData {
         }
 
         let mut state = ContainingRuleState::default();
-        self.add_rule_list(
+        self.add_rule_list::<EffectiveRules, S>(
             contents.rules(guard).iter(),
             device,
             quirks_mode,
@@ -4801,6 +4802,45 @@ impl CascadeData {
             &mut state,
             precomputed_pseudo_element_decls.as_deref_mut(),
             difference.as_deref_mut(),
+        )?;
+
+        Ok(())
+    }
+
+    /// Adds every style rule in a stylesheet to this cascade data, ignoring
+    /// device-dependent nested-rule filtering.
+    ///
+    /// This is intended for Lightmount source metadata extraction. It builds
+    /// conservative invalidation summaries from selector syntax without tying
+    /// those summaries to a particular viewport, media type, or color scheme.
+    pub fn add_stylesheet_for_lightmount_source_metadata<S>(
+        &mut self,
+        device: &Device,
+        quirks_mode: QuirksMode,
+        stylesheet: &S,
+        sheet_index: usize,
+        guard: &SharedRwLockReadGuard,
+    ) -> Result<(), AllocErr>
+    where
+        S: StylesheetInDocument + 'static,
+    {
+        if !stylesheet.enabled() {
+            return Ok(());
+        }
+
+        let contents = stylesheet.contents(guard);
+        let mut state = ContainingRuleState::default();
+        self.add_rule_list::<AllRules, S>(
+            contents.rules(guard).iter(),
+            device,
+            quirks_mode,
+            stylesheet,
+            sheet_index,
+            guard,
+            SheetRebuildKind::Full,
+            &mut state,
+            None,
+            None,
         )?;
 
         Ok(())
