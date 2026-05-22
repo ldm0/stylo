@@ -2659,6 +2659,7 @@ pub struct LightmountDependencyInvalidationSummary {
     id_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
     attribute_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
     focus_dependency: LightmountDependencyQueryResult,
+    focus_within_dependency: LightmountDependencyQueryResult,
     target_dependency: LightmountDependencyQueryResult,
     unknown_dependency: bool,
 }
@@ -2686,10 +2687,13 @@ impl LightmountDependencyInvalidationSummary {
         result: LightmountDependencyQueryResult,
     ) {
         let mut known = false;
-        if state
-            .intersects(ElementState::FOCUS | ElementState::FOCUSRING | ElementState::FOCUS_WITHIN)
-        {
+        if state.intersects(ElementState::FOCUS | ElementState::FOCUSRING) {
             self.focus_dependency.extend(result.clone());
+            known = true;
+        }
+        if state.intersects(ElementState::FOCUS_WITHIN) {
+            self.focus_dependency.extend(result.clone());
+            self.focus_within_dependency.extend(result.clone());
             known = true;
         }
         if state.intersects(ElementState::URLTARGET) {
@@ -2716,6 +2720,8 @@ impl LightmountDependencyInvalidationSummary {
             self.note_attribute_dependency(attribute, result);
         }
         self.focus_dependency.extend(other.focus_dependency);
+        self.focus_within_dependency
+            .extend(other.focus_within_dependency);
         self.target_dependency.extend(other.target_dependency);
         self.unknown_dependency |= other.unknown_dependency;
     }
@@ -2749,6 +2755,11 @@ impl LightmountDependencyInvalidationSummary {
         self.focus_dependency.clone()
     }
 
+    /// Query dependencies for :focus-within state changes.
+    pub fn query_focus_within(&self) -> LightmountDependencyQueryResult {
+        self.focus_within_dependency.clone()
+    }
+
     /// Query dependencies for :target state changes.
     pub fn query_target(&self) -> LightmountDependencyQueryResult {
         self.target_dependency.clone()
@@ -2771,6 +2782,7 @@ impl LightmountDependencyInvalidationSummary {
                 .map(|(_, result)| result)
                 .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
                 .chain(std::iter::once(&self.focus_dependency))
+                .chain(std::iter::once(&self.focus_within_dependency))
                 .chain(std::iter::once(&self.target_dependency))
                 .any(LightmountDependencyQueryResult::has_sibling_dependency)
     }
