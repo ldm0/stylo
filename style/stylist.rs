@@ -2536,6 +2536,10 @@ struct StylistSelectorVisitor<'a> {
     /// Whether the selector needs revalidation for the style sharing cache.
     needs_revalidation: &'a mut bool,
 
+    /// Whether the selector depends on child-list structural state such as
+    /// :empty, :first-child, or :nth-child().
+    has_child_list_structural_dependency: &'a mut bool,
+
     /// Flags for which selector list-containing components the visitor is
     /// inside of, if any
     in_selector_list_of: SelectorListKind,
@@ -2599,6 +2603,13 @@ fn component_needs_revalidation(
         Component::NonTSPseudoClass(ref p) => p.needs_cache_revalidation(),
         _ => false,
     }
+}
+
+fn component_has_child_list_structural_dependency(c: &Component<SelectorImpl>) -> bool {
+    matches!(
+        c,
+        Component::Empty | Component::Nth(_) | Component::NthOf(_)
+    )
 }
 
 impl<'a> StylistSelectorVisitor<'a> {
@@ -2684,6 +2695,8 @@ impl<'a> SelectorVisitor for StylistSelectorVisitor<'a> {
     fn visit_simple_selector(&mut self, s: &Component<SelectorImpl>) -> bool {
         *self.needs_revalidation = *self.needs_revalidation
             || component_needs_revalidation(s, self.passed_rightmost_selector);
+        *self.has_child_list_structural_dependency = *self.has_child_list_structural_dependency
+            || component_has_child_list_structural_dependency(s);
 
         match *s {
             Component::NonTSPseudoClass(NonTSPseudoClass::CustomState(ref name)) => {
@@ -3267,6 +3280,10 @@ pub struct CascadeData {
 
     additional_relative_selector_invalidation_map: AdditionalRelativeSelectorInvalidationMap,
 
+    /// Whether any selector in this cascade data depends on child-list
+    /// structural state, such as :empty or :nth-child().
+    has_child_list_structural_dependency: bool,
+
     /// The attribute local names that appear in attribute selectors.  Used
     /// to avoid taking element snapshots when an irrelevant attribute changes.
     /// (We don't bother storing the namespace, since namespaced attributes are
@@ -3400,6 +3417,7 @@ impl CascadeData {
             relative_selector_invalidation_map: InvalidationMap::new(),
             additional_relative_selector_invalidation_map:
                 AdditionalRelativeSelectorInvalidationMap::new(),
+            has_child_list_structural_dependency: false,
             nth_of_mapped_ids: PrecomputedHashSet::default(),
             nth_of_class_dependencies: PrecomputedHashSet::default(),
             nth_of_attribute_dependencies: PrecomputedHashSet::default(),
@@ -3511,6 +3529,13 @@ impl CascadeData {
     #[inline]
     pub fn has_state_dependency(&self, state: ElementState) -> bool {
         self.state_dependencies.intersects(state)
+    }
+
+    /// Returns whether any selector in this cascade data depends on child-list
+    /// structural state, such as :empty or :nth-child().
+    #[inline]
+    pub fn has_child_list_structural_dependency(&self) -> bool {
+        self.has_child_list_structural_dependency
     }
 
     /// Returns whether the given Custom State is relied upon by a selector
@@ -3888,8 +3913,10 @@ impl CascadeData {
                     None,
                 )?;
                 let mut needs_revalidation = false;
+                let mut has_child_list_structural_dependency = false;
                 let mut visitor = StylistSelectorVisitor {
                     needs_revalidation: &mut needs_revalidation,
+                    has_child_list_structural_dependency: &mut has_child_list_structural_dependency,
                     passed_rightmost_selector: false,
                     in_selector_list_of: SelectorListKind::default(),
                     mapped_ids: &mut self.mapped_ids,
@@ -3903,6 +3930,7 @@ impl CascadeData {
                     document_state_dependencies: &mut self.document_state_dependencies,
                 };
                 rule.selector.visit(&mut visitor);
+                self.has_child_list_structural_dependency |= has_child_list_structural_dependency;
 
                 if needs_revalidation {
                     self.selectors_for_cache_revalidation.insert(
@@ -4417,8 +4445,11 @@ impl CascadeData {
                 let cur_scope = &self.scope_conditions[scope_idx.0 as usize];
                 if let Some(cond) = cur_scope.condition.as_ref() {
                     let mut _unused = false;
+                    let mut has_child_list_structural_dependency = false;
                     let visitor = StylistSelectorVisitor {
                         needs_revalidation: &mut _unused,
+                        has_child_list_structural_dependency:
+                            &mut has_child_list_structural_dependency,
                         passed_rightmost_selector: true,
                         in_selector_list_of: SelectorListKind::default(),
                         mapped_ids: &mut self.mapped_ids,
@@ -4442,6 +4473,8 @@ impl CascadeData {
                         &mut self.relative_selector_invalidation_map,
                         &mut self.additional_relative_selector_invalidation_map,
                     )?;
+                    self.has_child_list_structural_dependency |=
+                        has_child_list_structural_dependency;
 
                     containing_rule_state
                         .containing_scope_rule_state
@@ -4692,6 +4725,7 @@ impl CascadeData {
         self.invalidation_map.clear();
         self.relative_selector_invalidation_map.clear();
         self.additional_relative_selector_invalidation_map.clear();
+        self.has_child_list_structural_dependency = false;
         self.attribute_dependencies.clear();
         self.nth_of_attribute_dependencies.clear();
         self.nth_of_custom_state_dependencies.clear();
@@ -4948,9 +4982,11 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
     let mut state_dependencies = ElementState::empty();
     let mut nth_of_state_dependencies = ElementState::empty();
     let mut document_state_dependencies = DocumentState::empty();
+    let mut has_child_list_structural_dependency = false;
     let mut visitor = StylistSelectorVisitor {
         passed_rightmost_selector: false,
         needs_revalidation: &mut needs_revalidation,
+        has_child_list_structural_dependency: &mut has_child_list_structural_dependency,
         in_selector_list_of: SelectorListKind::default(),
         mapped_ids: &mut mapped_ids,
         nth_of_mapped_ids: &mut nth_of_mapped_ids,
