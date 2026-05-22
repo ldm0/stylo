@@ -18,7 +18,8 @@ use crate::dom::TElement;
 use crate::gecko_bindings::structs::{ServoStyleSetSizes, StyleRuleInclusion};
 use crate::invalidation::element::invalidation_map::{
     note_selector_for_invalidation, AdditionalRelativeSelectorInvalidationMap, Dependency,
-    DependencyInvalidationKind, InvalidationMap, ScopeDependencyInvalidationKind,
+    DependencyInvalidationKind, InvalidationMap, NormalDependencyInvalidationKind,
+    RelativeDependencyInvalidationKind, ScopeDependencyInvalidationKind, StateDependency,
 };
 use crate::invalidation::media_queries::{
     EffectiveMediaQueryResults, MediaListKey, ToMediaListKey,
@@ -2476,6 +2477,240 @@ impl MallocSizeOf for ExtraStyleData {
     }
 }
 
+/// Sibling-sensitive selector dependencies exposed for Lightmount's style
+/// invalidation summary.
+#[derive(Clone, Debug, Default)]
+pub struct LightmountSiblingInvalidationSummary {
+    /// Class tokens whose mutation can affect sibling selector invalidation.
+    pub class_dependencies: Vec<Atom>,
+    /// IDs whose mutation can affect sibling selector invalidation.
+    pub id_dependencies: Vec<Atom>,
+    /// Attribute local names whose mutation can affect sibling selector
+    /// invalidation.
+    pub attribute_dependencies: Vec<LocalName>,
+    /// Whether focus-like state changes can affect sibling selector
+    /// invalidation.
+    pub focus_dependency: bool,
+    /// Whether :target state changes can affect sibling selector invalidation.
+    pub target_dependency: bool,
+    /// Whether there are sibling-sensitive dependencies that are not covered by
+    /// the class/id/attribute/focus/target keys above.
+    pub unknown_dependency: bool,
+}
+
+impl LightmountSiblingInvalidationSummary {
+    /// Returns whether any sibling-sensitive dependency was found.
+    #[inline]
+    pub fn has_any_dependency(&self) -> bool {
+        !self.class_dependencies.is_empty()
+            || !self.id_dependencies.is_empty()
+            || !self.attribute_dependencies.is_empty()
+            || self.focus_dependency
+            || self.target_dependency
+            || self.unknown_dependency
+    }
+
+    fn note_state_dependency(&mut self, state: ElementState) {
+        let mut known = false;
+        if state
+            .intersects(ElementState::FOCUS | ElementState::FOCUSRING | ElementState::FOCUS_WITHIN)
+        {
+            self.focus_dependency = true;
+            known = true;
+        }
+        if state.intersects(ElementState::URLTARGET) {
+            self.target_dependency = true;
+            known = true;
+        }
+        if !known {
+            self.unknown_dependency = true;
+        }
+    }
+
+    fn note_unknown_dependency(&mut self) {
+        self.unknown_dependency = true;
+    }
+
+    fn extend(&mut self, other: LightmountSiblingInvalidationSummary) {
+        self.class_dependencies.extend(other.class_dependencies);
+        self.id_dependencies.extend(other.id_dependencies);
+        self.attribute_dependencies
+            .extend(other.attribute_dependencies);
+        self.focus_dependency |= other.focus_dependency;
+        self.target_dependency |= other.target_dependency;
+        self.unknown_dependency |= other.unknown_dependency;
+    }
+}
+
+fn lightmount_sibling_summary_for_invalidation_map(
+    map: &InvalidationMap,
+) -> LightmountSiblingInvalidationSummary {
+    let mut summary = LightmountSiblingInvalidationSummary::default();
+    for (class, dependencies) in map.class_to_selector.iter() {
+        if lightmount_dependencies_have_sibling_sensitive(dependencies) {
+            summary.class_dependencies.push(class.clone());
+        }
+    }
+    for (id, dependencies) in map.id_to_selector.iter() {
+        if lightmount_dependencies_have_sibling_sensitive(dependencies) {
+            summary.id_dependencies.push(id.clone());
+        }
+    }
+    for (attribute, dependencies) in map.other_attribute_affecting_selectors.iter() {
+        if lightmount_dependencies_have_sibling_sensitive(dependencies) {
+            summary.attribute_dependencies.push(attribute.clone());
+        }
+    }
+    for (_, dependencies) in map.custom_state_affecting_selectors.iter() {
+        if lightmount_dependencies_have_sibling_sensitive(dependencies) {
+            summary.note_unknown_dependency();
+        }
+    }
+    lightmount_collect_state_sibling_dependencies_from_selector_map(
+        &map.state_affecting_selectors,
+        &mut summary,
+    );
+    summary
+}
+
+fn lightmount_sibling_summary_for_relative_invalidation_map(
+    map: &AdditionalRelativeSelectorInvalidationMap,
+) -> LightmountSiblingInvalidationSummary {
+    let mut summary = LightmountSiblingInvalidationSummary::default();
+    if map.needs_ancestors_traversal {
+        summary.note_unknown_dependency();
+    }
+    for dependency in &map.any_to_selector {
+        if lightmount_dependency_is_sibling_sensitive(dependency) {
+            summary.note_unknown_dependency();
+        }
+    }
+    for (_, dependencies) in map.type_to_selector.iter() {
+        if lightmount_dependencies_have_sibling_sensitive(dependencies) {
+            summary.note_unknown_dependency();
+        }
+    }
+    if lightmount_selector_map_has_sibling_dependency(&map.ts_state_to_selector, |dependency| {
+        &dependency.dep
+    }) {
+        summary.note_unknown_dependency();
+    }
+    summary
+}
+
+fn lightmount_dependencies_have_sibling_sensitive(dependencies: &[Dependency]) -> bool {
+    dependencies
+        .iter()
+        .any(lightmount_dependency_is_sibling_sensitive)
+}
+
+fn lightmount_collect_state_sibling_dependencies_from_selector_map(
+    map: &SelectorMap<StateDependency>,
+    summary: &mut LightmountSiblingInvalidationSummary,
+) {
+    for dependency in &map.root {
+        lightmount_collect_state_sibling_dependency(dependency, summary);
+    }
+    for (_, dependencies) in map.id_hash.iter() {
+        for dependency in dependencies {
+            lightmount_collect_state_sibling_dependency(dependency, summary);
+        }
+    }
+    for (_, dependencies) in map.class_hash.iter() {
+        for dependency in dependencies {
+            lightmount_collect_state_sibling_dependency(dependency, summary);
+        }
+    }
+    for (_, dependencies) in map.attribute_hash.iter() {
+        for dependency in dependencies {
+            lightmount_collect_state_sibling_dependency(dependency, summary);
+        }
+    }
+    for (_, dependencies) in map.local_name_hash.iter() {
+        for dependency in dependencies {
+            lightmount_collect_state_sibling_dependency(dependency, summary);
+        }
+    }
+    for (_, dependencies) in map.namespace_hash.iter() {
+        for dependency in dependencies {
+            lightmount_collect_state_sibling_dependency(dependency, summary);
+        }
+    }
+    for dependency in &map.rare_pseudo_classes {
+        lightmount_collect_state_sibling_dependency(dependency, summary);
+    }
+    for dependency in &map.other {
+        lightmount_collect_state_sibling_dependency(dependency, summary);
+    }
+}
+
+fn lightmount_collect_state_sibling_dependency(
+    dependency: &StateDependency,
+    summary: &mut LightmountSiblingInvalidationSummary,
+) {
+    if lightmount_dependency_is_sibling_sensitive(&dependency.dep) {
+        summary.note_state_dependency(dependency.state);
+    }
+}
+
+fn lightmount_selector_map_has_sibling_dependency<T: 'static>(
+    map: &SelectorMap<T>,
+    dependency: impl Fn(&T) -> &Dependency + Copy,
+) -> bool {
+    map.root
+        .iter()
+        .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        || map.id_hash.iter().any(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        })
+        || map.class_hash.iter().any(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        })
+        || map.attribute_hash.iter().any(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        })
+        || map.local_name_hash.iter().any(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        })
+        || map.namespace_hash.iter().any(|(_, entries)| {
+            entries
+                .iter()
+                .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        })
+        || map
+            .rare_pseudo_classes
+            .iter()
+            .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+        || map
+            .other
+            .iter()
+            .any(|entry| lightmount_dependency_is_sibling_sensitive(dependency(entry)))
+}
+
+fn lightmount_dependency_is_sibling_sensitive(dependency: &Dependency) -> bool {
+    match dependency.invalidation_kind() {
+        DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Siblings) => true,
+        DependencyInvalidationKind::Relative(
+            RelativeDependencyInvalidationKind::PrevSibling
+            | RelativeDependencyInvalidationKind::AncestorPrevSibling
+            | RelativeDependencyInvalidationKind::EarlierSibling
+            | RelativeDependencyInvalidationKind::AncestorEarlierSibling,
+        ) => true,
+        _ => {
+            dependency.right_combinator_is_next_sibling()
+                || dependency.dependency_is_relative_with_single_next_sibling()
+        },
+    }
+}
+
 /// SelectorMapEntry implementation for use in our revalidation selector map.
 #[cfg_attr(feature = "gecko", derive(MallocSizeOf))]
 #[derive(Clone, Debug)]
@@ -3536,6 +3771,19 @@ impl CascadeData {
     #[inline]
     pub fn has_child_list_structural_dependency(&self) -> bool {
         self.has_child_list_structural_dependency
+    }
+
+    /// Returns sibling-sensitive selector dependency keys for Lightmount style
+    /// invalidation.
+    pub fn lightmount_sibling_invalidation_summary(&self) -> LightmountSiblingInvalidationSummary {
+        let mut summary = lightmount_sibling_summary_for_invalidation_map(&self.invalidation_map);
+        summary.extend(lightmount_sibling_summary_for_invalidation_map(
+            &self.relative_selector_invalidation_map,
+        ));
+        summary.extend(lightmount_sibling_summary_for_relative_invalidation_map(
+            &self.additional_relative_selector_invalidation_map,
+        ));
+        summary
     }
 
     /// Returns whether the given Custom State is relied upon by a selector
