@@ -190,6 +190,16 @@ impl LightmountDependencyQueryResult {
                 )
             })
     }
+
+    /// Returns whether this query can affect `::slotted(...)` invalidation.
+    #[inline]
+    pub fn has_slotted_dependency(&self) -> bool {
+        self.unknown_dependency
+            || self
+                .kinds
+                .iter()
+                .any(|kind| matches!(kind, LightmountDependencyKind::SlottedElements))
+    }
 }
 
 /// Keyed dependency query summary exposed for Lightmount.
@@ -325,6 +335,23 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(std::iter::once(&self.focus_within_dependency))
                 .chain(std::iter::once(&self.target_dependency))
                 .any(LightmountDependencyQueryResult::has_sibling_dependency)
+    }
+
+    /// Returns whether any known dependency can affect `::slotted(...)`
+    /// invalidation.
+    #[inline]
+    pub fn has_slotted_dependency(&self) -> bool {
+        self.unknown_dependency
+            || self
+                .class_dependencies
+                .iter()
+                .chain(self.id_dependencies.iter())
+                .map(|(_, result)| result)
+                .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+                .chain(std::iter::once(&self.focus_dependency))
+                .chain(std::iter::once(&self.focus_within_dependency))
+                .chain(std::iter::once(&self.target_dependency))
+                .any(LightmountDependencyQueryResult::has_slotted_dependency)
     }
 }
 
