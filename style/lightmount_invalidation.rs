@@ -806,6 +806,45 @@ fn lightmount_collect_state_sibling_dependency(
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lightmount_dependency_query_result_keeps_fallback_reasons_out_of_kinds() {
+        let mut result = LightmountDependencyQueryResult::default();
+        result.add_fallback_reason(LightmountDependencyFallbackReason::FullSelector);
+
+        assert!(result.has_any_dependency());
+        assert!(result.requires_fallback());
+        assert_eq!(
+            result.fallback_reasons(),
+            &[LightmountDependencyFallbackReason::FullSelector]
+        );
+        assert!(result.kinds().is_empty());
+    }
+
+    #[test]
+    fn lightmount_dependency_query_result_dedupes_extended_fallback_reasons() {
+        let mut first = LightmountDependencyQueryResult::default();
+        first.add_fallback_reason(LightmountDependencyFallbackReason::UnknownDependency);
+        let mut second = LightmountDependencyQueryResult::default();
+        second.add_fallback_reason(LightmountDependencyFallbackReason::UnknownDependency);
+        second.add_kind(LightmountDependencyKind::Siblings);
+
+        first.extend(second);
+
+        assert!(first.has_any_dependency());
+        assert!(first.requires_fallback());
+        assert_eq!(
+            first.fallback_reasons(),
+            &[LightmountDependencyFallbackReason::UnknownDependency]
+        );
+        assert_eq!(first.kinds(), &[LightmountDependencyKind::Siblings]);
+        assert!(first.has_sibling_dependency());
+    }
+}
+
 fn lightmount_selector_map_has_sibling_dependency<T: 'static>(
     map: &SelectorMap<T>,
     dependency: impl Fn(&T) -> &Dependency + Copy,
