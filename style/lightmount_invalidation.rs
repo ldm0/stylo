@@ -142,11 +142,29 @@ pub enum LightmountDependencyKind {
     FullSelector,
 }
 
+/// Reason a dependency query cannot be represented as exact dependency kinds.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountDependencyFallbackReason {
+    /// Stylo recorded an unknown dependency for this query.
+    UnknownDependency,
+    /// Stylo's invalidation map requires full-selector invalidation.
+    FullSelector,
+    /// Relative selector dependencies are present but not exposed precisely.
+    RelativeAnySelector,
+    /// Scope dependencies are present but not exposed precisely.
+    ScopeDependency,
+    /// State dependencies are present but not exposed precisely.
+    UnsupportedStateDependency,
+    /// Shadow dependency exactness could not be represented by this query.
+    UnsupportedShadowDependency,
+}
+
 /// Conservative query result for one changed class/id/attribute/state token.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct LightmountDependencyQueryResult {
     kinds: Vec<LightmountDependencyKind>,
     unknown_dependency: bool,
+    fallback_reasons: Vec<LightmountDependencyFallbackReason>,
 }
 
 impl LightmountDependencyQueryResult {
@@ -156,23 +174,53 @@ impl LightmountDependencyQueryResult {
         }
     }
 
+    fn add_fallback_reason(&mut self, reason: LightmountDependencyFallbackReason) {
+        if !self.fallback_reasons.contains(&reason) {
+            self.fallback_reasons.push(reason);
+        }
+        if matches!(
+            reason,
+            LightmountDependencyFallbackReason::UnknownDependency
+        ) {
+            self.unknown_dependency = true;
+        }
+    }
+
     fn extend(&mut self, other: Self) {
         for kind in other.kinds {
             self.add_kind(kind);
         }
         self.unknown_dependency |= other.unknown_dependency;
+        for reason in other.fallback_reasons {
+            self.add_fallback_reason(reason);
+        }
+        if other.unknown_dependency {
+            self.add_fallback_reason(LightmountDependencyFallbackReason::UnknownDependency);
+        }
     }
 
     /// Returns whether any dependency matched the query.
     #[inline]
     pub fn has_any_dependency(&self) -> bool {
-        self.unknown_dependency || !self.kinds.is_empty()
+        self.unknown_dependency || !self.kinds.is_empty() || !self.fallback_reasons.is_empty()
     }
 
     /// Returns the concrete dependency kinds captured for this query.
     #[inline]
     pub fn kinds(&self) -> &[LightmountDependencyKind] {
         &self.kinds
+    }
+
+    /// Returns conservative fallback reasons captured for this query.
+    #[inline]
+    pub fn fallback_reasons(&self) -> &[LightmountDependencyFallbackReason] {
+        &self.fallback_reasons
+    }
+
+    /// Returns whether this query requires conservative fallback handling.
+    #[inline]
+    pub fn requires_fallback(&self) -> bool {
+        !self.fallback_reasons.is_empty()
     }
 
     /// Returns whether the query can affect following sibling invalidation.
@@ -360,7 +408,9 @@ impl LightmountDependencyInvalidationSummary {
             }
         }
         if self.unknown_state_dependency_bits & bits != 0 {
-            result.unknown_dependency = true;
+            result.add_fallback_reason(
+                LightmountDependencyFallbackReason::UnsupportedStateDependency,
+            );
         }
         result
     }
@@ -595,7 +645,7 @@ fn lightmount_collect_dependency_query_result(
 ) {
     match dependency.invalidation_kind() {
         DependencyInvalidationKind::FullSelector => {
-            result.add_kind(LightmountDependencyKind::FullSelector);
+            result.add_fallback_reason(LightmountDependencyFallbackReason::FullSelector);
         },
         DependencyInvalidationKind::Normal(kind) => {
             result.add_kind(match kind {
