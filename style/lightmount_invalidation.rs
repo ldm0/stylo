@@ -520,6 +520,12 @@ pub(crate) fn lightmount_dependency_summary_for_invalidation_map(
             lightmount_dependency_query_result_for_dependencies(dependencies),
         );
     }
+    for (local_name, dependencies) in map.type_to_selector.iter() {
+        summary.note_type_dependency(
+            local_name.clone(),
+            lightmount_dependency_query_result_for_dependencies(dependencies),
+        );
+    }
     for (_, dependencies) in map.custom_state_affecting_selectors.iter() {
         if lightmount_dependency_query_result_for_dependencies(dependencies).has_any_dependency() {
             summary.mark_unknown_dependency();

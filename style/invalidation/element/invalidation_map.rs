@@ -328,6 +328,14 @@ pub struct InvalidationMap {
     pub document_state_selectors: Vec<DocumentStateDependency>,
     /// A map of other attribute affecting selectors.
     pub other_attribute_affecting_selectors: LocalNameDependencyMap,
+    /// A map of local-name dependencies used by Lightmount's external
+    /// invalidation consumer.
+    ///
+    /// Servo's own normal restyle flow does not need this for element type
+    /// changes because element type is immutable. Lightmount consumes the
+    /// dependency map for child-list insertion/removal cache invalidation,
+    /// where the inserted/removed element's type is a useful key.
+    pub type_to_selector: LocalNameDependencyMap,
     /// A map of CSS custom states
     pub custom_state_affecting_selectors: CustomStateDependencyMap,
     /// Whether this map contains a sibling-sensitive dependency that is not
@@ -442,6 +450,7 @@ impl InvalidationMap {
             state_affecting_selectors: StateDependencyMap::new(),
             document_state_selectors: Vec::new(),
             other_attribute_affecting_selectors: LocalNameDependencyMap::default(),
+            type_to_selector: LocalNameDependencyMap::default(),
             custom_state_affecting_selectors: CustomStateDependencyMap::default(),
             unkeyed_sibling_dependency: false,
         }
@@ -453,6 +462,10 @@ impl InvalidationMap {
             + self.document_state_selectors.len()
             + self
                 .other_attribute_affecting_selectors
+                .iter()
+                .fold(0, |accum, (_, ref v)| accum + v.len())
+            + self
+                .type_to_selector
                 .iter()
                 .fold(0, |accum, (_, ref v)| accum + v.len())
             + self
@@ -476,6 +489,7 @@ impl InvalidationMap {
         self.state_affecting_selectors.clear();
         self.document_state_selectors.clear();
         self.other_attribute_affecting_selectors.clear();
+        self.type_to_selector.clear();
         self.custom_state_affecting_selectors.clear();
         self.unkeyed_sibling_dependency = false;
     }
@@ -486,6 +500,7 @@ impl InvalidationMap {
         self.id_to_selector.shrink_if_needed();
         self.state_affecting_selectors.shrink_if_needed();
         self.other_attribute_affecting_selectors.shrink_if_needed();
+        self.type_to_selector.shrink_if_needed();
         self.custom_state_affecting_selectors.shrink_if_needed();
     }
 }
@@ -596,12 +611,11 @@ trait Collector {
     fn this_scope_dependencies(&mut self) -> &mut Option<Vec<Dependency>>;
     fn update_states(&mut self, element_state: ElementState, document_state: DocumentState);
 
-    // In normal invalidations, type-based dependencies don't need to be explicitly tracked;
-    // elements don't change their types, and mutations cause invalidations to go descendant
-    // (Where they are about to be styled anyway), and/or later-sibling direction (Where they
-    // siblings after inserted/removed elements get restyled anyway).
-    // However, for relative selectors, a DOM mutation can affect and arbitrary ancestor and/or
-    // earlier siblings, so we need to keep track of them.
+    // Servo's normal invalidation doesn't need type-based dependencies for its
+    // own restyle flow because elements don't change type, and child-list
+    // mutations already restyle descendant / later-sibling ranges. Lightmount's
+    // external cache invalidation consumes this map directly, so it tracks
+    // normal type dependencies too.
     fn type_map(&mut self) -> &mut LocalNameDependencyMap {
         unreachable!();
     }
@@ -966,13 +980,13 @@ impl<'a, 'b, 'c> Collector for SelectorDependencyCollector<'a, 'b, 'c> {
     }
 
     fn type_map(&mut self) -> &mut LocalNameDependencyMap {
-        debug_assert!(
-            self.relative_inner_collector.is_some(),
-            "Asking for relative selector invalidation outside of relative selector"
-        );
-        &mut self
-            .additional_relative_selector_invalidation_map
-            .type_to_selector
+        if self.relative_inner_collector.is_none() {
+            &mut self.map.type_to_selector
+        } else {
+            &mut self
+                .additional_relative_selector_invalidation_map
+                .type_to_selector
+        }
     }
 
     fn ts_state_map(&mut self) -> &mut TSStateDependencyMap {
@@ -1073,8 +1087,33 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
         }
         let dependency = self.dependency();
         if lightmount_dependency_is_sibling_sensitive(&dependency) {
-            self.map.unkeyed_sibling_dependency = true;
+            if !self.note_type_sibling_dependency_if_possible(dependency) {
+                self.map.unkeyed_sibling_dependency = true;
+            }
         }
+    }
+
+    fn note_type_sibling_dependency_if_possible(&mut self, dependency: Dependency) -> bool {
+        let mut local_names = SmallVec::<[LocalName; 2]>::new();
+        for ss in self.selector.iter_from(self.compound_state.offset) {
+            if let Component::LocalName(ref name) = ss {
+                local_names.push(name.name.clone());
+                if name.name != name.lower_name {
+                    local_names.push(name.lower_name.clone());
+                }
+                break;
+            }
+        }
+        if local_names.is_empty() {
+            return false;
+        }
+        for local_name in local_names {
+            if let Err(err) = add_local_name(local_name, dependency.clone(), self.type_map()) {
+                *self.alloc_error = Some(err);
+                return false;
+            }
+        }
+        true
     }
 }
 
