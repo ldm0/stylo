@@ -693,7 +693,10 @@ fn add_local_name(
 }
 
 fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Result<(), AllocErr> {
-    collector.update_states(pc.state_flag(), pc.document_state_flag());
+    collector.update_states(
+        lightmount_state_flag_for_pseudo_class(pc),
+        pc.document_state_flag(),
+    );
 
     let attr_name = match *pc {
         #[cfg(feature = "gecko")]
@@ -712,6 +715,20 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
     };
 
     add_attr_dependency(attr_name, collector)
+}
+
+fn lightmount_state_flag_for_pseudo_class(pc: &NonTSPseudoClass) -> ElementState {
+    match *pc {
+        NonTSPseudoClass::Checked => ElementState::CHECKED,
+        NonTSPseudoClass::Default => ElementState::DEFAULT,
+        NonTSPseudoClass::InRange => ElementState::INRANGE,
+        NonTSPseudoClass::Indeterminate => ElementState::INDETERMINATE,
+        NonTSPseudoClass::Invalid => ElementState::INVALID,
+        NonTSPseudoClass::OutOfRange => ElementState::OUTOFRANGE,
+        NonTSPseudoClass::PlaceholderShown => ElementState::PLACEHOLDER_SHOWN,
+        NonTSPseudoClass::Valid => ElementState::VALID,
+        _ => pc.state_flag(),
+    }
 }
 
 fn add_pseudo_class_dependency<C: Collector>(
