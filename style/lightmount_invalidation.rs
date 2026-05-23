@@ -209,6 +209,7 @@ pub struct LightmountDependencyInvalidationSummary {
     id_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
     attribute_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
     state_dependencies: Vec<(u64, LightmountDependencyQueryResult)>,
+    unknown_state_dependency_bits: u64,
     focus_dependency: LightmountDependencyQueryResult,
     focus_within_dependency: LightmountDependencyQueryResult,
     target_dependency: LightmountDependencyQueryResult,
@@ -258,6 +259,17 @@ impl LightmountDependencyInvalidationSummary {
         }
     }
 
+    pub(crate) fn note_unrepresented_state_dependencies(&mut self, state: ElementState) {
+        if state.is_empty() {
+            return;
+        }
+        let represented_bits = self
+            .state_dependencies
+            .iter()
+            .fold(0, |bits, (state_bits, _)| bits | *state_bits);
+        self.unknown_state_dependency_bits |= state.bits() & !represented_bits;
+    }
+
     fn mark_unknown_dependency(&mut self) {
         self.unknown_dependency = true;
     }
@@ -275,6 +287,7 @@ impl LightmountDependencyInvalidationSummary {
         for (state_bits, result) in other.state_dependencies {
             lightmount_note_keyed_dependency(&mut self.state_dependencies, state_bits, result);
         }
+        self.unknown_state_dependency_bits |= other.unknown_state_dependency_bits;
         self.focus_dependency.extend(other.focus_dependency);
         self.focus_within_dependency
             .extend(other.focus_within_dependency);
@@ -315,6 +328,9 @@ impl LightmountDependencyInvalidationSummary {
                 result.extend(candidate_result.clone());
             }
         }
+        if self.unknown_state_dependency_bits & bits != 0 {
+            result.unknown_dependency = true;
+        }
         result
     }
 
@@ -343,6 +359,7 @@ impl LightmountDependencyInvalidationSummary {
     #[inline]
     pub fn has_sibling_dependency(&self) -> bool {
         self.unknown_dependency
+            || self.unknown_state_dependency_bits != 0
             || self
                 .class_dependencies
                 .iter()
@@ -361,6 +378,7 @@ impl LightmountDependencyInvalidationSummary {
     #[inline]
     pub fn has_slotted_dependency(&self) -> bool {
         self.unknown_dependency
+            || self.unknown_state_dependency_bits != 0
             || self
                 .class_dependencies
                 .iter()

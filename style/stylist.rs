@@ -3575,6 +3575,7 @@ impl CascadeData {
         summary.extend(lightmount_dependency_summary_for_relative_invalidation_map(
             &self.additional_relative_selector_invalidation_map,
         ));
+        summary.note_unrepresented_state_dependencies(self.state_dependencies);
         summary
     }
 
