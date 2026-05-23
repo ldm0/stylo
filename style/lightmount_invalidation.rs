@@ -208,6 +208,7 @@ pub struct LightmountDependencyInvalidationSummary {
     class_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
     id_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
     attribute_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
+    state_dependencies: Vec<(u64, LightmountDependencyQueryResult)>,
     focus_dependency: LightmountDependencyQueryResult,
     focus_within_dependency: LightmountDependencyQueryResult,
     target_dependency: LightmountDependencyQueryResult,
@@ -236,22 +237,24 @@ impl LightmountDependencyInvalidationSummary {
         state: ElementState,
         result: LightmountDependencyQueryResult,
     ) {
-        let mut known = false;
+        if state.is_empty() {
+            self.unknown_dependency = true;
+            return;
+        }
+        lightmount_note_keyed_dependency(
+            &mut self.state_dependencies,
+            state.bits(),
+            result.clone(),
+        );
         if state.intersects(ElementState::FOCUS | ElementState::FOCUSRING) {
             self.focus_dependency.extend(result.clone());
-            known = true;
         }
         if state.intersects(ElementState::FOCUS_WITHIN) {
             self.focus_dependency.extend(result.clone());
             self.focus_within_dependency.extend(result.clone());
-            known = true;
         }
         if state.intersects(ElementState::URLTARGET) {
             self.target_dependency.extend(result);
-            known = true;
-        }
-        if !known {
-            self.unknown_dependency = true;
         }
     }
 
@@ -268,6 +271,9 @@ impl LightmountDependencyInvalidationSummary {
         }
         for (attribute, result) in other.attribute_dependencies {
             self.note_attribute_dependency(attribute, result);
+        }
+        for (state_bits, result) in other.state_dependencies {
+            lightmount_note_keyed_dependency(&mut self.state_dependencies, state_bits, result);
         }
         self.focus_dependency.extend(other.focus_dependency);
         self.focus_within_dependency
@@ -298,6 +304,18 @@ impl LightmountDependencyInvalidationSummary {
             .iter()
             .find_map(|(candidate, result)| (candidate == attribute).then(|| result.clone()))
             .unwrap_or_default()
+    }
+
+    /// Query dependencies for a changed element state bitset.
+    pub fn query_state(&self, state: ElementState) -> LightmountDependencyQueryResult {
+        let mut result = LightmountDependencyQueryResult::default();
+        let bits = state.bits();
+        for (candidate_bits, candidate_result) in &self.state_dependencies {
+            if candidate_bits & bits != 0 {
+                result.extend(candidate_result.clone());
+            }
+        }
+        result
     }
 
     /// Query dependencies for focus-like state changes.
@@ -331,6 +349,7 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(self.id_dependencies.iter())
                 .map(|(_, result)| result)
                 .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+                .chain(self.state_dependencies.iter().map(|(_, result)| result))
                 .chain(std::iter::once(&self.focus_dependency))
                 .chain(std::iter::once(&self.focus_within_dependency))
                 .chain(std::iter::once(&self.target_dependency))
@@ -348,6 +367,7 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(self.id_dependencies.iter())
                 .map(|(_, result)| result)
                 .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+                .chain(self.state_dependencies.iter().map(|(_, result)| result))
                 .chain(std::iter::once(&self.focus_dependency))
                 .chain(std::iter::once(&self.focus_within_dependency))
                 .chain(std::iter::once(&self.target_dependency))
