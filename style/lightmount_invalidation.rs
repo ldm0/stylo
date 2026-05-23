@@ -207,6 +207,7 @@ impl LightmountDependencyQueryResult {
 pub struct LightmountDependencyInvalidationSummary {
     class_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
     id_dependencies: Vec<(Atom, LightmountDependencyQueryResult)>,
+    type_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
     attribute_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
     state_dependencies: Vec<(u64, LightmountDependencyQueryResult)>,
     unknown_state_dependency_bits: u64,
@@ -231,6 +232,14 @@ impl LightmountDependencyInvalidationSummary {
         result: LightmountDependencyQueryResult,
     ) {
         lightmount_note_keyed_dependency(&mut self.attribute_dependencies, attribute, result);
+    }
+
+    fn note_type_dependency(
+        &mut self,
+        local_name: LocalName,
+        result: LightmountDependencyQueryResult,
+    ) {
+        lightmount_note_keyed_dependency(&mut self.type_dependencies, local_name, result);
     }
 
     fn note_state_dependency(
@@ -284,6 +293,9 @@ impl LightmountDependencyInvalidationSummary {
         for (attribute, result) in other.attribute_dependencies {
             self.note_attribute_dependency(attribute, result);
         }
+        for (local_name, result) in other.type_dependencies {
+            self.note_type_dependency(local_name, result);
+        }
         for (state_bits, result) in other.state_dependencies {
             lightmount_note_keyed_dependency(&mut self.state_dependencies, state_bits, result);
         }
@@ -316,6 +328,14 @@ impl LightmountDependencyInvalidationSummary {
         self.attribute_dependencies
             .iter()
             .find_map(|(candidate, result)| (candidate == attribute).then(|| result.clone()))
+            .unwrap_or_default()
+    }
+
+    /// Query dependencies for an inserted or removed element local name.
+    pub fn query_type(&self, local_name: &LocalName) -> LightmountDependencyQueryResult {
+        self.type_dependencies
+            .iter()
+            .find_map(|(candidate, result)| (candidate == local_name).then(|| result.clone()))
             .unwrap_or_default()
     }
 
@@ -370,6 +390,11 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(std::iter::once(&self.focus_dependency))
                 .chain(std::iter::once(&self.focus_within_dependency))
                 .chain(std::iter::once(&self.target_dependency))
+                .any(LightmountDependencyQueryResult::has_sibling_dependency)
+            || self
+                .type_dependencies
+                .iter()
+                .map(|(_, result)| result)
                 .any(LightmountDependencyQueryResult::has_sibling_dependency)
     }
 
@@ -514,8 +539,11 @@ pub(crate) fn lightmount_dependency_summary_for_relative_invalidation_map(
     if map.used || map.needs_ancestors_traversal || !map.any_to_selector.is_empty() {
         summary.mark_unknown_dependency();
     }
-    if map.type_to_selector.iter().next().is_some() {
-        summary.mark_unknown_dependency();
+    for (local_name, dependencies) in map.type_to_selector.iter() {
+        summary.note_type_dependency(
+            local_name.clone(),
+            lightmount_dependency_query_result_for_dependencies(dependencies),
+        );
     }
     if !map.ts_state_to_selector.is_empty() {
         summary.mark_unknown_dependency();
