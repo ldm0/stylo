@@ -611,7 +611,7 @@ pub(crate) fn lightmount_dependency_summary_for_relative_invalidation_map(
     map: &AdditionalRelativeSelectorInvalidationMap,
 ) -> LightmountDependencyInvalidationSummary {
     let mut summary = LightmountDependencyInvalidationSummary::default();
-    if map.used || map.needs_ancestors_traversal {
+    if map.needs_ancestors_traversal {
         summary.mark_unknown_dependency();
     }
     summary.note_universal_dependency(lightmount_dependency_query_result_for_dependencies(
@@ -842,6 +842,27 @@ mod tests {
         );
         assert_eq!(first.kinds(), &[LightmountDependencyKind::Siblings]);
         assert!(first.has_sibling_dependency());
+    }
+
+    #[test]
+    fn lightmount_relative_summary_does_not_treat_used_flag_as_unknown_dependency() {
+        let mut map = AdditionalRelativeSelectorInvalidationMap::new();
+        map.used = true;
+
+        let summary = lightmount_dependency_summary_for_relative_invalidation_map(&map);
+
+        assert!(!summary.has_unknown_dependency());
+        assert!(!summary.query_universal().has_any_dependency());
+    }
+
+    #[test]
+    fn lightmount_relative_summary_keeps_ancestor_traversal_unknown() {
+        let mut map = AdditionalRelativeSelectorInvalidationMap::new();
+        map.needs_ancestors_traversal = true;
+
+        let summary = lightmount_dependency_summary_for_relative_invalidation_map(&map);
+
+        assert!(summary.has_unknown_dependency());
     }
 }
 
