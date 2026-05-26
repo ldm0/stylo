@@ -1071,8 +1071,10 @@ where
         return KleeneValue::True;
     };
     context.nest(|context| {
-        context.with_featureless(false, |context| {
-            matches_complex_selector(selector.iter(), element, context, rightmost)
+        context.with_shadow_host(None::<E>, |context| {
+            context.with_featureless(false, |context| {
+                matches_complex_selector(selector.iter(), element, context, rightmost)
+            })
         })
     })
 }
