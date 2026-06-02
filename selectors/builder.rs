@@ -337,6 +337,13 @@ where
                     flags.insert(selector.flags());
                 }
             },
+            Component::HostContext(ref selector) => {
+                flags.insert(SelectorFlags::HAS_HOST);
+                specificity.class_like_selectors += 1;
+                // Same specificity model as :host().
+                *specificity += Specificity::from(selector.specificity());
+                flags.insert(selector.flags());
+            },
             Component::ID(..) => {
                 specificity.id_selectors += 1;
             },

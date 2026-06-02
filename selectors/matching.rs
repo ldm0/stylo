@@ -514,27 +514,37 @@ fn matches_relative_selector<E: Element>(
                 ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR,
             );
         }
-        let mut next_element = element.first_element_child();
+        let mut next_element =
+            if context.featureless() && context.shadow_host() == Some(element.opaque()) {
+                element.first_element_child_for_featureless_host_has()
+            } else {
+                element.first_element_child()
+            };
         while let Some(el) = next_element {
             if context.needs_selector_flags() {
                 el.apply_selector_flags(
                     ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR,
                 );
             }
-            let mut matched = matches_complex_selector(
-                relative_selector.selector.iter(),
-                &el,
-                context,
-                rightmost,
-            )
-            .to_bool(true);
+            let mut matched = context
+                .with_featureless(false, |context| {
+                    matches_complex_selector(
+                        relative_selector.selector.iter(),
+                        &el,
+                        context,
+                        rightmost,
+                    )
+                })
+                .to_bool(true);
             if !matched && relative_selector.match_hint.is_subtree() {
-                matched = matches_relative_selector_subtree(
-                    &relative_selector.selector,
-                    &el,
-                    context,
-                    rightmost,
-                );
+                matched = context.with_featureless(false, |context| {
+                    matches_relative_selector_subtree(
+                        &relative_selector.selector,
+                        &el,
+                        context,
+                        rightmost,
+                    )
+                });
             }
             if matched {
                 return true;
@@ -595,6 +605,9 @@ fn relative_selector_match_early<E: Element>(
     element: &E,
     context: &mut MatchingContext<E::Impl>,
 ) -> Option<bool> {
+    if context.featureless() && context.shadow_host() == Some(element.opaque()) {
+        return None;
+    }
     // See if we can return a cached result.
     if let Some(cached) = context
         .selector_caches
@@ -1079,6 +1092,43 @@ where
     })
 }
 
+fn matches_host_context<E>(
+    element: &E,
+    selector: &Selector<E::Impl>,
+    context: &mut MatchingContext<E::Impl>,
+    rightmost: SubjectOrPseudoElement,
+) -> KleeneValue
+where
+    E: Element,
+{
+    let host = match context.shadow_host() {
+        Some(h) => h,
+        None => return KleeneValue::False,
+    };
+    if host != element.opaque() {
+        return KleeneValue::False;
+    }
+
+    let mut result = KleeneValue::False;
+    let mut current = Some(element.clone());
+    while let Some(candidate) = current {
+        let matched = context.nest(|context| {
+            context.with_shadow_host(None::<E>, |context| {
+                context.with_featureless(false, |context| {
+                    matches_complex_selector(selector.iter(), &candidate, context, rightmost)
+                })
+            })
+        });
+        match matched {
+            KleeneValue::True => return KleeneValue::True,
+            KleeneValue::Unknown => result = KleeneValue::Unknown,
+            KleeneValue::False => {},
+        }
+        current = candidate.parent_element();
+    }
+    result
+}
+
 fn matches_slotted<E>(
     element: &E,
     selector: &Selector<E::Impl>,
@@ -1139,8 +1189,10 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
     for component in iter {
         match component {
             Component::Scope | Component::ImplicitScope if scope_matches_featureless_host => {},
+            Component::RelativeSelectorAnchor => {},
             // :host only matches featureless elements.
             Component::Host(..) => {},
+            Component::HostContext(..) => {},
             // Pseudo-elements are allowed to match as well.
             Component::PseudoElement(..) => {},
             // We allow logical pseudo-classes, but we'll fail matching of the inner selectors if
@@ -1182,6 +1234,7 @@ pub(crate) fn compound_matches_featureless_host<Impl: SelectorImpl>(
                     }
                 }
             },
+            Component::Has(..) => {},
             // Other components don't match the host scope.
             _ => return MatchesFeaturelessHost::Never,
         }
@@ -1298,6 +1351,9 @@ where
         },
         Component::Host(ref selector) => {
             return matches_host(element, selector.as_ref(), &mut context.shared, rightmost);
+        },
+        Component::HostContext(ref selector) => {
+            return matches_host_context(element, selector, &mut context.shared, rightmost);
         },
         Component::ParentSelector => match context.shared.scope_element {
             Some(ref scope_element) => element.opaque() == *scope_element,

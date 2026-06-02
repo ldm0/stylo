@@ -78,6 +78,12 @@ pub trait Element: Sized + Clone + Debug {
     /// Skips non-element nodes
     fn first_element_child(&self) -> Option<Self>;
 
+    /// Skips non-element nodes in the shadow tree for `:has()` matching on a
+    /// featureless shadow host.
+    fn first_element_child_for_featureless_host_has(&self) -> Option<Self> {
+        self.first_element_child()
+    }
+
     fn is_html_element_in_html_document(&self) -> bool;
 
     fn has_local_name(&self, local_name: &<Self::Impl as SelectorImpl>::BorrowedLocalName) -> bool;
