@@ -157,6 +157,9 @@ pub enum LightmountDependencyFallbackReason {
     UnsupportedStateDependency,
     /// Shadow dependency exactness could not be represented by this query.
     UnsupportedShadowDependency,
+    /// `:nth-child(... of ...)` dependency exactness could not be represented
+    /// by the retained invalidator's current root set.
+    NthOfDependency,
 }
 
 /// Conservative query result for one changed class/id/attribute/state token.
@@ -503,6 +506,7 @@ impl LightmountDependencyInvalidationSummary {
 fn lightmount_nth_of_dependency_query_result() -> LightmountDependencyQueryResult {
     let mut result = LightmountDependencyQueryResult::default();
     result.add_kind(LightmountDependencyKind::Siblings);
+    result.add_fallback_reason(LightmountDependencyFallbackReason::NthOfDependency);
     result
 }
 
@@ -905,9 +909,12 @@ mod tests {
         summary.note_nth_of_state_dependency(ElementState::empty());
 
         assert!(!summary.has_unknown_dependency());
+        let class_result = summary.query_class(&class);
+        assert!(class_result.requires_fallback());
+        assert_eq!(class_result.kinds(), &[LightmountDependencyKind::Siblings]);
         assert_eq!(
-            summary.query_class(&class).kinds(),
-            &[LightmountDependencyKind::Siblings]
+            class_result.fallback_reasons(),
+            &[LightmountDependencyFallbackReason::NthOfDependency]
         );
         assert!(!summary.query_class(&other_class).has_any_dependency());
         assert_eq!(
