@@ -321,6 +321,25 @@ impl LightmountDependencyInvalidationSummary {
         }
     }
 
+    pub(crate) fn note_nth_of_class_dependency(&mut self, class: Atom) {
+        self.note_class_dependency(class, lightmount_nth_of_dependency_query_result());
+    }
+
+    pub(crate) fn note_nth_of_id_dependency(&mut self, id: Atom) {
+        self.note_id_dependency(id, lightmount_nth_of_dependency_query_result());
+    }
+
+    pub(crate) fn note_nth_of_attribute_dependency(&mut self, attribute: LocalName) {
+        self.note_attribute_dependency(attribute, lightmount_nth_of_dependency_query_result());
+    }
+
+    pub(crate) fn note_nth_of_state_dependency(&mut self, state: ElementState) {
+        if state.is_empty() {
+            return;
+        }
+        self.note_state_dependency(state, lightmount_nth_of_dependency_query_result());
+    }
+
     pub(crate) fn note_unrepresented_state_dependencies(&mut self, state: ElementState) {
         if state.is_empty() {
             return;
@@ -479,6 +498,12 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(std::iter::once(&self.universal_dependency))
                 .any(LightmountDependencyQueryResult::has_slotted_dependency)
     }
+}
+
+fn lightmount_nth_of_dependency_query_result() -> LightmountDependencyQueryResult {
+    let mut result = LightmountDependencyQueryResult::default();
+    result.add_kind(LightmountDependencyKind::Siblings);
+    result
 }
 
 fn lightmount_note_keyed_dependency<K: Eq>(
@@ -863,6 +888,40 @@ mod tests {
         let summary = lightmount_dependency_summary_for_relative_invalidation_map(&map);
 
         assert!(summary.has_unknown_dependency());
+    }
+
+    #[test]
+    fn lightmount_nth_of_dependencies_are_sibling_sensitive_by_key() {
+        let mut summary = LightmountDependencyInvalidationSummary::default();
+        let class = Atom::from("c");
+        let other_class = Atom::from("other");
+        let id = Atom::from("target");
+        let attribute = LocalName::from("data-active");
+
+        summary.note_nth_of_class_dependency(class.clone());
+        summary.note_nth_of_id_dependency(id.clone());
+        summary.note_nth_of_attribute_dependency(attribute.clone());
+        summary.note_nth_of_state_dependency(ElementState::FOCUS);
+        summary.note_nth_of_state_dependency(ElementState::empty());
+
+        assert!(!summary.has_unknown_dependency());
+        assert_eq!(
+            summary.query_class(&class).kinds(),
+            &[LightmountDependencyKind::Siblings]
+        );
+        assert!(!summary.query_class(&other_class).has_any_dependency());
+        assert_eq!(
+            summary.query_id(&id).kinds(),
+            &[LightmountDependencyKind::Siblings]
+        );
+        assert_eq!(
+            summary.query_attribute(&attribute).kinds(),
+            &[LightmountDependencyKind::Siblings]
+        );
+        assert_eq!(
+            summary.query_focus().kinds(),
+            &[LightmountDependencyKind::Siblings]
+        );
     }
 }
 

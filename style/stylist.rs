@@ -3576,6 +3576,16 @@ impl CascadeData {
         summary.extend(lightmount_dependency_summary_for_relative_invalidation_map(
             &self.additional_relative_selector_invalidation_map,
         ));
+        for class in &self.nth_of_class_dependencies {
+            summary.note_nth_of_class_dependency(class.clone());
+        }
+        for id in &self.nth_of_mapped_ids {
+            summary.note_nth_of_id_dependency(id.clone());
+        }
+        for attribute in &self.nth_of_attribute_dependencies {
+            summary.note_nth_of_attribute_dependency(attribute.clone());
+        }
+        summary.note_nth_of_state_dependency(self.nth_of_state_dependencies);
         summary.note_unrepresented_state_dependencies(self.state_dependencies);
         summary
     }
