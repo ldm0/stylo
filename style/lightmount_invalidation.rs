@@ -160,6 +160,9 @@ pub enum LightmountDependencyFallbackReason {
     /// `:nth-child(... of ...)` dependency exactness could not be represented
     /// by the retained invalidator's current root set.
     NthOfDependency,
+    /// A selector-list dependency nested inside a relative selector cannot be
+    /// represented by the retained invalidator's exact root set.
+    NestedRelativeSelectorDependency,
 }
 
 /// Conservative query result for one changed class/id/attribute/state token.
@@ -723,11 +726,40 @@ fn lightmount_collect_dependency_query_result(
     {
         result.add_kind(LightmountDependencyKind::Siblings);
     }
+    if lightmount_dependency_has_nested_relative_dependency(dependency) {
+        result.add_fallback_reason(
+            LightmountDependencyFallbackReason::NestedRelativeSelectorDependency,
+        );
+    }
     if let Some(next) = dependency.next.as_ref() {
         for dependency in next.slice() {
             lightmount_collect_dependency_query_result(dependency, result);
         }
     }
+}
+
+fn lightmount_dependency_has_nested_relative_dependency(dependency: &Dependency) -> bool {
+    if matches!(
+        dependency.invalidation_kind(),
+        DependencyInvalidationKind::Relative(_)
+    ) {
+        return false;
+    }
+    dependency
+        .next
+        .as_ref()
+        .is_some_and(|next| lightmount_dependency_chain_contains_relative_dependency(next.slice()))
+}
+
+fn lightmount_dependency_chain_contains_relative_dependency(dependencies: &[Dependency]) -> bool {
+    dependencies.iter().any(|dependency| {
+        matches!(
+            dependency.invalidation_kind(),
+            DependencyInvalidationKind::Relative(_)
+        ) || dependency.next.as_ref().is_some_and(|next| {
+            lightmount_dependency_chain_contains_relative_dependency(next.slice())
+        })
+    })
 }
 
 fn lightmount_dependencies_have_sibling_sensitive(dependencies: &[Dependency]) -> bool {
@@ -838,6 +870,43 @@ fn lightmount_collect_state_sibling_dependency(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::QuirksMode;
+    use crate::invalidation::element::invalidation_map::note_selector_for_invalidation;
+    use crate::selector_parser::SelectorParser;
+    use crate::stylesheets::UrlExtraData;
+
+    fn lightmount_dependency_summary_for_selector(
+        selector: &str,
+    ) -> LightmountDependencyInvalidationSummary {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let selectors = SelectorParser::parse_author_origin_no_namespace(selector, &url_data)
+            .expect("selector should parse");
+        let mut map = InvalidationMap::new();
+        let mut relative_map = InvalidationMap::new();
+        let mut additional_relative_map = AdditionalRelativeSelectorInvalidationMap::new();
+
+        for selector in selectors.slice() {
+            note_selector_for_invalidation(
+                selector,
+                QuirksMode::NoQuirks,
+                &mut map,
+                &mut relative_map,
+                &mut additional_relative_map,
+                None,
+                None,
+            )
+            .expect("selector invalidation dependencies should collect");
+        }
+
+        let mut summary = lightmount_dependency_summary_for_invalidation_map(&map);
+        summary.extend(lightmount_dependency_summary_for_invalidation_map(
+            &relative_map,
+        ));
+        summary.extend(lightmount_dependency_summary_for_relative_invalidation_map(
+            &additional_relative_map,
+        ));
+        summary
+    }
 
     #[test]
     fn lightmount_dependency_query_result_keeps_fallback_reasons_out_of_kinds() {
@@ -929,6 +998,38 @@ mod tests {
             summary.query_focus().kinds(),
             &[LightmountDependencyKind::Siblings]
         );
+    }
+
+    #[test]
+    fn lightmount_summary_marks_nested_relative_selector_lists_for_fallback() {
+        let summary = lightmount_dependency_summary_for_selector(
+            "#target:has(:is(.item + .item + .item > .child + .child + .child))",
+        );
+
+        let item_result = summary.query_class(&Atom::from("item"));
+        assert!(item_result.has_any_dependency());
+        assert!(item_result.requires_fallback());
+        assert!(item_result
+            .fallback_reasons()
+            .contains(&LightmountDependencyFallbackReason::NestedRelativeSelectorDependency));
+
+        let child_result = summary.query_class(&Atom::from("child"));
+        assert!(child_result.has_any_dependency());
+        assert!(child_result.requires_fallback());
+        assert!(child_result
+            .fallback_reasons()
+            .contains(&LightmountDependencyFallbackReason::NestedRelativeSelectorDependency));
+    }
+
+    #[test]
+    fn lightmount_summary_exposes_link_pseudos_as_href_attribute_dependencies() {
+        let summary = lightmount_dependency_summary_for_selector("#target:has(:any-link)");
+        let href = LocalName::from("href");
+
+        assert!(summary.query_attribute(&href).has_any_dependency());
+        assert!(!summary
+            .query_attribute(&LocalName::from("class"))
+            .has_any_dependency());
     }
 }
 

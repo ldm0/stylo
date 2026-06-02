@@ -733,6 +733,9 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
             return add_attr_dependency(local_name!("size"), collector);
         },
         NonTSPseudoClass::Lang(..) => local_name!("lang"),
+        NonTSPseudoClass::AnyLink | NonTSPseudoClass::Link | NonTSPseudoClass::Visited => {
+            local_name!("href")
+        },
         NonTSPseudoClass::CustomState(ref name) => {
             return add_custom_state_dependency(name.0.clone(), collector);
         },
