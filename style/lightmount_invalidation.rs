@@ -156,6 +156,9 @@ pub enum LightmountDependencyFallbackReason {
     UnsupportedStateDependency,
     /// Shadow dependency exactness could not be represented by this query.
     UnsupportedShadowDependency,
+    /// The dependency shape cannot currently be represented by an exact retained
+    /// invalidator path.
+    UnsupportedDependency,
     /// `:nth-child(... of ...)` dependency exactness could not be represented
     /// by the retained invalidator's current root set.
     NthOfDependency,
@@ -253,6 +256,19 @@ impl LightmountDependencyQueryResult {
         } else {
             LightmountDependencyFallbackRootPolicy::SourceFallback
         }
+    }
+
+    /// Returns explicit fallback reasons, or conservative shape-derived reasons
+    /// when the caller has already determined this query needs fallback handling.
+    #[inline]
+    pub fn fallback_or_shape_reasons(&self) -> Vec<LightmountDependencyFallbackReason> {
+        if !self.fallback_reasons.is_empty() {
+            return self.fallback_reasons.clone();
+        }
+        if self.kinds.contains(&LightmountDependencyKind::Scope) {
+            return vec![LightmountDependencyFallbackReason::ScopeDependency];
+        }
+        vec![LightmountDependencyFallbackReason::UnsupportedDependency]
     }
 
     /// Returns whether the query can affect following sibling invalidation.
@@ -1001,6 +1017,23 @@ mod tests {
         );
         assert_eq!(first.kinds(), &[LightmountDependencyKind::Siblings]);
         assert!(first.has_sibling_dependency());
+    }
+
+    #[test]
+    fn lightmount_dependency_query_result_derives_shape_fallback_reasons() {
+        let mut scope = LightmountDependencyQueryResult::default();
+        scope.add_kind(LightmountDependencyKind::Scope);
+        assert_eq!(
+            scope.fallback_or_shape_reasons(),
+            vec![LightmountDependencyFallbackReason::ScopeDependency]
+        );
+
+        let mut sibling = LightmountDependencyQueryResult::default();
+        sibling.add_kind(LightmountDependencyKind::Siblings);
+        assert_eq!(
+            sibling.fallback_or_shape_reasons(),
+            vec![LightmountDependencyFallbackReason::UnsupportedDependency]
+        );
     }
 
     #[test]
