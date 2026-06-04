@@ -11,7 +11,7 @@
 use crate::invalidation::element::invalidation_map::{
     AdditionalRelativeSelectorInvalidationMap, Dependency, DependencyInvalidationKind,
     InvalidationMap, NormalDependencyInvalidationKind, RelativeDependencyInvalidationKind,
-    StateDependency,
+    ScopeDependencyInvalidationKind, StateDependency,
 };
 use crate::selector_map::SelectorMap;
 use crate::values::AtomIdent;
@@ -165,6 +165,26 @@ pub enum LightmountDependencyFallbackReason {
     /// A selector-list dependency nested inside a relative selector cannot be
     /// represented by the retained invalidator's exact root set.
     NestedRelativeSelectorDependency,
+}
+
+/// Return the Lightmount fallback reason represented by a raw Stylo dependency
+/// kind.
+#[inline]
+pub fn lightmount_dependency_fallback_reason_for_dependency(
+    dependency: &Dependency,
+) -> LightmountDependencyFallbackReason {
+    match dependency.invalidation_kind() {
+        DependencyInvalidationKind::FullSelector => {
+            LightmountDependencyFallbackReason::FullSelector
+        },
+        DependencyInvalidationKind::Relative(_) => {
+            LightmountDependencyFallbackReason::RelativeAnySelector
+        },
+        DependencyInvalidationKind::Scope(_) => LightmountDependencyFallbackReason::ScopeDependency,
+        DependencyInvalidationKind::Normal(_) => {
+            LightmountDependencyFallbackReason::UnsupportedDependency
+        },
+    }
 }
 
 /// Which fallback roots may be used when a dependency query is not exact.
@@ -1210,6 +1230,41 @@ mod tests {
 
         query.add_kind(LightmountDependencyKind::Scope);
         assert!(query.context_root_flags().requires_source_fallback);
+    }
+
+    #[test]
+    fn lightmount_dependency_fallback_reason_maps_raw_dependency_kind() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let selector = SelectorParser::parse_author_origin_no_namespace(".subject", &url_data)
+            .expect("selector should parse")
+            .slice()[0]
+            .clone();
+        let dependency_for_kind = |kind| Dependency::new(selector.clone(), 0, None, kind);
+
+        assert_eq!(
+            lightmount_dependency_fallback_reason_for_dependency(&dependency_for_kind(
+                DependencyInvalidationKind::FullSelector
+            )),
+            LightmountDependencyFallbackReason::FullSelector
+        );
+        assert_eq!(
+            lightmount_dependency_fallback_reason_for_dependency(&dependency_for_kind(
+                DependencyInvalidationKind::Relative(RelativeDependencyInvalidationKind::Ancestors)
+            )),
+            LightmountDependencyFallbackReason::RelativeAnySelector
+        );
+        assert_eq!(
+            lightmount_dependency_fallback_reason_for_dependency(&dependency_for_kind(
+                DependencyInvalidationKind::Scope(ScopeDependencyInvalidationKind::ScopeEnd)
+            )),
+            LightmountDependencyFallbackReason::ScopeDependency
+        );
+        assert_eq!(
+            lightmount_dependency_fallback_reason_for_dependency(&dependency_for_kind(
+                DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Element)
+            )),
+            LightmountDependencyFallbackReason::UnsupportedDependency
+        );
     }
 
     #[test]
