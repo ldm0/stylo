@@ -16,13 +16,13 @@ use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::{ComputedValues, PropertyFlags};
 use crate::selector_parser::AttrValue as SelectorAttrValue;
 use crate::selector_parser::{Direction, PseudoElementCascadeType, SelectorParser};
-use crate::values::{AtomIdent, AtomString};
+use crate::values::{AtomIdent, AtomString, CSSInteger};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
 use cssparser::{
     match_ignore_ascii_case, serialize_identifier, CowRcStr, Parser as CssParser, SourceLocation,
     ToCss,
 };
-use dom::{DocumentState, ElementState};
+use dom::{DocumentState, ElementState, HEADING_LEVEL_OFFSET};
 use rustc_hash::FxHashMap;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::parser::SelectorParseErrorKind;
@@ -461,6 +461,26 @@ pub type Lang = Box<str>;
 #[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToCss, ToShmem)]
 pub struct CustomState(pub AtomIdent);
 
+/// The properties that comprise a `:heading()` pseudo-class.
+#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
+pub struct HeadingSelectorData(pub Box<[CSSInteger]>);
+
+impl HeadingSelectorData {
+    /// Matches the heading level packed into `ElementState` against this selector.
+    pub fn matches_state(&self, state: ElementState) -> bool {
+        let bits = state.intersection(ElementState::HEADING_LEVEL_BITS).bits();
+        if bits == 0 {
+            return false;
+        }
+        if self.0.is_empty() {
+            return true;
+        }
+        let level = (bits >> HEADING_LEVEL_OFFSET) as CSSInteger;
+        debug_assert!(level > 0 && level < 16);
+        self.0.iter().any(|item| *item == level)
+    }
+}
+
 /// A non tree-structural pseudo-class.
 /// See https://drafts.csswg.org/selectors-4/#structural-pseudos
 #[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
@@ -480,6 +500,8 @@ pub enum NonTSPseudoClass {
     FocusWithin,
     FocusVisible,
     Fullscreen,
+    /// The `:heading` and `:heading()` pseudo-classes.
+    Heading(HeadingSelectorData),
     Hover,
     InRange,
     Indeterminate,
@@ -552,6 +574,22 @@ impl ToCss for NonTSPseudoClass {
             style_traits::ToCss::to_css(dir, &mut style_traits::CssWriter::new(dest))?;
             return dest.write_char(')');
         }
+        if let Heading(ref levels) = *self {
+            dest.write_str(":heading")?;
+            if levels.0.is_empty() {
+                return Ok(());
+            }
+            dest.write_char('(')?;
+            let mut first = true;
+            for item in levels.0.iter() {
+                if !first {
+                    dest.write_str(", ")?;
+                }
+                first = false;
+                ToCss::to_css(item, dest)?;
+            }
+            return dest.write_char(')');
+        }
 
         dest.write_str(match *self {
             Self::Active => ":active",
@@ -598,7 +636,7 @@ impl ToCss for NonTSPseudoClass {
             Self::UserValid => ":user-valid",
             Self::Valid => ":valid",
             Self::Visited => ":visited",
-            Self::Lang(_) | Self::Dir(_) => unreachable!(),
+            Self::Lang(_) | Self::Dir(_) | Self::Heading(_) => unreachable!(),
         })
     }
 }
@@ -620,6 +658,7 @@ impl NonTSPseudoClass {
             Self::FocusVisible => ElementState::FOCUSRING,
             Self::FocusWithin => ElementState::FOCUS_WITHIN,
             Self::Fullscreen => ElementState::FULLSCREEN,
+            Self::Heading(_) => ElementState::HEADING_LEVEL_BITS,
             Self::Hover => ElementState::HOVER,
             Self::InRange => ElementState::INRANGE,
             Self::Indeterminate => ElementState::INDETERMINATE,
@@ -751,6 +790,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "focus-visible" => NonTSPseudoClass::FocusVisible,
             "focus-within" => NonTSPseudoClass::FocusWithin,
             "fullscreen" => NonTSPseudoClass::Fullscreen,
+            "heading" => NonTSPseudoClass::Heading(HeadingSelectorData(Box::new([]))),
             "hover" => NonTSPseudoClass::Hover,
             "in-range" => NonTSPseudoClass::InRange,
             "indeterminate" => NonTSPseudoClass::Indeterminate,
@@ -807,6 +847,13 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "state" => {
                 let result = AtomIdent::from(parser.expect_ident()?.as_ref());
                 NonTSPseudoClass::CustomState(CustomState(result))
+            },
+            "heading" => {
+                let result = parser.parse_comma_separated(|input| Ok(input.expect_integer()?))?;
+                if result.is_empty() {
+                    return Err(parser.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                }
+                NonTSPseudoClass::Heading(HeadingSelectorData(result.into_boxed_slice()))
             },
             _ => return Err(parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone()))),
         };
