@@ -432,6 +432,19 @@ impl LightmountDependencyQueryResult {
                 .contains(&LightmountDependencyKind::RelativePrevSibling)
     }
 
+    /// Returns whether this dependency needs structural context fallback
+    /// cleanup for a universal child-list structural request.
+    #[inline]
+    pub fn requires_structural_context_fallback_cleanup(
+        &self,
+        request_requires_child_list_structural_dependency: bool,
+        query_is_universal: bool,
+    ) -> bool {
+        request_requires_child_list_structural_dependency
+            && query_is_universal
+            && self.has_relative_selector_dependency()
+    }
+
     /// Returns whether this query can affect `::slotted(...)` invalidation.
     #[inline]
     pub fn has_slotted_dependency(&self) -> bool {
@@ -1279,6 +1292,19 @@ mod tests {
 
         query.add_kind(LightmountDependencyKind::Scope);
         assert!(query.context_root_flags().requires_source_fallback);
+    }
+
+    #[test]
+    fn lightmount_dependency_query_result_exposes_structural_context_cleanup_policy() {
+        let mut query = LightmountDependencyQueryResult::default();
+        query.add_kind(LightmountDependencyKind::RelativePrevSibling);
+        assert!(query.requires_structural_context_fallback_cleanup(true, true));
+        assert!(!query.requires_structural_context_fallback_cleanup(false, true));
+        assert!(!query.requires_structural_context_fallback_cleanup(true, false));
+
+        let mut non_relative = LightmountDependencyQueryResult::default();
+        non_relative.add_kind(LightmountDependencyKind::Element);
+        assert!(!non_relative.requires_structural_context_fallback_cleanup(true, true));
     }
 
     #[test]
