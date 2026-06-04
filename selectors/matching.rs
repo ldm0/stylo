@@ -848,10 +848,15 @@ where
             NextElement::new(element, true)
         },
         Combinator::Part => {
-            // ::part() crosses to a shadow host. In the same tree, that host is
-            // still featureless, so bare ::part(...) must not match local part
-            // attributes; :host::part(...) can still match via :host.
-            NextElement::new(host_for_part(element, context), true)
+            let host = host_for_part(element, context);
+            // If ::part() resolves to the current shadow tree's host, that host
+            // is featureless and bare ::part(...) must not match local part
+            // attributes. Hosts from outer scopes are ordinary elements for
+            // that scope, so document / ancestor-shadow ::part(...) still works.
+            let featureless = host
+                .as_ref()
+                .is_some_and(|host| context.current_host == Some(host.opaque()));
+            NextElement::new(host, featureless)
         },
         Combinator::SlotAssignment => NextElement::new(assigned_slot(element, context), false),
         Combinator::PseudoElement => {
