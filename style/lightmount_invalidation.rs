@@ -167,6 +167,71 @@ pub enum LightmountDependencyFallbackReason {
     NestedRelativeSelectorDependency,
 }
 
+/// Why a source-aware invalidation batch could not produce exact roots.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountSourceInvalidationFallbackReason {
+    /// Stylo recorded an unknown dependency for this query.
+    UnknownDependency,
+    /// Stylo's invalidation map requires full-selector invalidation.
+    FullSelector,
+    /// Relative selector dependencies are present but not exposed precisely.
+    RelativeAnySelector,
+    /// Scope dependencies are present but not exposed precisely.
+    ScopeDependency,
+    /// State dependencies are present but not exposed precisely.
+    UnsupportedStateDependency,
+    /// Shadow dependency exactness could not be represented by this query.
+    UnsupportedShadowDependency,
+    /// The renderer had to use conservative fallback roots from the active
+    /// source scope instead of cause-local or source-local roots.
+    SourceScopeFallback,
+    /// Stylo dependency metadata says the dependency cannot be represented by
+    /// the exact retained invalidator path.
+    UnsupportedDependency,
+    /// `:nth-child(... of ...)` dependency exactness still needs reasoned
+    /// fallback handling.
+    NthOfDependency,
+    /// A selector-list dependency nested inside a relative selector still needs
+    /// reasoned fallback handling.
+    NestedRelativeSelectorDependency,
+    /// The retained invalidator produced no roots, but the result was not
+    /// proven to be an exact no-op for this source/query batch.
+    InexactEmptyResult,
+    /// The batch needed source fallback roots, but none were provided by the
+    /// source/scope owner.
+    MissingFallbackRoots,
+    /// The retained style system was unavailable when source queries were
+    /// drained.
+    MissingRetainedStyleSystem,
+    /// The retained style system did not have per-source cascade data for this
+    /// source.
+    MissingRetainedCascadeData,
+}
+
+impl From<LightmountDependencyFallbackReason> for LightmountSourceInvalidationFallbackReason {
+    fn from(reason: LightmountDependencyFallbackReason) -> Self {
+        match reason {
+            LightmountDependencyFallbackReason::UnknownDependency => Self::UnknownDependency,
+            LightmountDependencyFallbackReason::FullSelector => Self::FullSelector,
+            LightmountDependencyFallbackReason::RelativeAnySelector => Self::RelativeAnySelector,
+            LightmountDependencyFallbackReason::ScopeDependency => Self::ScopeDependency,
+            LightmountDependencyFallbackReason::UnsupportedStateDependency => {
+                Self::UnsupportedStateDependency
+            },
+            LightmountDependencyFallbackReason::UnsupportedShadowDependency => {
+                Self::UnsupportedShadowDependency
+            },
+            LightmountDependencyFallbackReason::UnsupportedDependency => {
+                Self::UnsupportedDependency
+            },
+            LightmountDependencyFallbackReason::NthOfDependency => Self::NthOfDependency,
+            LightmountDependencyFallbackReason::NestedRelativeSelectorDependency => {
+                Self::NestedRelativeSelectorDependency
+            },
+        }
+    }
+}
+
 /// Return the Lightmount fallback reason represented by a raw Stylo dependency
 /// kind.
 #[inline]
@@ -1340,6 +1405,55 @@ mod tests {
             )),
             LightmountDependencyFallbackReason::UnsupportedDependency
         );
+    }
+
+    #[test]
+    fn lightmount_source_fallback_reason_preserves_dependency_detail() {
+        let cases = [
+            (
+                LightmountDependencyFallbackReason::UnknownDependency,
+                LightmountSourceInvalidationFallbackReason::UnknownDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::FullSelector,
+                LightmountSourceInvalidationFallbackReason::FullSelector,
+            ),
+            (
+                LightmountDependencyFallbackReason::RelativeAnySelector,
+                LightmountSourceInvalidationFallbackReason::RelativeAnySelector,
+            ),
+            (
+                LightmountDependencyFallbackReason::ScopeDependency,
+                LightmountSourceInvalidationFallbackReason::ScopeDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::UnsupportedStateDependency,
+                LightmountSourceInvalidationFallbackReason::UnsupportedStateDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::UnsupportedShadowDependency,
+                LightmountSourceInvalidationFallbackReason::UnsupportedShadowDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::UnsupportedDependency,
+                LightmountSourceInvalidationFallbackReason::UnsupportedDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::NthOfDependency,
+                LightmountSourceInvalidationFallbackReason::NthOfDependency,
+            ),
+            (
+                LightmountDependencyFallbackReason::NestedRelativeSelectorDependency,
+                LightmountSourceInvalidationFallbackReason::NestedRelativeSelectorDependency,
+            ),
+        ];
+
+        for (dependency_reason, source_reason) in cases {
+            assert_eq!(
+                LightmountSourceInvalidationFallbackReason::from(dependency_reason),
+                source_reason
+            );
+        }
     }
 
     #[test]

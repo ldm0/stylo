@@ -2488,7 +2488,7 @@ pub use crate::lightmount_invalidation::{
     lightmount_dependency_supported_by_retained_processor, LightmountDependencyFallbackReason,
     LightmountDependencyFallbackRootPolicy, LightmountDependencyInvalidationSummary,
     LightmountDependencyKind, LightmountDependencyQueryResult,
-    LightmountSiblingInvalidationSummary,
+    LightmountSiblingInvalidationSummary, LightmountSourceInvalidationFallbackReason,
 };
 
 /// SelectorMapEntry implementation for use in our revalidation selector map.
