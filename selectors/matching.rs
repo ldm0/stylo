@@ -847,7 +847,12 @@ where
             };
             NextElement::new(element, true)
         },
-        Combinator::Part => NextElement::new(host_for_part(element, context), false),
+        Combinator::Part => {
+            // ::part() crosses to a shadow host. In the same tree, that host is
+            // still featureless, so bare ::part(...) must not match local part
+            // attributes; :host::part(...) can still match via :host.
+            NextElement::new(host_for_part(element, context), true)
+        },
         Combinator::SlotAssignment => NextElement::new(assigned_slot(element, context), false),
         Combinator::PseudoElement => {
             NextElement::new(element.pseudo_element_originating_element(), false)
