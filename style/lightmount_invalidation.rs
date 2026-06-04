@@ -176,6 +176,34 @@ pub enum LightmountDependencyFallbackRootPolicy {
     SourceFallback,
 }
 
+/// Dependency root categories needed by Lightmount's DOM-backed fallback-root
+/// construction.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct LightmountDependencyContextRootFlags {
+    /// The query cannot be covered by context roots and needs source fallback.
+    pub requires_source_fallback: bool,
+    /// The changed element's local subtree can be affected.
+    pub local_subtree: bool,
+    /// Ancestors of the changed element can be affected.
+    pub ancestor_chain: bool,
+    /// Following siblings of the changed element can be affected.
+    pub following_siblings: bool,
+    /// The query includes a direct previous-sibling relative dependency.
+    pub direct_previous_sibling_relative: bool,
+    /// The previous element sibling can be affected.
+    pub previous_sibling: bool,
+    /// Earlier element siblings can be affected.
+    pub earlier_siblings: bool,
+    /// Previous siblings of ancestors can be affected.
+    pub ancestor_previous_siblings: bool,
+    /// Earlier siblings of ancestors can be affected.
+    pub ancestor_earlier_siblings: bool,
+    /// Assigned elements matched by `::slotted(...)` can be affected.
+    pub slotted_elements: bool,
+    /// Exposed part elements matched by `::part(...)` can be affected.
+    pub parts: bool,
+}
+
 /// Conservative query result for one changed class/id/attribute/state token.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct LightmountDependencyQueryResult {
@@ -344,6 +372,56 @@ impl LightmountDependencyQueryResult {
                 .kinds
                 .iter()
                 .any(|kind| matches!(kind, LightmountDependencyKind::SlottedElements))
+    }
+
+    /// Returns the fallback-root categories this query can affect.
+    #[inline]
+    pub fn context_root_flags(&self) -> LightmountDependencyContextRootFlags {
+        let mut flags = LightmountDependencyContextRootFlags {
+            requires_source_fallback: self.requires_fallback(),
+            ..LightmountDependencyContextRootFlags::default()
+        };
+        for kind in &self.kinds {
+            match kind {
+                LightmountDependencyKind::Element
+                | LightmountDependencyKind::ElementAndDescendants
+                | LightmountDependencyKind::Descendants => {
+                    flags.local_subtree = true;
+                },
+                LightmountDependencyKind::Siblings => {
+                    flags.following_siblings = true;
+                },
+                LightmountDependencyKind::SlottedElements => {
+                    flags.slotted_elements = true;
+                },
+                LightmountDependencyKind::Parts => {
+                    flags.parts = true;
+                },
+                LightmountDependencyKind::RelativeAncestors
+                | LightmountDependencyKind::RelativeParent => {
+                    flags.ancestor_chain = true;
+                },
+                LightmountDependencyKind::RelativePrevSibling => {
+                    flags.direct_previous_sibling_relative = true;
+                    flags.previous_sibling = true;
+                },
+                LightmountDependencyKind::RelativeEarlierSibling => {
+                    flags.earlier_siblings = true;
+                },
+                LightmountDependencyKind::RelativeAncestorPrevSibling => {
+                    flags.ancestor_chain = true;
+                    flags.ancestor_previous_siblings = true;
+                },
+                LightmountDependencyKind::RelativeAncestorEarlierSibling => {
+                    flags.ancestor_chain = true;
+                    flags.ancestor_earlier_siblings = true;
+                },
+                LightmountDependencyKind::Scope => {
+                    flags.requires_source_fallback = true;
+                },
+            }
+        }
+        flags
     }
 }
 
@@ -1105,6 +1183,33 @@ mod tests {
         assert!(ancestor.has_relative_selector_dependency());
         assert!(!ancestor.has_relative_previous_sibling_dependency());
         assert!(!ancestor.has_only_direct_relative_previous_sibling_dependency());
+    }
+
+    #[test]
+    fn lightmount_dependency_query_result_exposes_context_root_flags() {
+        let mut query = LightmountDependencyQueryResult::default();
+        query.add_kind(LightmountDependencyKind::ElementAndDescendants);
+        query.add_kind(LightmountDependencyKind::Siblings);
+        query.add_kind(LightmountDependencyKind::SlottedElements);
+        query.add_kind(LightmountDependencyKind::Parts);
+        query.add_kind(LightmountDependencyKind::RelativePrevSibling);
+        query.add_kind(LightmountDependencyKind::RelativeAncestorEarlierSibling);
+        let flags = query.context_root_flags();
+
+        assert!(flags.local_subtree);
+        assert!(flags.following_siblings);
+        assert!(flags.slotted_elements);
+        assert!(flags.parts);
+        assert!(flags.direct_previous_sibling_relative);
+        assert!(flags.previous_sibling);
+        assert!(flags.ancestor_chain);
+        assert!(flags.ancestor_earlier_siblings);
+        assert!(!flags.earlier_siblings);
+        assert!(!flags.ancestor_previous_siblings);
+        assert!(!flags.requires_source_fallback);
+
+        query.add_kind(LightmountDependencyKind::Scope);
+        assert!(query.context_root_flags().requires_source_fallback);
     }
 
     #[test]
