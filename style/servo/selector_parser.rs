@@ -1058,6 +1058,8 @@ impl DerefMut for SnapshotMap {
 pub struct ServoElementSnapshot {
     /// The stored state of the element.
     pub state: Option<ElementState>,
+    /// The stored custom states of the element.
+    pub custom_states: Option<Vec<AtomIdent>>,
     /// The set of stored attributes and its values.
     pub attrs: Option<Vec<(AttrIdentifier, AttrValue)>>,
     /// The set of changed attributes and its values.
@@ -1179,20 +1181,28 @@ impl ElementSnapshot for ServoElementSnapshot {
     /// Returns true if the snapshot has stored state for custom states
     #[inline]
     fn has_custom_states(&self) -> bool {
-        false
+        self.custom_states.is_some()
     }
 
     /// Returns true if the snapshot has a given CustomState
     #[inline]
-    fn has_custom_state(&self, _state: &AtomIdent) -> bool {
-        false
+    fn has_custom_state(&self, state: &AtomIdent) -> bool {
+        self.custom_states
+            .as_ref()
+            .is_some_and(|states| states.iter().any(|candidate| candidate == state))
     }
 
     #[inline]
-    fn each_custom_state<F>(&self, mut _callback: F)
+    fn each_custom_state<F>(&self, mut callback: F)
     where
         F: FnMut(&AtomIdent),
     {
+        let Some(states) = &self.custom_states else {
+            return;
+        };
+        for state in states {
+            callback(state);
+        }
     }
 }
 

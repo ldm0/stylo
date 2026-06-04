@@ -14,6 +14,7 @@ use crate::invalidation::element::invalidation_map::{
     StateDependency,
 };
 use crate::selector_map::SelectorMap;
+use crate::values::AtomIdent;
 use crate::{Atom, LocalName};
 use dom::ElementState;
 
@@ -264,6 +265,7 @@ pub struct LightmountDependencyInvalidationSummary {
     type_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
     universal_dependency: LightmountDependencyQueryResult,
     attribute_dependencies: Vec<(LocalName, LightmountDependencyQueryResult)>,
+    custom_state_dependencies: Vec<(AtomIdent, LightmountDependencyQueryResult)>,
     state_dependencies: Vec<(u64, LightmountDependencyQueryResult)>,
     unknown_state_dependency_bits: u64,
     focus_dependency: LightmountDependencyQueryResult,
@@ -327,6 +329,14 @@ impl LightmountDependencyInvalidationSummary {
         }
     }
 
+    fn note_custom_state_dependency(
+        &mut self,
+        state: AtomIdent,
+        result: LightmountDependencyQueryResult,
+    ) {
+        lightmount_note_keyed_dependency(&mut self.custom_state_dependencies, state, result);
+    }
+
     pub(crate) fn note_nth_of_class_dependency(&mut self, class: Atom) {
         self.note_class_dependency(class, lightmount_nth_of_dependency_query_result());
     }
@@ -373,6 +383,9 @@ impl LightmountDependencyInvalidationSummary {
         }
         for (local_name, result) in other.type_dependencies {
             self.note_type_dependency(local_name, result);
+        }
+        for (state, result) in other.custom_state_dependencies {
+            self.note_custom_state_dependency(state, result);
         }
         self.universal_dependency.extend(other.universal_dependency);
         for (state_bits, result) in other.state_dependencies {
@@ -440,6 +453,14 @@ impl LightmountDependencyInvalidationSummary {
         result
     }
 
+    /// Query dependencies for a changed CSS custom state.
+    pub fn query_custom_state(&self, state: &AtomIdent) -> LightmountDependencyQueryResult {
+        self.custom_state_dependencies
+            .iter()
+            .find_map(|(candidate, result)| (candidate == state).then(|| result.clone()))
+            .unwrap_or_default()
+    }
+
     /// Query dependencies for focus-like state changes.
     pub fn query_focus(&self) -> LightmountDependencyQueryResult {
         self.focus_dependency.clone()
@@ -472,6 +493,11 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(self.id_dependencies.iter())
                 .map(|(_, result)| result)
                 .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+                .chain(
+                    self.custom_state_dependencies
+                        .iter()
+                        .map(|(_, result)| result),
+                )
                 .chain(self.state_dependencies.iter().map(|(_, result)| result))
                 .chain(std::iter::once(&self.focus_dependency))
                 .chain(std::iter::once(&self.focus_within_dependency))
@@ -497,6 +523,11 @@ impl LightmountDependencyInvalidationSummary {
                 .chain(self.id_dependencies.iter())
                 .map(|(_, result)| result)
                 .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+                .chain(
+                    self.custom_state_dependencies
+                        .iter()
+                        .map(|(_, result)| result),
+                )
                 .chain(self.state_dependencies.iter().map(|(_, result)| result))
                 .chain(std::iter::once(&self.focus_dependency))
                 .chain(std::iter::once(&self.focus_within_dependency))
@@ -627,10 +658,11 @@ pub(crate) fn lightmount_dependency_summary_for_invalidation_map(
             lightmount_dependency_query_result_for_dependencies(dependencies),
         );
     }
-    for (_, dependencies) in map.custom_state_affecting_selectors.iter() {
-        if lightmount_dependency_query_result_for_dependencies(dependencies).has_any_dependency() {
-            summary.mark_unknown_dependency();
-        }
+    for (state, dependencies) in map.custom_state_affecting_selectors.iter() {
+        summary.note_custom_state_dependency(
+            state.clone(),
+            lightmount_dependency_query_result_for_dependencies(dependencies),
+        );
     }
     lightmount_collect_state_dependencies_from_selector_map(
         &map.state_affecting_selectors,
