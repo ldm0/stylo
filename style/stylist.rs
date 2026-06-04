@@ -2483,9 +2483,9 @@ impl MallocSizeOf for ExtraStyleData {
 }
 
 pub use crate::lightmount_invalidation::{
-    LightmountDependencyFallbackReason, LightmountDependencyInvalidationSummary,
-    LightmountDependencyKind, LightmountDependencyQueryResult,
-    LightmountSiblingInvalidationSummary,
+    LightmountDependencyFallbackReason, LightmountDependencyFallbackRootPolicy,
+    LightmountDependencyInvalidationSummary, LightmountDependencyKind,
+    LightmountDependencyQueryResult, LightmountSiblingInvalidationSummary,
 };
 
 /// SelectorMapEntry implementation for use in our revalidation selector map.

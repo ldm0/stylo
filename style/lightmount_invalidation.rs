@@ -164,6 +164,15 @@ pub enum LightmountDependencyFallbackReason {
     NestedRelativeSelectorDependency,
 }
 
+/// Which fallback roots may be used when a dependency query is not exact.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountDependencyFallbackRootPolicy {
+    /// Mutation-context roots are sufficient as the conservative cleanup target.
+    ContextRoots,
+    /// The caller must use source-local or source-scope fallback roots.
+    SourceFallback,
+}
+
 /// Conservative query result for one changed class/id/attribute/state token.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub struct LightmountDependencyQueryResult {
@@ -226,6 +235,24 @@ impl LightmountDependencyQueryResult {
     #[inline]
     pub fn requires_fallback(&self) -> bool {
         !self.fallback_reasons.is_empty()
+    }
+
+    /// Returns the fallback-root policy for this dependency query.
+    #[inline]
+    pub fn fallback_root_policy(&self) -> LightmountDependencyFallbackRootPolicy {
+        if !self.fallback_reasons.is_empty()
+            && self.fallback_reasons.iter().all(|reason| {
+                matches!(
+                    reason,
+                    LightmountDependencyFallbackReason::NestedRelativeSelectorDependency
+                        | LightmountDependencyFallbackReason::NthOfDependency
+                )
+            })
+        {
+            LightmountDependencyFallbackRootPolicy::ContextRoots
+        } else {
+            LightmountDependencyFallbackRootPolicy::SourceFallback
+        }
     }
 
     /// Returns whether the query can affect following sibling invalidation.
@@ -949,6 +976,10 @@ mod tests {
             result.fallback_reasons(),
             &[LightmountDependencyFallbackReason::FullSelector]
         );
+        assert_eq!(
+            result.fallback_root_policy(),
+            LightmountDependencyFallbackRootPolicy::SourceFallback
+        );
         assert!(result.kinds().is_empty());
     }
 
@@ -1015,6 +1046,10 @@ mod tests {
             class_result.fallback_reasons(),
             &[LightmountDependencyFallbackReason::NthOfDependency]
         );
+        assert_eq!(
+            class_result.fallback_root_policy(),
+            LightmountDependencyFallbackRootPolicy::ContextRoots
+        );
         assert!(!summary.query_class(&other_class).has_any_dependency());
         assert_eq!(
             summary.query_id(&id).kinds(),
@@ -1042,6 +1077,10 @@ mod tests {
         assert!(item_result
             .fallback_reasons()
             .contains(&LightmountDependencyFallbackReason::NestedRelativeSelectorDependency));
+        assert_eq!(
+            item_result.fallback_root_policy(),
+            LightmountDependencyFallbackRootPolicy::ContextRoots
+        );
 
         let child_result = summary.query_class(&Atom::from("child"));
         assert!(child_result.has_any_dependency());
@@ -1049,6 +1088,10 @@ mod tests {
         assert!(child_result
             .fallback_reasons()
             .contains(&LightmountDependencyFallbackReason::NestedRelativeSelectorDependency));
+        assert_eq!(
+            child_result.fallback_root_policy(),
+            LightmountDependencyFallbackRootPolicy::ContextRoots
+        );
     }
 
     #[test]
