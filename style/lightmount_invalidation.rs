@@ -287,6 +287,55 @@ impl LightmountDependencyQueryResult {
             })
     }
 
+    /// Returns whether this query can affect relative selector anchors.
+    #[inline]
+    pub fn has_relative_selector_dependency(&self) -> bool {
+        self.kinds.iter().any(|kind| {
+            matches!(
+                kind,
+                LightmountDependencyKind::RelativeAncestors
+                    | LightmountDependencyKind::RelativeParent
+                    | LightmountDependencyKind::RelativePrevSibling
+                    | LightmountDependencyKind::RelativeEarlierSibling
+                    | LightmountDependencyKind::RelativeAncestorPrevSibling
+                    | LightmountDependencyKind::RelativeAncestorEarlierSibling
+            )
+        })
+    }
+
+    /// Returns whether this query can affect previous-sibling relative selector
+    /// anchors.
+    #[inline]
+    pub fn has_relative_previous_sibling_dependency(&self) -> bool {
+        self.kinds.iter().any(|kind| {
+            matches!(
+                kind,
+                LightmountDependencyKind::RelativePrevSibling
+                    | LightmountDependencyKind::RelativeEarlierSibling
+                    | LightmountDependencyKind::RelativeAncestorPrevSibling
+                    | LightmountDependencyKind::RelativeAncestorEarlierSibling
+            )
+        })
+    }
+
+    /// Returns whether this query is limited to a direct previous-sibling
+    /// relative dependency plus the following-sibling dependency Stylo records
+    /// for `+`.
+    #[inline]
+    pub fn has_only_direct_relative_previous_sibling_dependency(&self) -> bool {
+        !self.kinds.is_empty()
+            && self.kinds.iter().all(|kind| {
+                matches!(
+                    kind,
+                    LightmountDependencyKind::RelativePrevSibling
+                        | LightmountDependencyKind::Siblings
+                )
+            })
+            && self
+                .kinds
+                .contains(&LightmountDependencyKind::RelativePrevSibling)
+    }
+
     /// Returns whether this query can affect `::slotted(...)` invalidation.
     #[inline]
     pub fn has_slotted_dependency(&self) -> bool {
@@ -1034,6 +1083,28 @@ mod tests {
             sibling.fallback_or_shape_reasons(),
             vec![LightmountDependencyFallbackReason::UnsupportedDependency]
         );
+    }
+
+    #[test]
+    fn lightmount_dependency_query_result_exposes_relative_shape_predicates() {
+        let mut direct_previous = LightmountDependencyQueryResult::default();
+        direct_previous.add_kind(LightmountDependencyKind::RelativePrevSibling);
+        direct_previous.add_kind(LightmountDependencyKind::Siblings);
+        assert!(direct_previous.has_relative_selector_dependency());
+        assert!(direct_previous.has_relative_previous_sibling_dependency());
+        assert!(direct_previous.has_only_direct_relative_previous_sibling_dependency());
+
+        let mut ancestor_previous = LightmountDependencyQueryResult::default();
+        ancestor_previous.add_kind(LightmountDependencyKind::RelativeAncestorPrevSibling);
+        assert!(ancestor_previous.has_relative_selector_dependency());
+        assert!(ancestor_previous.has_relative_previous_sibling_dependency());
+        assert!(!ancestor_previous.has_only_direct_relative_previous_sibling_dependency());
+
+        let mut ancestor = LightmountDependencyQueryResult::default();
+        ancestor.add_kind(LightmountDependencyKind::RelativeAncestors);
+        assert!(ancestor.has_relative_selector_dependency());
+        assert!(!ancestor.has_relative_previous_sibling_dependency());
+        assert!(!ancestor.has_only_direct_relative_previous_sibling_dependency());
     }
 
     #[test]
