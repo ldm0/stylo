@@ -187,6 +187,54 @@ pub fn lightmount_dependency_fallback_reason_for_dependency(
     }
 }
 
+/// Return whether Lightmount's retained invalidation processor can represent
+/// this dependency without source fallback.
+#[inline]
+pub fn lightmount_dependency_supported_by_retained_processor(dependency: &Dependency) -> bool {
+    if !matches!(
+        dependency.invalidation_kind(),
+        DependencyInvalidationKind::Normal(_) | DependencyInvalidationKind::Scope(_)
+    ) {
+        return false;
+    }
+    dependency.next.as_ref().is_none_or(|dependencies| {
+        dependencies
+            .as_ref()
+            .slice()
+            .iter()
+            .all(lightmount_dependency_supported_by_retained_processor)
+    })
+}
+
+/// Return whether an empty result for this dependency can be treated as an exact
+/// no-op by Lightmount's retained invalidation processor.
+#[inline]
+pub fn lightmount_dependency_empty_result_supported_by_retained_processor(
+    dependency: &Dependency,
+) -> bool {
+    if !matches!(
+        dependency.invalidation_kind(),
+        DependencyInvalidationKind::Scope(_)
+            | DependencyInvalidationKind::Normal(
+                NormalDependencyInvalidationKind::Element
+                    | NormalDependencyInvalidationKind::ElementAndDescendants
+                    | NormalDependencyInvalidationKind::Descendants
+                    | NormalDependencyInvalidationKind::Siblings
+                    | NormalDependencyInvalidationKind::SlottedElements
+                    | NormalDependencyInvalidationKind::Parts
+            )
+    ) {
+        return false;
+    }
+    dependency.next.as_ref().is_none_or(|dependencies| {
+        dependencies
+            .as_ref()
+            .slice()
+            .iter()
+            .all(lightmount_dependency_empty_result_supported_by_retained_processor)
+    })
+}
+
 /// Which fallback roots may be used when a dependency query is not exact.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LightmountDependencyFallbackRootPolicy {
@@ -1094,6 +1142,7 @@ mod tests {
     use crate::invalidation::element::invalidation_map::note_selector_for_invalidation;
     use crate::selector_parser::SelectorParser;
     use crate::stylesheets::UrlExtraData;
+    use servo_arc::ThinArc;
 
     fn lightmount_dependency_summary_for_selector(
         selector: &str,
@@ -1264,6 +1313,68 @@ mod tests {
                 DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Element)
             )),
             LightmountDependencyFallbackReason::UnsupportedDependency
+        );
+    }
+
+    #[test]
+    fn lightmount_dependency_processor_support_rejects_unsupported_shapes() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let selector = SelectorParser::parse_author_origin_no_namespace(".subject", &url_data)
+            .expect("selector should parse")
+            .slice()[0]
+            .clone();
+        let dependency_for_kind = |kind| Dependency::new(selector.clone(), 0, None, kind);
+
+        let normal = dependency_for_kind(DependencyInvalidationKind::Normal(
+            NormalDependencyInvalidationKind::ElementAndDescendants,
+        ));
+        assert!(lightmount_dependency_supported_by_retained_processor(
+            &normal
+        ));
+        assert!(lightmount_dependency_empty_result_supported_by_retained_processor(&normal));
+
+        let scope = dependency_for_kind(DependencyInvalidationKind::Scope(
+            ScopeDependencyInvalidationKind::ScopeEnd,
+        ));
+        assert!(lightmount_dependency_supported_by_retained_processor(
+            &scope
+        ));
+        assert!(lightmount_dependency_empty_result_supported_by_retained_processor(&scope));
+
+        let full = dependency_for_kind(DependencyInvalidationKind::FullSelector);
+        assert!(!lightmount_dependency_supported_by_retained_processor(
+            &full
+        ));
+        assert!(!lightmount_dependency_empty_result_supported_by_retained_processor(&full));
+
+        let relative = dependency_for_kind(DependencyInvalidationKind::Relative(
+            RelativeDependencyInvalidationKind::Ancestors,
+        ));
+        assert!(!lightmount_dependency_supported_by_retained_processor(
+            &relative
+        ));
+        assert!(!lightmount_dependency_empty_result_supported_by_retained_processor(&relative));
+
+        let full_next = ThinArc::from_header_and_iter(
+            (),
+            [dependency_for_kind(
+                DependencyInvalidationKind::FullSelector,
+            )]
+            .into_iter(),
+        );
+        let normal_with_unsupported_next = Dependency::new(
+            selector,
+            0,
+            Some(full_next),
+            DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Element),
+        );
+        assert!(!lightmount_dependency_supported_by_retained_processor(
+            &normal_with_unsupported_next
+        ));
+        assert!(
+            !lightmount_dependency_empty_result_supported_by_retained_processor(
+                &normal_with_unsupported_next
+            )
         );
     }
 

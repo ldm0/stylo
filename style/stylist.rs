@@ -2483,7 +2483,9 @@ impl MallocSizeOf for ExtraStyleData {
 }
 
 pub use crate::lightmount_invalidation::{
-    lightmount_dependency_fallback_reason_for_dependency, LightmountDependencyFallbackReason,
+    lightmount_dependency_empty_result_supported_by_retained_processor,
+    lightmount_dependency_fallback_reason_for_dependency,
+    lightmount_dependency_supported_by_retained_processor, LightmountDependencyFallbackReason,
     LightmountDependencyFallbackRootPolicy, LightmountDependencyInvalidationSummary,
     LightmountDependencyKind, LightmountDependencyQueryResult,
     LightmountSiblingInvalidationSummary,
