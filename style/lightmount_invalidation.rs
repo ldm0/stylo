@@ -139,8 +139,6 @@ pub enum LightmountDependencyKind {
     RelativeAncestorEarlierSibling,
     /// Scope dependencies can be invalidated.
     Scope,
-    /// Full-selector invalidation is required.
-    FullSelector,
 }
 
 /// Reason a dependency query cannot be represented as exact dependency kinds.
