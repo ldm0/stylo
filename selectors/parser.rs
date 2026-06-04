@@ -289,11 +289,6 @@ pub trait Parser<'i> {
         false
     }
 
-    /// Whether to parse the selector list of nth-child() or nth-last-child().
-    fn parse_nth_child_of(&self) -> bool {
-        false
-    }
-
     /// Whether to parse `:is` and `:where` pseudo-classes.
     fn parse_is_and_where(&self) -> bool {
         false
@@ -3549,7 +3544,7 @@ where
         is_function: true,
         an_plus_b: AnPlusB(a, b),
     };
-    if !parser.parse_nth_child_of() || ty.is_of_type() {
+    if ty.is_of_type() {
         return Ok(Component::Nth(nth_data));
     }
 
@@ -3979,10 +3974,6 @@ pub mod tests {
             true
         }
 
-        fn parse_nth_child_of(&self) -> bool {
-            true
-        }
-
         fn parse_is_and_where(&self) -> bool {
             true
         }
@@ -4193,6 +4184,21 @@ pub mod tests {
             Ok(SelectorList::from_vec(vec![selector.clone()]))
         );
         assert!(selector.matches_featureless_host(true).may_match());
+    }
+
+    #[test]
+    fn test_nth_child_of_selector_list_parses_without_opt_in() {
+        assert!(parse_expected(
+            "li:nth-child(odd of .foo)",
+            Some("li:nth-child(2n+1 of .foo)")
+        )
+        .is_ok());
+        assert!(parse_expected(
+            "li:nth-last-child(2n + 1 of :not(.foo))",
+            Some("li:nth-last-child(2n+1 of :not(.foo))")
+        )
+        .is_ok());
+        assert!(parse("li:nth-of-type(odd of .foo)").is_err());
     }
 
     const MATHML: &str = "http://www.w3.org/1998/Math/MathML";

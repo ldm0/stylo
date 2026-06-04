@@ -743,11 +743,6 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
     type Error = StyleParseErrorKind<'i>;
 
     #[inline]
-    fn parse_nth_child_of(&self) -> bool {
-        true
-    }
-
-    #[inline]
     fn parse_is_and_where(&self) -> bool {
         true
     }
