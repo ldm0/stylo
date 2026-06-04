@@ -780,13 +780,13 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         &self,
         name: CowRcStr<'i>,
         parser: &mut CssParser<'i, 't>,
-        after_part: bool,
+        _after_part: bool,
     ) -> Result<NonTSPseudoClass, ParseError<'i>> {
         let pseudo_class = match_ignore_ascii_case! { &name,
-            "lang" if !after_part => {
+            "lang" => {
                 NonTSPseudoClass::Lang(parser.expect_ident_or_string()?.as_ref().into())
             },
-            "dir" if !after_part => {
+            "dir" => {
                 NonTSPseudoClass::Dir(Direction::parse(parser)?)
             },
             "state" => {
