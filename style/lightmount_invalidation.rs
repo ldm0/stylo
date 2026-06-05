@@ -208,6 +208,133 @@ pub enum LightmountSourceInvalidationFallbackReason {
     MissingRetainedCascadeData,
 }
 
+/// Whether a retained source had fallback roots available while producing its
+/// source-local result.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountSourceFallbackRootAvailability {
+    /// Source fallback roots were available.
+    Available {
+        /// Number of available fallback roots.
+        root_count: usize,
+    },
+    /// Source fallback roots were required but unavailable.
+    Missing,
+}
+
+/// How one retained source invalidation input was resolved.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountSourceStyleInvalidationSourceResultKind {
+    /// The retained invalidator produced an exact-enough result for this source.
+    Exact,
+    /// The source intentionally carried fallback roots without retained queries.
+    FallbackOnly,
+    /// The source used mutation-context roots for a dependency that Stylo still
+    /// cannot report as exact affected handles.
+    ContextFallback,
+    /// The source fell back to the wider source scope because no narrower
+    /// cause/source-local roots could represent the invalidation safely.
+    SourceScopeFallback,
+    /// The batch needed source fallback roots, but none were available.
+    MissingFallbackRoots,
+    /// The retained style system was unavailable for this source query.
+    MissingRetainedStyleSystem,
+    /// The retained style system was available, but did not have per-source
+    /// cascade data for this source query.
+    MissingRetainedCascadeData,
+    /// The source could not be answered exactly and used fallback roots, or
+    /// requested a wider fallback when no source-local fallback roots were
+    /// available. See fallback reasons on the source result for why.
+    Fallback,
+}
+
+/// One retained stylesheet source input for a source-aware invalidation batch.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum LightmountRetainedSourceStyleInvalidationKind {
+    /// Run retained Stylo invalidation queries against this source's cascade data.
+    RetainedQueries,
+    /// Apply the source's fallback roots without retained queries.
+    FallbackOnly,
+    /// Apply mutation-context fallback roots without retained queries.
+    ContextFallback,
+    /// Apply fallback roots from a conservative source-scope fallback.
+    SourceScopeFallback,
+    /// The source required fallback roots, but none were available.
+    MissingFallbackRoots,
+}
+
+impl LightmountRetainedSourceStyleInvalidationKind {
+    /// Merge two fallback kinds using the conservative priority Lightmount needs
+    /// when co-batching source dependency targets.
+    pub fn merged_with(self, incoming: Self) -> Self {
+        if self == Self::RetainedQueries || incoming == Self::RetainedQueries {
+            return Self::RetainedQueries;
+        }
+        if self == Self::MissingFallbackRoots || incoming == Self::MissingFallbackRoots {
+            return Self::MissingFallbackRoots;
+        }
+        if self == Self::SourceScopeFallback || incoming == Self::SourceScopeFallback {
+            return Self::SourceScopeFallback;
+        }
+        if self == Self::FallbackOnly || incoming == Self::FallbackOnly {
+            return Self::FallbackOnly;
+        }
+        if self == Self::ContextFallback || incoming == Self::ContextFallback {
+            return Self::ContextFallback;
+        }
+        Self::FallbackOnly
+    }
+
+    /// Returns whether this kind carries retained invalidation queries.
+    #[inline]
+    pub fn carries_retained_queries(self) -> bool {
+        self == Self::RetainedQueries
+    }
+
+    /// Returns whether this kind can be represented as a fallback-root target.
+    #[inline]
+    pub fn can_target_fallback_root(self) -> bool {
+        matches!(self, Self::FallbackOnly | Self::SourceScopeFallback)
+    }
+
+    /// Returns the source result kind represented by this retained source kind.
+    #[inline]
+    pub fn fallback_source_result_kind(
+        self,
+        has_fallback_reasons: bool,
+    ) -> LightmountSourceStyleInvalidationSourceResultKind {
+        match self {
+            Self::RetainedQueries => LightmountSourceStyleInvalidationSourceResultKind::Fallback,
+            Self::FallbackOnly if has_fallback_reasons => {
+                LightmountSourceStyleInvalidationSourceResultKind::Fallback
+            },
+            Self::FallbackOnly => LightmountSourceStyleInvalidationSourceResultKind::FallbackOnly,
+            Self::ContextFallback => {
+                LightmountSourceStyleInvalidationSourceResultKind::ContextFallback
+            },
+            Self::SourceScopeFallback => {
+                LightmountSourceStyleInvalidationSourceResultKind::SourceScopeFallback
+            },
+            Self::MissingFallbackRoots => {
+                LightmountSourceStyleInvalidationSourceResultKind::MissingFallbackRoots
+            },
+        }
+    }
+
+    /// Returns the fallback reason implied directly by this kind, if any.
+    #[inline]
+    pub fn fallback_reason(self) -> Option<LightmountSourceInvalidationFallbackReason> {
+        match self {
+            Self::SourceScopeFallback => {
+                Some(LightmountSourceInvalidationFallbackReason::SourceScopeFallback)
+            },
+            Self::MissingFallbackRoots => {
+                Some(LightmountSourceInvalidationFallbackReason::MissingFallbackRoots)
+            },
+            Self::RetainedQueries | Self::FallbackOnly | Self::ContextFallback => None,
+        }
+    }
+}
+
 impl From<LightmountDependencyFallbackReason> for LightmountSourceInvalidationFallbackReason {
     fn from(reason: LightmountDependencyFallbackReason) -> Self {
         match reason {
@@ -1454,6 +1581,59 @@ mod tests {
                 source_reason
             );
         }
+    }
+
+    #[test]
+    fn lightmount_retained_source_invalidation_kind_exposes_result_policy() {
+        use LightmountRetainedSourceStyleInvalidationKind::{
+            ContextFallback, FallbackOnly, MissingFallbackRoots, RetainedQueries,
+            SourceScopeFallback,
+        };
+
+        assert_eq!(
+            ContextFallback.merged_with(ContextFallback),
+            ContextFallback
+        );
+        assert_eq!(ContextFallback.merged_with(FallbackOnly), FallbackOnly);
+        assert_eq!(
+            FallbackOnly.merged_with(SourceScopeFallback),
+            SourceScopeFallback
+        );
+        assert_eq!(
+            SourceScopeFallback.merged_with(MissingFallbackRoots),
+            MissingFallbackRoots
+        );
+        assert_eq!(
+            MissingFallbackRoots.merged_with(RetainedQueries),
+            RetainedQueries
+        );
+        assert!(RetainedQueries.carries_retained_queries());
+        assert!(!FallbackOnly.carries_retained_queries());
+        assert!(FallbackOnly.can_target_fallback_root());
+        assert!(SourceScopeFallback.can_target_fallback_root());
+        assert!(!ContextFallback.can_target_fallback_root());
+
+        assert_eq!(
+            ContextFallback.fallback_source_result_kind(true),
+            LightmountSourceStyleInvalidationSourceResultKind::ContextFallback
+        );
+        assert_eq!(
+            FallbackOnly.fallback_source_result_kind(false),
+            LightmountSourceStyleInvalidationSourceResultKind::FallbackOnly
+        );
+        assert_eq!(
+            FallbackOnly.fallback_source_result_kind(true),
+            LightmountSourceStyleInvalidationSourceResultKind::Fallback
+        );
+        assert_eq!(
+            SourceScopeFallback.fallback_reason(),
+            Some(LightmountSourceInvalidationFallbackReason::SourceScopeFallback)
+        );
+        assert_eq!(
+            MissingFallbackRoots.fallback_reason(),
+            Some(LightmountSourceInvalidationFallbackReason::MissingFallbackRoots)
+        );
+        assert_eq!(FallbackOnly.fallback_reason(), None);
     }
 
     #[test]
