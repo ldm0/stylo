@@ -1458,6 +1458,26 @@ mod tests {
     }
 
     #[test]
+    fn lightmount_dependency_summary_collects_lang_and_dir_attribute_pseudos() {
+        let summary = lightmount_dependency_summary_for_selector(
+            "x-host::part(label):lang(fr), x-host::part(label):dir(rtl)",
+        );
+
+        for attribute in ["lang", "dir"] {
+            let result = summary.query_attribute(&LocalName::from(attribute));
+            assert!(
+                result.has_any_dependency(),
+                "missing dependency for {attribute}"
+            );
+            assert!(
+                result.fallback_reasons().is_empty(),
+                "attribute dependency should not require fallback for {attribute}: {:?}",
+                result.fallback_reasons()
+            );
+        }
+    }
+
+    #[test]
     fn lightmount_dependency_query_result_keeps_fallback_reasons_out_of_kinds() {
         let mut result = LightmountDependencyQueryResult::default();
         result.add_fallback_reason(LightmountDependencyFallbackReason::FullSelector);

@@ -733,6 +733,7 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
             return add_attr_dependency(local_name!("size"), collector);
         },
         NonTSPseudoClass::Lang(..) => local_name!("lang"),
+        NonTSPseudoClass::Dir(..) => local_name!("dir"),
         NonTSPseudoClass::AnyLink | NonTSPseudoClass::Link | NonTSPseudoClass::Visited => {
             local_name!("href")
         },
