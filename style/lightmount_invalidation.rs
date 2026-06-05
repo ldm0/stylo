@@ -1403,6 +1403,60 @@ mod tests {
         summary
     }
 
+    fn parse_lightmount_servo_selector(selector: &str) {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        SelectorParser::parse_author_origin_no_namespace(selector, &url_data)
+            .unwrap_or_else(|error| panic!("selector should parse: {selector}: {error:?}"));
+    }
+
+    #[test]
+    fn lightmount_servo_parser_accepts_migrated_selector_capabilities() {
+        for selector in [
+            "x-host::part(label):lang(en)",
+            "x-host::part(label):dir(ltr)",
+            "video:playing",
+            "video:paused",
+            "video:seeking",
+            "video:muted",
+            ":heading",
+            ":heading(1, 2, 6)",
+            "input:in-range",
+            "input:out-of-range",
+            "li:nth-child(odd of :not(.current))",
+            "li:nth-last-child(2n+1 of .item)",
+        ] {
+            parse_lightmount_servo_selector(selector);
+        }
+    }
+
+    #[test]
+    fn lightmount_dependency_summary_collects_migrated_state_pseudos() {
+        let summary = lightmount_dependency_summary_for_selector(
+            "video:playing, video:paused, video:seeking, video:muted, \
+             :heading, :heading(1, 2, 6), input:in-range, input:out-of-range",
+        );
+
+        for state in [
+            ElementState::PAUSED,
+            ElementState::SEEKING,
+            ElementState::MUTED,
+            ElementState::HEADING_LEVEL_BITS,
+            ElementState::INRANGE,
+            ElementState::OUTOFRANGE,
+        ] {
+            let result = summary.query_state(state);
+            assert!(
+                result.has_any_dependency(),
+                "missing dependency for {state:?}"
+            );
+            assert!(
+                result.fallback_reasons().is_empty(),
+                "state dependency should not require fallback for {state:?}: {:?}",
+                result.fallback_reasons()
+            );
+        }
+    }
+
     #[test]
     fn lightmount_dependency_query_result_keeps_fallback_reasons_out_of_kinds() {
         let mut result = LightmountDependencyQueryResult::default();
