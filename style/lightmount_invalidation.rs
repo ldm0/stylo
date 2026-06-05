@@ -221,6 +221,14 @@ pub enum LightmountSourceFallbackRootAvailability {
     Missing,
 }
 
+impl LightmountSourceFallbackRootAvailability {
+    /// Returns source fallback root availability for a concrete root count.
+    #[inline]
+    pub fn for_root_count(root_count: usize) -> Option<Self> {
+        (root_count > 0).then_some(Self::Available { root_count })
+    }
+}
+
 /// How one retained source invalidation input was resolved.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LightmountSourceStyleInvalidationSourceResultKind {
@@ -318,6 +326,19 @@ impl LightmountRetainedSourceStyleInvalidationKind {
                 LightmountSourceStyleInvalidationSourceResultKind::MissingFallbackRoots
             },
         }
+    }
+
+    /// Returns fallback root availability represented by this source kind and
+    /// the number of fallback roots available to it.
+    #[inline]
+    pub fn fallback_root_availability(
+        self,
+        fallback_root_count: usize,
+    ) -> Option<LightmountSourceFallbackRootAvailability> {
+        if self == Self::MissingFallbackRoots {
+            return Some(LightmountSourceFallbackRootAvailability::Missing);
+        }
+        LightmountSourceFallbackRootAvailability::for_root_count(fallback_root_count)
     }
 
     /// Returns the fallback reason implied directly by this kind, if any.
@@ -1624,6 +1645,27 @@ mod tests {
         assert_eq!(
             FallbackOnly.fallback_source_result_kind(true),
             LightmountSourceStyleInvalidationSourceResultKind::Fallback
+        );
+        assert_eq!(
+            LightmountSourceFallbackRootAvailability::for_root_count(0),
+            None
+        );
+        assert_eq!(
+            LightmountSourceFallbackRootAvailability::for_root_count(2),
+            Some(LightmountSourceFallbackRootAvailability::Available { root_count: 2 })
+        );
+        assert_eq!(FallbackOnly.fallback_root_availability(0), None);
+        assert_eq!(
+            FallbackOnly.fallback_root_availability(2),
+            Some(LightmountSourceFallbackRootAvailability::Available { root_count: 2 })
+        );
+        assert_eq!(
+            MissingFallbackRoots.fallback_root_availability(0),
+            Some(LightmountSourceFallbackRootAvailability::Missing)
+        );
+        assert_eq!(
+            MissingFallbackRoots.fallback_root_availability(2),
+            Some(LightmountSourceFallbackRootAvailability::Missing)
         );
         assert_eq!(
             SourceScopeFallback.fallback_reason(),
