@@ -4799,6 +4799,11 @@ pub mod tests {
     }
 
     #[test]
+    fn test_state_pseudo_on_element_backed_pseudo() {
+        assert!(parse("::details-content:hover").is_ok());
+    }
+
+    #[test]
     fn test_universal() {
         let list = parse_ns(
             "*|*::before",

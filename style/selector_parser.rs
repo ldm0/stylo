@@ -303,4 +303,19 @@ mod tests {
         map.set(&PseudoElement::Marker, 8);
         assert_eq!(map.iter().cloned().collect::<Vec<_>>(), vec![3, 8]);
     }
+
+    #[test]
+    fn servo_parser_accepts_details_content_selector_continuations() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let parse =
+            |selector| SelectorParser::parse_author_origin_no_namespace(selector, &url_data);
+
+        assert!(parse("::details-content::first-line").is_ok());
+        assert!(parse("::details-content:hover").is_ok());
+        assert!(parse("::details-content:lang(en)").is_ok());
+
+        assert!(parse("::details-content:nth-of-type(slot)").is_err());
+        assert!(parse("::details-content:has(a)").is_err());
+        assert!(parse("::details-content::part(a)").is_err());
+    }
 }

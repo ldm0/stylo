@@ -44,13 +44,12 @@ pub enum PseudoElement {
     Checkmark,
     // If/when :first-letter is added, update is_first_letter accordingly.
 
-    // If/when :first-line is added, update is_first_line accordingly.
-
     // If/when ::first-letter or ::first-line are added, adjust our
     // property_restriction implementation to do property filtering for them.
     // Also, make sure the UA sheet has the !important rules some of the
     // APPLIES_TO_PLACEHOLDER properties expect!
     FirstLetter,
+    FirstLine,
 
     // Non-eager pseudos.
     Backdrop,
@@ -91,7 +90,7 @@ pub enum PseudoElement {
 }
 
 /// The count of all pseudo-elements.
-pub const PSEUDO_COUNT: usize = 32;
+pub const PSEUDO_COUNT: usize = 33;
 
 impl ToCss for PseudoElement {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result
@@ -105,6 +104,7 @@ impl ToCss for PseudoElement {
             Selection => dest.write_str("::selection"),
             Checkmark => dest.write_str("::checkmark"),
             FirstLetter => dest.write_str("::first-letter"),
+            FirstLine => dest.write_str("::first-line"),
             Backdrop => dest.write_str("::backdrop"),
             DetailsContent => dest.write_str("::details-content"),
             GrammarError => dest.write_str("::grammar-error"),
@@ -161,6 +161,14 @@ impl ToCss for PseudoElement {
 impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
+    fn accepts_state_pseudo_classes(&self) -> bool {
+        matches!(self, Self::DetailsContent | Self::Picker)
+    }
+
+    fn valid_after_before_or_after(&self) -> bool {
+        matches!(self, Self::Marker)
+    }
+
     fn parses_as_element_backed(&self) -> bool {
         matches!(
             self,
@@ -175,7 +183,7 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
 }
 
 /// The number of eager pseudo-elements. Keep this in sync with cascade_type.
-pub const EAGER_PSEUDO_COUNT: usize = 5;
+pub const EAGER_PSEUDO_COUNT: usize = 6;
 
 impl PseudoElement {
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
@@ -194,39 +202,40 @@ impl PseudoElement {
             PseudoElement::Selection => 2,
             PseudoElement::Checkmark => 3,
             PseudoElement::FirstLetter => 4,
-            PseudoElement::Backdrop => 5,
-            PseudoElement::DetailsContent => 6,
-            PseudoElement::GrammarError => 7,
-            PseudoElement::Highlight(_) => 8,
-            PseudoElement::Marker => 9,
-            PseudoElement::SpellingError => 10,
-            PseudoElement::ViewTransition => 11,
-            PseudoElement::ViewTransitionGroup(_) => 12,
-            PseudoElement::ViewTransitionImagePair(_) => 13,
-            PseudoElement::ViewTransitionOld(_) => 14,
-            PseudoElement::ViewTransitionNew(_) => 15,
-            PseudoElement::ColorSwatch => 16,
-            PseudoElement::FileSelectorButton => 17,
-            PseudoElement::Picker => 18,
-            PseudoElement::PickerIcon => 19,
-            PseudoElement::Placeholder => 20,
-            PseudoElement::SliderFill => 21,
-            PseudoElement::SliderThumb => 22,
-            PseudoElement::SliderTrack => 23,
-            PseudoElement::ServoTextControlInnerContainer => 24,
-            PseudoElement::ServoTextControlInnerEditor => 25,
-            PseudoElement::ServoAnonymousBox => 26,
-            PseudoElement::ServoAnonymousTable => 27,
-            PseudoElement::ServoAnonymousTableCell => 28,
-            PseudoElement::ServoAnonymousTableRow => 29,
-            PseudoElement::ServoTableGrid => 30,
-            PseudoElement::ServoTableWrapper => 31,
+            PseudoElement::FirstLine => 5,
+            PseudoElement::Backdrop => 6,
+            PseudoElement::DetailsContent => 7,
+            PseudoElement::GrammarError => 8,
+            PseudoElement::Highlight(_) => 9,
+            PseudoElement::Marker => 10,
+            PseudoElement::SpellingError => 11,
+            PseudoElement::ViewTransition => 12,
+            PseudoElement::ViewTransitionGroup(_) => 13,
+            PseudoElement::ViewTransitionImagePair(_) => 14,
+            PseudoElement::ViewTransitionOld(_) => 15,
+            PseudoElement::ViewTransitionNew(_) => 16,
+            PseudoElement::ColorSwatch => 17,
+            PseudoElement::FileSelectorButton => 18,
+            PseudoElement::Picker => 19,
+            PseudoElement::PickerIcon => 20,
+            PseudoElement::Placeholder => 21,
+            PseudoElement::SliderFill => 22,
+            PseudoElement::SliderThumb => 23,
+            PseudoElement::SliderTrack => 24,
+            PseudoElement::ServoTextControlInnerContainer => 25,
+            PseudoElement::ServoTextControlInnerEditor => 26,
+            PseudoElement::ServoAnonymousBox => 27,
+            PseudoElement::ServoAnonymousTable => 28,
+            PseudoElement::ServoAnonymousTableCell => 29,
+            PseudoElement::ServoAnonymousTableRow => 30,
+            PseudoElement::ServoTableGrid => 31,
+            PseudoElement::ServoTableWrapper => 32,
         }
     }
 
     /// An array of `None`, one per pseudo-element.
     pub fn pseudo_none_array<T>() -> [Option<T>; PSEUDO_COUNT] {
-        Default::default()
+        std::array::from_fn(|_| None)
     }
 
     /// Creates a pseudo-element from an eager index.
@@ -238,6 +247,7 @@ impl PseudoElement {
             2 => PseudoElement::Selection,
             3 => PseudoElement::Checkmark,
             4 => PseudoElement::FirstLetter,
+            5 => PseudoElement::FirstLine,
             _ => panic!("invalid eager pseudo-element index {i}"),
         }
     }
@@ -287,7 +297,7 @@ impl PseudoElement {
     /// Whether the current pseudo element is :first-line
     #[inline]
     pub fn is_first_line(&self) -> bool {
-        false
+        matches!(self, PseudoElement::FirstLine)
     }
 
     /// Whether this pseudo-element is representing the color swatch
@@ -341,6 +351,7 @@ impl PseudoElement {
             | PseudoElement::Before
             | PseudoElement::Checkmark
             | PseudoElement::FirstLetter
+            | PseudoElement::FirstLine
             | PseudoElement::Selection => PseudoElementCascadeType::Eager,
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
@@ -388,6 +399,7 @@ impl PseudoElement {
     pub fn property_restriction(&self) -> Option<PropertyFlags> {
         Some(match self {
             PseudoElement::FirstLetter => PropertyFlags::APPLIES_TO_FIRST_LETTER,
+            PseudoElement::FirstLine => PropertyFlags::APPLIES_TO_FIRST_LINE,
             PseudoElement::Marker if static_prefs::pref!("layout.css.marker.restricted") => {
                 PropertyFlags::APPLIES_TO_MARKER
             },
@@ -870,6 +882,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "checkmark" => Checkmark,
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
+            "first-line" => FirstLine,
             "grammar-error" => GrammarError,
             "marker" => Marker,
             "details-content" => DetailsContent,
