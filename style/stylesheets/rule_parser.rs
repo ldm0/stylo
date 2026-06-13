@@ -43,8 +43,8 @@ use cssparser::{
 };
 use selectors::parser::{ParseRelative, SelectorList};
 use servo_arc::Arc;
-use style_traits::{ParseError, StyleParseErrorKind};
 use style_traits::arc_slice::ArcSlice;
+use style_traits::{ParseError, StyleParseErrorKind};
 
 /// The information we need particularly to do CSSOM insertRule stuff.
 pub struct InsertRuleContext<'a> {
@@ -720,13 +720,7 @@ impl<'a, 'i> AtRuleParser<'i> for NestedRuleParser<'a, 'i> {
                 AtRulePrelude::FontFace
             },
             "container" if static_prefs::pref!("layout.container-queries.enabled") => {
-                let conditions = input.parse_comma_separated(|input| {
-                    ContainerCondition::parse(&self.context, input)
-                })?;
-                // Container rules must have at least one condition.
-                debug_assert!(!conditions.is_empty());
-                let conditions = ArcSlice::from_iter(conditions.into_iter());
-                AtRulePrelude::Container(conditions)
+                AtRulePrelude::Container(ContainerConditions::parse(&self.context, input)?.0)
             },
             "layer" => {
                 let names = input.try_parse(|input| {
