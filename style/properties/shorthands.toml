@@ -378,9 +378,9 @@ spec = "https://drafts.csswg.org/scroll-animations-1/#view-timeline-shorthand"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
 
 [animation-range]
-engine = "gecko"
 sub_properties = ["animation-range-start", "animation-range-end"]
 spec = "https://drafts.csswg.org/scroll-animations-1/#animation-range"
+servo_pref = "layout.css.scroll-driven-animations.enabled"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
 
 [list-style]
