@@ -1282,22 +1282,22 @@ impl NoCalcLength {
             },
             // Container query lengths. Inherit the limitation from viewport units since
             // we may fall back to them.
-            "cqw" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqw" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqw(value))
             },
-            "cqh" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqh" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqh(value))
             },
-            "cqi" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqi" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqi(value))
             },
-            "cqb" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqb" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqb(value))
             },
-            "cqmin" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqmin" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqmin(value))
             },
-            "cqmax" if !in_page_rule && cfg!(feature = "gecko") => {
+            "cqmax" if !in_page_rule => {
                 Self::ContainerRelative(ContainerRelativeLength::Cqmax(value))
             },
             _ => return Err(()),
