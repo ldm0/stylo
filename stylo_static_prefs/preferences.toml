@@ -35,6 +35,7 @@
 "layout.css.system-ui.enabled" = true
 "layout.css.webkit-fill-available.all-size-properties.enabled" = true
 "layout.css.webkit-fill-available.enabled" = true
+"layout.css.zoom.enabled" = false
 "layout.grid.enabled" = true
 # Negative means auto, 0 disables the thread-pool (main-thread styling),
 # other numbers override as specified.
