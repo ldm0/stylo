@@ -196,16 +196,13 @@ impl Parse for Content {
                     ));
                 },
                 Token::Function(ref name) => {
-                    // FIXME(emilio): counter() / counters() should be valid per spec past
-                    // the alt marker, but it's likely non-trivial to support and other
-                    // browsers don't support it either, so restricting it for now.
                     let result = match_ignore_ascii_case! { &name,
-                        "counter" if alt_start.is_none() => input.parse_nested_block(|input| {
+                        "counter" => input.parse_nested_block(|input| {
                             let name = CustomIdent::parse(input, &[])?;
                             let style = Content::parse_counter_style(context, input);
                             Ok(generics::ContentItem::Counter(name, style))
                         }),
-                        "counters" if alt_start.is_none() => input.parse_nested_block(|input| {
+                        "counters" => input.parse_nested_block(|input| {
                             let name = CustomIdent::parse(input, &[])?;
                             input.expect_comma()?;
                             let separator = input.expect_string()?.as_ref().to_owned().into();
@@ -263,10 +260,73 @@ impl Parse for Content {
         if items.is_empty() {
             return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
-        let alt_start = alt_start.unwrap_or(items.len());
+        let alt_start = match alt_start {
+            Some(alt_start) if alt_start == items.len() => {
+                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            },
+            Some(alt_start) => alt_start,
+            None => items.len(),
+        };
         Ok(generics::Content::Items(generics::GenericContentItems {
             items,
             alt_start,
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::QuirksMode;
+    use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use cssparser::ParserInput;
+    use style_traits::{ParsingMode, ToCss};
+
+    fn parse_content_to_css(input: &str) -> Result<String, ()> {
+        static_prefs::set_pref!("layout.css.content.alt-text.enabled", true);
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            Default::default(),
+            None,
+            None,
+            Default::default(),
+        );
+        let mut input = ParserInput::new(input);
+        let mut parser = Parser::new(&mut input);
+        parser
+            .parse_entirely(|input| Content::parse(&context, input))
+            .map(|content| content.to_css_cssstring())
+            .map_err(|_| ())
+    }
+
+    #[test]
+    fn content_alt_text_accepts_counters() {
+        assert_eq!(
+            parse_content_to_css("\"\" / counter(cnt)").as_deref(),
+            Ok("\"\" / counter(cnt)")
+        );
+        assert_eq!(
+            parse_content_to_css(r#""regular text" / "alt text 1" counter(cnt) "alt text 2""#)
+                .as_deref(),
+            Ok(r#""regular text" / "alt text 1" counter(cnt) "alt text 2""#)
+        );
+        assert_eq!(
+            parse_content_to_css(r#""regular text" / counters(cnt, ".")"#).as_deref(),
+            Ok(r#""regular text" / counters(cnt, ".")"#)
+        );
+    }
+
+    #[test]
+    fn content_alt_text_rejects_empty_or_image_alt() {
+        assert!(parse_content_to_css(r#""regular text" /"#).is_err());
+        assert!(
+            parse_content_to_css(r#"open-quote / url("https://example.test/picture.svg")"#)
+                .is_err()
+        );
     }
 }
