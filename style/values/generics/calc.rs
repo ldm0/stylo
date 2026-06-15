@@ -1823,8 +1823,11 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     // If only one children remains, lift it up, and carry on.
                     replace_self_with!(&mut children[0]);
                 } else {
-                    // Else put our simplified children back.
-                    *children_slot = children.into_boxed_slice().into();
+                    let mut product = Self::Product(children.into_boxed_slice().into());
+                    if let Ok(resolved) = product.resolve() {
+                        product = Self::Leaf(resolved);
+                    }
+                    replace_self_with!(&mut product);
                 }
             },
             Self::Hypot(ref children) => {
@@ -2383,6 +2386,17 @@ mod tests {
         assert_eq!(
             percentage_product.resolve().unwrap(),
             TestLeaf::Percentage(1.6)
+        );
+
+        let mut simplified_length_product = length_product;
+        simplified_length_product.simplify_and_sort();
+        assert_eq!(simplified_length_product, leaf(TestLeaf::Length(1000.0)));
+
+        let mut simplified_percentage_product = percentage_product;
+        simplified_percentage_product.simplify_and_sort();
+        assert_eq!(
+            simplified_percentage_product,
+            leaf(TestLeaf::Percentage(1.6))
         );
 
         let invalid_product = product(vec![
