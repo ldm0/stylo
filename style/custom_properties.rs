@@ -2111,37 +2111,74 @@ fn substitute_all(
                 "Non-custom property has references?"
             );
 
-            // Visit other custom properties...
-            // FIXME: Maybe avoid visiting the same var twice if not needed?
-            for next in &v.references.refs {
-                if next.substitution_kind == SubstitutionFunctionKind::Env {
+            // Visit references on the active substitution path. References are
+            // stored in source order, with nested fallback references following
+            // their outer reference. If the outer reference resolves, its
+            // fallback is unused and must not contribute cycle edges.
+            let mut reference_index = 0;
+            while reference_index < v.references.refs.len() {
+                let next = v.references.refs[reference_index].clone();
+                let has_substitution = match next.substitution_kind {
+                    SubstitutionFunctionKind::Var => {
+                        let registration =
+                            context.stylist.get_custom_property_registration(&next.name);
+                        context.map.get_var(registration, &next.name).is_some()
+                    },
+                    SubstitutionFunctionKind::Env => {
+                        let device = context.stylist.device();
+                        device
+                            .environment()
+                            .get(&next.name, device, &v.url_data)
+                            .is_some()
+                    },
+                    SubstitutionFunctionKind::Attr => {
+                        if context.map.get_attr(&next.name).is_none() {
+                            if let Ok(val) = parse_attribute_value(
+                                &next.name,
+                                &next.attribute_data,
+                                &v.url_data,
+                                attribute_tracker,
+                            ) {
+                                context.map.insert_attr(&next.name, val);
+                            }
+                        }
+                        context.map.get_attr(&next.name).is_some()
+                    },
+                };
+
+                if has_substitution {
+                    match next.substitution_kind {
+                        SubstitutionFunctionKind::Var => {
+                            visit_link(
+                                VarType::Custom(next.name.clone()),
+                                context,
+                                &mut lowlink,
+                                &mut self_ref,
+                                attribute_tracker,
+                            );
+                        },
+                        SubstitutionFunctionKind::Attr => {
+                            visit_link(
+                                VarType::Attr(next.name.clone()),
+                                context,
+                                &mut lowlink,
+                                &mut self_ref,
+                                attribute_tracker,
+                            );
+                        },
+                        SubstitutionFunctionKind::Env => {},
+                    }
+
+                    reference_index += 1;
+                    while reference_index < v.references.refs.len()
+                        && v.references.refs[reference_index].end <= next.end
+                    {
+                        reference_index += 1;
+                    }
                     continue;
                 }
 
-                let next_var = if next.substitution_kind == SubstitutionFunctionKind::Attr {
-                    if context.map.get_attr(&next.name).is_none() {
-                        let Ok(val) = parse_attribute_value(
-                            &next.name,
-                            &next.attribute_data,
-                            &v.url_data,
-                            attribute_tracker,
-                        ) else {
-                            continue;
-                        };
-                        context.map.insert_attr(&next.name, val);
-                    }
-                    VarType::Attr(next.name.clone())
-                } else {
-                    VarType::Custom(next.name.clone())
-                };
-
-                visit_link(
-                    next_var,
-                    context,
-                    &mut lowlink,
-                    &mut self_ref,
-                    attribute_tracker,
-                );
+                reference_index += 1;
             }
 
             // ... Then non-custom properties.
