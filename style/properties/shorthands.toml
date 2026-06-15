@@ -472,7 +472,6 @@ spec = "https://drafts.csswg.org/css-inline/#text-box-shorthand"
 gecko_pref = "layout.css.text-box.enabled"
 
 [text-emphasis]
-engine = "gecko"
 sub_properties = ["text-emphasis-style", "text-emphasis-color"]
 spec = "https://drafts.csswg.org/css-text-decor-3/#text-emphasis-property"
 derive_serialize = true
