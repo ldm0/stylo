@@ -3465,6 +3465,37 @@ where
         {
             continue;
         }
+        if lightmount_custom_state_nth_of_dependency_needs_context_fallback(
+            summary,
+            request,
+            &dependency,
+        ) {
+            if let Some(context) = request.context() {
+                let fallback = context_roots_provider.context_roots_for_source_dependency(
+                    request.query().root(),
+                    &dependency,
+                    request
+                        .query()
+                        .allows_direct_previous_following_sibling_fallback(),
+                    context,
+                );
+                let context_roots = fallback.roots();
+                if !context_roots.is_empty() {
+                    fallback_kind = lightmount_merge_retained_source_invalidation_fallback_kind(
+                        fallback_kind,
+                        Some(LightmountRetainedSourceStyleInvalidationKind::ContextFallback),
+                    );
+                    fallback_reasons
+                        .insert(LightmountSourceInvalidationFallbackReason::NthOfDependency);
+                    lightmount_push_unique_roots(
+                        &mut reasoned_fallback_roots,
+                        &mut reasoned_fallback_seen,
+                        context_roots,
+                    );
+                    continue;
+                }
+            }
+        }
         if dependency.requires_fallback() {
             match dependency.source_dependency_fallback_handling() {
                 LightmountDependencyFallbackHandling::ContextRoots(reasons)
@@ -3746,6 +3777,19 @@ fn lightmount_source_dependency_requires_source_fallback_plan<Root: Copy>(
             fallback_reasons,
         ),
     )
+}
+
+fn lightmount_custom_state_nth_of_dependency_needs_context_fallback<Root: Copy>(
+    summary: &LightmountSourceDependencySummary,
+    request: &LightmountSourceDependencyInvalidationRequest<'_, Root>,
+    dependency: &LightmountDependencyQueryResult,
+) -> bool {
+    matches!(
+        request.query().as_stylo_query(),
+        LightmountStyleInvalidationQuery::CustomState(_)
+    ) && summary.has_child_list_structural_dependency()
+        && dependency.has_sibling_dependency()
+        && !dependency.requires_fallback()
 }
 
 fn lightmount_push_unique_roots<Root: Copy + Eq + Hash>(
@@ -8837,6 +8881,102 @@ mod tests {
             LightmountRetainedSourceStyleInvalidationKind::ContextFallback
         );
         assert_eq!(fallback_roots, vec![10]);
+        assert!(
+            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency)
+        );
+    }
+
+    #[test]
+    fn lightmount_source_dependency_batch_plan_uses_context_roots_for_custom_state_nth_of() {
+        #[derive(Default)]
+        struct ContextRootsProviderForTest {
+            calls: usize,
+        }
+
+        impl LightmountSourceDependencyInvalidationContextRootsProvider<u32>
+            for ContextRootsProviderForTest
+        {
+            fn context_roots_for_source_dependency(
+                &mut self,
+                root: u32,
+                query: &LightmountDependencyQueryResult,
+                allow_direct_previous_following_sibling_fallback: bool,
+                context: LightmountDependencyInvalidationFallbackContext<u32>,
+            ) -> LightmountDependencyInvalidationContextRoots<u32> {
+                self.calls += 1;
+                assert_eq!(root, 1);
+                assert!(query.has_sibling_dependency());
+                assert!(!query.requires_fallback());
+                assert!(!allow_direct_previous_following_sibling_fallback);
+                assert_eq!(context.parent(), Some(2));
+                assert_eq!(context.previous_sibling(), None);
+                assert_eq!(context.next_sibling(), Some(3));
+                LightmountDependencyInvalidationContextRoots::new(false, vec![3, 4])
+            }
+        }
+
+        let mut dependency = LightmountDependencyQueryResult::default();
+        dependency.add_kind(LightmountDependencyKind::Siblings);
+        let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
+        dependency_summary.note_custom_state_dependency(AtomIdent::from("--active"), dependency);
+        let source_summary = LightmountSourceDependencySummary::new(dependency_summary, true);
+        let source_roots = [99_u32];
+        let source = LightmountSourceDependencyInvalidationBatchSource::new(
+            &source_summary,
+            &source_roots,
+            &[],
+        );
+        let query =
+            LightmountRetainedStyleInvalidationQuery::custom_state(1_u32, "--active".into());
+        let context = LightmountDependencyInvalidationFallbackContext::from_mutation_relation(
+            Some(2),
+            None,
+            Some(3),
+        );
+        let request = LightmountSourceDependencyInvalidationRequest::new(
+            &query,
+            Some(context),
+            LightmountSourceDependencyRequestRequirement::exact(),
+        );
+        let mut provider = ContextRootsProviderForTest::default();
+
+        let plan = lightmount_source_dependency_invalidation_batch_plan(
+            &[source],
+            &[request],
+            LightmountSourceDependencyBoundaryRoots::default(),
+            &mut provider,
+        );
+
+        assert_eq!(provider.calls, 1);
+        let LightmountSourceDependencyInvalidationBatchPlan::Work {
+            mut sources,
+            boundary_fallback,
+        } = plan
+        else {
+            panic!("custom-state nth-of dependencies should produce source work");
+        };
+        assert!(boundary_fallback.is_none());
+        assert_eq!(sources.len(), 1);
+        let target = sources
+            .pop()
+            .expect("source work should exist")
+            .into_parts()
+            .into_target_and_structural_boundary_cleanup_roots()
+            .0
+            .into_parts();
+        let LightmountPlannedSourceDependencyInvalidationTargetParts::FallbackWithRoots {
+            fallback_kind,
+            fallback_roots,
+            fallback_reasons,
+        } = target
+        else {
+            panic!("custom-state nth-of context roots should become a fallback-root target");
+        };
+        assert_eq!(
+            fallback_kind,
+            LightmountRetainedSourceStyleInvalidationKind::ContextFallback
+        );
+        assert_eq!(fallback_roots, vec![3, 4]);
         assert!(
             fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency)
         );
