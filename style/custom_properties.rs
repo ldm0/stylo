@@ -1303,6 +1303,10 @@ struct SeenSubstitutionFunctions<'a> {
     attr: PrecomputedHashSet<&'a Name>,
 }
 
+type PendingRevertedCustomProperties<'a> =
+    PrecomputedHashMap<Name, SmallVec<[(CascadePriority, &'a CustomDeclaration); 2]>>;
+type SubstitutedRevertedCustomProperties = SmallVec<[(Name, RevertKind); 2]>;
+
 /// A struct that takes care of encapsulating the cascade process for custom properties.
 pub struct CustomPropertiesBuilder<'a, 'b: 'a> {
     seen: SeenSubstitutionFunctions<'a>,
@@ -1310,6 +1314,8 @@ pub struct CustomPropertiesBuilder<'a, 'b: 'a> {
     has_color_scheme: bool,
     substitution_functions: ComputedSubstitutionFunctions,
     reverted: PrecomputedHashMap<&'a Name, (CascadePriority, RevertKind)>,
+    substituted_priority: PrecomputedHashMap<Name, CascadePriority>,
+    pending_reverted: PendingRevertedCustomProperties<'a>,
     stylist: &'a Stylist,
     computed_context: &'a mut computed::Context<'b>,
     references_from_non_custom_properties: NonCustomReferenceMap<Vec<Name>>,
@@ -1353,6 +1359,8 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
         Self {
             seen: SeenSubstitutionFunctions::default(),
             reverted: Default::default(),
+            substituted_priority: Default::default(),
+            pending_reverted: Default::default(),
             may_have_cycles: false,
             has_color_scheme: false,
             substitution_functions: ComputedSubstitutionFunctions::new(
@@ -1413,6 +1421,10 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
 
         let was_already_present = !self.seen.var.insert(name);
         if was_already_present {
+            self.pending_reverted
+                .entry(name.clone())
+                .or_default()
+                .push((priority, declaration));
             return;
         }
 
@@ -1425,6 +1437,7 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
         let registration = self.stylist.get_custom_property_registration(&name);
         match value {
             CustomDeclarationValue::Unparsed(unparsed_value) => {
+                self.substituted_priority.insert(name.clone(), priority);
                 // At this point of the cascade we're not guaranteed to have seen the color-scheme
                 // declaration, so need to assume the worst. We could track all system color
                 // keyword tokens + the light-dark() function, but that seems non-trivial /
@@ -1446,7 +1459,7 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                 // substitution here instead of forcing a full traversal in `substitute_all`
                 // afterwards.
                 if !has_dependency {
-                    return substitute_references_if_needed_and_apply(
+                    let revert_kind = substitute_references_if_needed_and_apply(
                         name,
                         kind,
                         unparsed_value,
@@ -1455,6 +1468,15 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                         self.computed_context,
                         attribute_tracker,
                     );
+                    if let Some(revert_kind) = revert_kind {
+                        self.apply_substituted_revert(
+                            name,
+                            priority,
+                            revert_kind,
+                            attribute_tracker,
+                        );
+                    }
+                    return;
                 }
                 self.may_have_cycles = true;
                 let value = ComputedRegisteredValue::universal(Arc::clone(unparsed_value));
@@ -1497,6 +1519,31 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                     | CSSWideKeyword::Unset => unreachable!(),
                 },
             },
+        }
+    }
+
+    fn apply_substituted_revert(
+        &mut self,
+        name: &Name,
+        priority: CascadePriority,
+        revert_kind: RevertKind,
+        attribute_tracker: &mut AttributeTracker,
+    ) {
+        let Some(pending) = self.pending_reverted.remove(name) else {
+            return;
+        };
+
+        for (candidate_priority, declaration) in pending {
+            if !priority.allows_when_reverted(&candidate_priority, revert_kind) {
+                continue;
+            }
+            let registration = self.stylist.get_custom_property_registration(name);
+            self.substitution_functions.remove_var(registration, name);
+            self.seen.var.remove(name);
+            self.cascade(declaration, candidate_priority, attribute_tracker);
+            if self.seen.var.contains(name) {
+                break;
+            }
         }
     }
 
@@ -1776,10 +1823,13 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                 deferred_substitution_functions = Some(AllSubstitutionFunctions::default());
             }
             let mut invalid_non_custom_properties = LonghandIdSet::default();
+            let mut substituted_reverted_custom_properties =
+                SubstitutedRevertedCustomProperties::new();
             substitute_all(
                 &mut self.substitution_functions,
                 deferred_substitution_functions.as_mut(),
                 &mut invalid_non_custom_properties,
+                &mut substituted_reverted_custom_properties,
                 self.has_color_scheme,
                 &self.seen,
                 &self.references_from_non_custom_properties,
@@ -1787,6 +1837,12 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                 self.computed_context,
                 attribute_tracker,
             );
+            for (name, revert_kind) in substituted_reverted_custom_properties {
+                let Some(priority) = self.substituted_priority.remove(&name) else {
+                    continue;
+                };
+                self.apply_substituted_revert(&name, priority, revert_kind, attribute_tracker);
+            }
             self.computed_context.builder.invalid_non_custom_properties =
                 invalid_non_custom_properties;
         }
@@ -1849,7 +1905,7 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
             let Some(v) = v.as_universal() else {
                 unreachable!("Computing should have been deferred!")
             };
-            substitute_references_if_needed_and_apply(
+            let _ = substitute_references_if_needed_and_apply(
                 name,
                 kind,
                 v,
@@ -1871,6 +1927,7 @@ fn substitute_all(
     substitution_function_map: &mut ComputedSubstitutionFunctions,
     mut deferred_substituted_functions_map: Option<&mut AllSubstitutionFunctions>,
     invalid_non_custom_properties: &mut LonghandIdSet,
+    substituted_reverted_custom_properties: &mut SubstitutedRevertedCustomProperties,
     has_color_scheme: bool,
     seen: &SeenSubstitutionFunctions,
     references_from_non_custom_properties: &NonCustomReferenceMap<Vec<Name>>,
@@ -1936,6 +1993,8 @@ fn substitute_all(
         computed_context: &'a computed::Context<'b>,
         /// Longhand IDs that became invalid due to dependency cycle(s).
         invalid_non_custom_properties: &'a mut LonghandIdSet,
+        /// Custom properties whose substituted value became revert / revert-layer / revert-rule.
+        substituted_reverted_custom_properties: &'a mut SubstitutedRevertedCustomProperties,
         /// Substitution functions that cannot yet be substituted. We store both custom
         /// properties (inherited and non-inherited) and attributes in the same map, since
         /// we need to make sure we iterate through them in the right order.
@@ -2025,7 +2084,7 @@ fn substitute_all(
                             );
                         }
                         let value = value.clone();
-                        substitute_references_if_needed_and_apply(
+                        if let Some(revert_kind) = substitute_references_if_needed_and_apply(
                             name,
                             kind,
                             &value,
@@ -2033,7 +2092,11 @@ fn substitute_all(
                             context.stylist,
                             context.computed_context,
                             attribute_tracker,
-                        );
+                        ) {
+                            context
+                                .substituted_reverted_custom_properties
+                                .push((name.clone(), revert_kind));
+                        }
                     }
                     return None;
                 }
@@ -2328,7 +2391,7 @@ fn substitute_all(
 
             // If there are no var or attr references we should already be computed and substituted by now.
             if !defer && (v.references.any_var || v.references.any_attr) {
-                substitute_references_if_needed_and_apply(
+                if let Some(revert_kind) = substitute_references_if_needed_and_apply(
                     &name,
                     kind,
                     v,
@@ -2336,7 +2399,11 @@ fn substitute_all(
                     context.stylist,
                     context.computed_context,
                     attribute_tracker,
-                );
+                ) {
+                    context
+                        .substituted_reverted_custom_properties
+                        .push((name, revert_kind));
+                }
             }
         }
         context.non_custom_references = NonCustomReferences::default();
@@ -2359,6 +2426,7 @@ fn substitute_all(
                 stylist,
                 computed_context,
                 invalid_non_custom_properties,
+                substituted_reverted_custom_properties,
                 deferred_substitution_functions: deferred_substituted_functions_map.as_deref_mut(),
                 contains_computed_custom_property: false,
             };
@@ -2430,7 +2498,7 @@ fn substitute_references_if_needed_and_apply(
     stylist: &Stylist,
     computed_context: &computed::Context,
     attribute_tracker: &mut AttributeTracker,
-) {
+) -> Option<RevertKind> {
     debug_assert_ne!(kind, SubstitutionFunctionKind::Env);
     let is_var = kind == SubstitutionFunctionKind::Var;
     let registration = stylist.get_custom_property_registration(&name);
@@ -2438,7 +2506,7 @@ fn substitute_references_if_needed_and_apply(
         // Trivial path: no references and no need to compute the value, just apply it directly.
         let computed_value = ComputedRegisteredValue::universal(Arc::clone(value));
         substitution_functions.insert_var(registration, name, computed_value);
-        return;
+        return None;
     }
 
     let inherited = computed_context.inherited_custom_properties();
@@ -2459,7 +2527,7 @@ fn substitute_references_if_needed_and_apply(
                 substitution_functions,
                 computed_context,
             );
-            return;
+            return None;
         },
     };
 
@@ -2474,6 +2542,7 @@ fn substitute_references_if_needed_and_apply(
         };
 
         if let Ok(kw) = css_wide_kw {
+            let revert_kind = kw.revert_kind();
             // TODO: It's unclear what this should do for revert / revert-layer, see
             // https://github.com/w3c/csswg-drafts/issues/9131. For now treating as unset
             // seems fine?
@@ -2509,7 +2578,7 @@ fn substitute_references_if_needed_and_apply(
                     };
                 },
             }
-            return;
+            return revert_kind;
         }
     }
 
@@ -2524,7 +2593,7 @@ fn substitute_references_if_needed_and_apply(
                         substitution_functions,
                         computed_context,
                     );
-                    return;
+                    return None;
                 },
             };
             substitution_functions.insert_var(registration, name, value);
@@ -2541,6 +2610,7 @@ fn substitute_references_if_needed_and_apply(
         },
         SubstitutionFunctionKind::Env => unreachable!("Kind cannot be env."),
     }
+    None
 }
 
 #[derive(Default, Debug)]
