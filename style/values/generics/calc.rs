@@ -214,10 +214,7 @@ pub struct GenericAnchorFunctionFallback<L> {
 impl<L> GenericAnchorFunctionFallback<L> {
     /// Create a new anchor function fallback value.
     pub fn new(is_calc_node: bool, node: GenericCalcNode<L>) -> Self {
-        Self {
-            is_calc_node,
-            node,
-        }
+        Self { is_calc_node, node }
     }
 }
 
@@ -1418,6 +1415,23 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         })
     }
 
+    fn canonicalize_negative_minmax_sum_child(&mut self) {
+        let Self::MinMax(ref children, _) = *self else {
+            return;
+        };
+
+        if !children
+            .iter()
+            .all(|child| child.is_negative_leaf().unwrap_or(false))
+        {
+            return;
+        }
+
+        let mut negated = mem::replace(self, Self::dummy());
+        negated.negate();
+        *self = Self::Negate(Box::new(negated));
+    }
+
     /// Visits all the nodes in this calculation tree recursively, starting by
     /// the leaves and bubbling all the way up.
     ///
@@ -1765,6 +1779,10 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 // NOTE: if the function returns true, by the docs of dedup_by,
                 // a is removed.
                 children.dedup_by(|a, b| b.try_sum_in_place(a).is_ok());
+
+                for child in &mut children {
+                    child.canonicalize_negative_minmax_sum_child();
+                }
 
                 if children.len() == 1 {
                     // If only one children remains, lift it up, and carry on.
@@ -2334,6 +2352,14 @@ mod tests {
         CalcNode::Product(children.into_boxed_slice().into())
     }
 
+    fn sum(children: Vec<CalcNode<TestLeaf>>) -> CalcNode<TestLeaf> {
+        CalcNode::Sum(children.into_boxed_slice().into())
+    }
+
+    fn minmax(children: Vec<CalcNode<TestLeaf>>, op: MinMaxOp) -> CalcNode<TestLeaf> {
+        CalcNode::MinMax(children.into_boxed_slice().into(), op)
+    }
+
     fn invert(child: CalcNode<TestLeaf>) -> CalcNode<TestLeaf> {
         CalcNode::Invert(Box::new(child))
     }
@@ -2377,12 +2403,10 @@ mod tests {
             leaf(TestLeaf::Length(8.0)),
             invert(leaf(TestLeaf::Length(1.0))),
         ]);
-        assert!(
-            percentage_product
-                .unit()
-                .unwrap()
-                .can_sum_with(CalcUnits::PERCENTAGE)
-        );
+        assert!(percentage_product
+            .unit()
+            .unwrap()
+            .can_sum_with(CalcUnits::PERCENTAGE));
         assert_eq!(
             percentage_product.resolve().unwrap(),
             TestLeaf::Percentage(1.6)
@@ -2411,5 +2435,35 @@ mod tests {
             invert(leaf(TestLeaf::Time(1.0))),
         ]);
         assert!(invalid_denominator.unit().is_err());
+    }
+
+    #[test]
+    fn sum_canonicalizes_negative_minmax_as_subtraction() {
+        let mut node = sum(vec![
+            leaf(TestLeaf::Length(10.0)),
+            minmax(
+                vec![
+                    leaf(TestLeaf::Percentage(-0.2)),
+                    leaf(TestLeaf::Length(-20.0)),
+                ],
+                MinMaxOp::Max,
+            ),
+        ]);
+
+        node.simplify_and_sort();
+
+        assert_eq!(
+            node,
+            sum(vec![
+                leaf(TestLeaf::Length(10.0)),
+                CalcNode::Negate(Box::new(minmax(
+                    vec![
+                        leaf(TestLeaf::Percentage(0.2)),
+                        leaf(TestLeaf::Length(20.0)),
+                    ],
+                    MinMaxOp::Min,
+                ))),
+            ])
+        );
     }
 }
