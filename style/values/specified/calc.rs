@@ -250,6 +250,13 @@ impl generic::CalcNodeLeaf for Leaf {
         })
     }
 
+    fn is_same_unit_as(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Length(left), Self::Length(right)) => left.unit() == right.unit(),
+            _ => std::mem::discriminant(self) == std::mem::discriminant(other),
+        }
+    }
+
     fn new_number(value: f32) -> Self {
         Self::Number(value)
     }
@@ -1116,15 +1123,16 @@ impl CalcNode {
                                 return if resolved.unit().contains(CalcUnits::COLOR_COMPONENT) {
                                     InPlaceDivisionResult::Unchanged
                                 } else {
-                                    InPlaceDivisionResult::Invalid
+                                    InPlaceDivisionResult::Unchanged
                                 };
                             }
                         }
                         InPlaceDivisionResult::Unchanged
                     }
 
-                    // The right hand side of a division *must* be a number, so if we can
-                    // already resolve it, then merge it with the last node on the product list.
+                    // If the right hand side is already a number, merge it with the last node on
+                    // the product list. Non-number denominators are kept as inverted nodes so
+                    // basic unit algebra can cancel them during unit validation and resolution.
                     // We can unwrap here, becuase we start the function by adding a node to
                     // the list.
                     match try_division_in_place(&mut product.last_mut().unwrap(), &rhs) {
