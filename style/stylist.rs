@@ -2072,7 +2072,76 @@ pub enum RegisterCustomPropertyResult {
     InitialValueNotComputationallyIndependent,
 }
 
+struct ParsedCustomPropertyRegistration {
+    syntax: Descriptor,
+    initial_value: Option<Arc<SpecifiedValue>>,
+}
+
+fn parse_custom_property_registration_fields(
+    url_data: &UrlExtraData,
+    syntax: &str,
+    initial_value: Option<&str>,
+) -> Result<ParsedCustomPropertyRegistration, RegisterCustomPropertyResult> {
+    use RegisterCustomPropertyResult::*;
+
+    let syntax = Descriptor::from_str(syntax, /* preserve_specified = */ false)
+        .map_err(|_| InvalidSyntax)?;
+
+    let initial_value = match initial_value {
+        Some(value) => {
+            let mut input = ParserInput::new(value);
+            let parsed = Parser::new(&mut input)
+                .parse_entirely(|input| {
+                    input.skip_whitespace();
+                    SpecifiedValue::parse(input, None, url_data).map(Arc::new)
+                })
+                .ok();
+            if parsed.is_none() {
+                return Err(InvalidInitialValue);
+            }
+            parsed
+        },
+        None => None,
+    };
+
+    if let Err(error) =
+        PropertyRegistration::validate_initial_value(&syntax, initial_value.as_deref())
+    {
+        return Err(match error {
+            PropertyRegistrationError::InitialValueNotComputationallyIndependent => {
+                InitialValueNotComputationallyIndependent
+            },
+            PropertyRegistrationError::InvalidInitialValue => InvalidInitialValue,
+            PropertyRegistrationError::NoInitialValue => NoInitialValue,
+        });
+    }
+
+    Ok(ParsedCustomPropertyRegistration {
+        syntax,
+        initial_value,
+    })
+}
+
 impl Stylist {
+    /// Validates a script custom-property registration without mutating the
+    /// script registry.
+    pub fn validate_custom_property_registration(
+        url_data: &UrlExtraData,
+        name: &str,
+        syntax: &str,
+        initial_value: Option<&str>,
+    ) -> RegisterCustomPropertyResult {
+        use RegisterCustomPropertyResult::*;
+
+        if parse_name(name).is_err() {
+            return InvalidName;
+        }
+
+        parse_custom_property_registration_fields(url_data, syntax, initial_value)
+            .map(|_| SuccessfullyRegistered)
+            .unwrap_or_else(|error| error)
+    }
+
     /// <https://drafts.css-houdini.org/css-properties-values-api-1/#the-registerproperty-function>
     pub fn register_custom_property(
         &mut self,
@@ -2094,40 +2163,13 @@ impl Stylist {
         if self.custom_property_script_registry().get(&name).is_some() {
             return AlreadyRegistered;
         }
-        // Attempt to consume a syntax definition from syntax. If it returns failure, throw a
-        // SyntaxError. Otherwise, let syntax definition be the returned syntax definition.
-        let Ok(syntax) = Descriptor::from_str(syntax, /* preserve_specified = */ false) else {
-            return InvalidSyntax;
+        let ParsedCustomPropertyRegistration {
+            syntax,
+            initial_value,
+        } = match parse_custom_property_registration_fields(url_data, syntax, initial_value) {
+            Ok(parsed) => parsed,
+            Err(result) => return result,
         };
-
-        let initial_value = match initial_value {
-            Some(value) => {
-                let mut input = ParserInput::new(value);
-                let parsed = Parser::new(&mut input)
-                    .parse_entirely(|input| {
-                        input.skip_whitespace();
-                        SpecifiedValue::parse(input, None, url_data).map(Arc::new)
-                    })
-                    .ok();
-                if parsed.is_none() {
-                    return InvalidInitialValue;
-                }
-                parsed
-            },
-            None => None,
-        };
-
-        if let Err(error) =
-            PropertyRegistration::validate_initial_value(&syntax, initial_value.as_deref())
-        {
-            return match error {
-                PropertyRegistrationError::InitialValueNotComputationallyIndependent => {
-                    InitialValueNotComputationallyIndependent
-                },
-                PropertyRegistrationError::InvalidInitialValue => InvalidInitialValue,
-                PropertyRegistrationError::NoInitialValue => NoInitialValue,
-            };
-        }
 
         let property_registration = PropertyRegistration {
             name: PropertyRuleName(name),
@@ -5181,4 +5223,88 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
     };
     s.visit(&mut visitor);
     needs_revalidation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn url_data() -> UrlExtraData {
+        UrlExtraData::from(url::Url::parse("https://example.test/").unwrap())
+    }
+
+    fn assert_registration_valid(syntax: &str, initial_value: Option<&str>) {
+        assert!(
+            matches!(
+                Stylist::validate_custom_property_registration(
+                    &url_data(),
+                    "--registered",
+                    syntax,
+                    initial_value,
+                ),
+                RegisterCustomPropertyResult::SuccessfullyRegistered
+            ),
+            "{syntax:?} / {initial_value:?} should be valid",
+        );
+    }
+
+    fn assert_registration_invalid(syntax: &str, initial_value: Option<&str>) {
+        assert!(
+            !matches!(
+                Stylist::validate_custom_property_registration(
+                    &url_data(),
+                    "--registered",
+                    syntax,
+                    initial_value,
+                ),
+                RegisterCustomPropertyResult::SuccessfullyRegistered
+            ),
+            "{syntax:?} / {initial_value:?} should be invalid",
+        );
+    }
+
+    #[test]
+    fn script_registered_property_validation_matches_wpt_universal_syntax() {
+        assert_registration_valid("*", Some("default"));
+
+        for invalid in [
+            ")",
+            "([)]",
+            "whee!",
+            "\"\n",
+            "url(moo '')",
+            "semi;colon",
+            "var(invalid var ref)",
+            "var(--foo)",
+        ] {
+            assert_registration_invalid("*", Some(invalid));
+        }
+    }
+
+    #[test]
+    fn script_registered_property_validation_rejects_dependent_initial_lengths() {
+        for invalid in [
+            ("<length>", "calc(5px + 10%)"),
+            ("<length>", "10em"),
+            ("<length>", "calc(4px + 3em)"),
+            ("<length>", "calc(4px + calc(8 * 2em))"),
+            ("<length>+", "calc(2ex + 16px)"),
+            ("<length>+", "10px calc(20px + 4rem)"),
+            ("<length-percentage>", "calc(2px + 10% + 7ex)"),
+        ] {
+            assert_registration_invalid(invalid.0, Some(invalid.1));
+        }
+    }
+
+    #[test]
+    fn script_registered_property_validation_rejects_type_specific_invalid_values() {
+        for invalid in [
+            ("<angle>", "0"),
+            ("<resolution>", "-5.3dpcm"),
+            ("<transform-function>", "scale()"),
+            ("<transform-list>", "scale()"),
+        ] {
+            assert_registration_invalid(invalid.0, Some(invalid.1));
+        }
+    }
 }
