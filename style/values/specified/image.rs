@@ -298,6 +298,27 @@ impl Image {
         Self::parse_with_cors_mode(context, input, CorsMode::None, ParseImageFlags::FORBID_NONE)
     }
 
+    /// Parses an image value for the Properties & Values API `<image>`
+    /// syntax component.
+    pub fn parse_for_registered_custom_property<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Image, ParseError<'i>> {
+        if let Ok(image) = input.try_parse(|input| Self::parse_forbid_none(context, input)) {
+            return Ok(image);
+        }
+
+        let function = input.expect_function()?.clone();
+        input.parse_nested_block(|input| {
+            Ok(match_ignore_ascii_case! { &function,
+                "light-dark" => Self::LightDark(Box::new(GenericLightDark::parse_args_with(input, |input| {
+                    Self::parse_with_cors_mode(context, input, CorsMode::None, ParseImageFlags::empty())
+                })?)),
+                _ => return Err(input.new_custom_error(StyleParseErrorKind::UnexpectedFunction(function))),
+            })
+        })
+    }
+
     /// Provides an alternate method for parsing, but only for urls.
     pub fn parse_only_url<'i, 't>(
         context: &ParserContext,

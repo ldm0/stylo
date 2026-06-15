@@ -5303,8 +5303,14 @@ mod tests {
             ("<resolution>", "-5.3dpcm"),
             ("<transform-function>", "scale()"),
             ("<transform-list>", "scale()"),
+            ("<image>", "none"),
         ] {
             assert_registration_invalid(invalid.0, Some(invalid.1));
         }
+    }
+
+    #[test]
+    fn script_registered_property_validation_accepts_light_dark_image() {
+        assert_registration_valid("<image>", Some("light-dark(none, none)"));
     }
 }
