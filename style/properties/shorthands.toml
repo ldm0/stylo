@@ -491,7 +491,6 @@ spec = "https://www.w3.org/TR/css-text-4/#white-space-property"
 derive_value_info = false
 
 [-webkit-text-stroke]
-engine = "gecko"
 sub_properties = ["-webkit-text-stroke-width", "-webkit-text-stroke-color"]
 spec = "https://compat.spec.whatwg.org/#the-webkit-text-stroke"
 derive_serialize = true
