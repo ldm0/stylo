@@ -15,6 +15,11 @@ fn eval_width(context: &Context) -> CSSPixelLength {
     CSSPixelLength::new(context.device().au_viewport_size().width.to_f32_px())
 }
 
+/// https://drafts.csswg.org/mediaqueries-4/#height
+fn eval_height(context: &Context) -> CSSPixelLength {
+    CSSPixelLength::new(context.device().au_viewport_size().height.to_f32_px())
+}
+
 #[derive(Clone, Copy, Debug, FromPrimitive, Parse, ToCss)]
 #[repr(u8)]
 enum Scan {
@@ -47,11 +52,17 @@ fn eval_prefers_color_scheme(context: &Context, query_value: Option<PrefersColor
 }
 
 /// A list with all the media features that Servo supports.
-pub static MEDIA_FEATURES: [QueryFeatureDescription; 6] = [
+pub static MEDIA_FEATURES: [QueryFeatureDescription; 7] = [
     feature!(
         atom!("width"),
         AllowsRanges::Yes,
         Evaluator::Length(eval_width),
+        FeatureFlags::empty(),
+    ),
+    feature!(
+        atom!("height"),
+        AllowsRanges::Yes,
+        Evaluator::Length(eval_height),
         FeatureFlags::empty(),
     ),
     feature!(
