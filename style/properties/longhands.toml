@@ -2776,6 +2776,24 @@ gecko_pref = "layout.css.text-decoration-inset.enabled"
 spec = "https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-inset-property"
 affects = "overflow"
 
+[text-decoration-fill]
+type = "TextDecorationPaint"
+initial = "computed::TextDecorationPaint::match_text()"
+struct = "text"
+boxed = true
+animation_type = "discrete"
+spec = "https://drafts.fxtf.org/fill-stroke/#text-decor"
+affects = "paint"
+
+[text-decoration-stroke]
+type = "TextDecorationPaint"
+initial = "computed::TextDecorationPaint::match_text()"
+struct = "text"
+boxed = true
+animation_type = "discrete"
+spec = "https://drafts.fxtf.org/fill-stroke/#text-decor"
+affects = "paint"
+
 [text-decoration-skip-spaces]
 type = "TextDecorationSkipSpaces"
 initial = "computed::TextDecorationSkipSpaces::start_end()"

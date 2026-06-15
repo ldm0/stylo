@@ -22,6 +22,9 @@ use style_traits::{StyleParseErrorKind, ToCss};
 /// Specified SVG Paint value
 pub type SVGPaint = generic::GenericSVGPaint<Color, SpecifiedUrl>;
 
+/// Specified text decoration fill/stroke paint value.
+pub type TextDecorationPaint = generic::GenericTextDecorationPaint<Color, SpecifiedUrl>;
+
 /// <length> | <percentage> | <number> | context-value
 pub type SVGLength = generic::GenericSVGLength<LengthPercentage>;
 

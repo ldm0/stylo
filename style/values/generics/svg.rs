@@ -80,6 +80,47 @@ impl<C, U> Default for SVGPaint<C, U> {
     }
 }
 
+/// Paint value for text decoration fill and stroke.
+///
+/// <https://drafts.fxtf.org/fill-stroke/#text-decor>
+#[derive(
+    Clone,
+    Debug,
+    MallocSizeOf,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(C, u8)]
+#[typed(todo_derive_fields)]
+pub enum GenericTextDecorationPaint<C, U> {
+    /// `match-text`
+    MatchText,
+    /// A CSS/SVG paint value.
+    Paint(SVGPaint<C, U>),
+}
+
+pub use self::GenericTextDecorationPaint as TextDecorationPaint;
+
+impl<C: Parse, U: Parse> Parse for TextDecorationPaint<C, U> {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input
+            .try_parse(|input| input.expect_ident_matching("match-text"))
+            .is_ok()
+        {
+            return Ok(Self::MatchText);
+        }
+        SVGPaint::parse(context, input).map(Self::Paint)
+    }
+}
+
 /// An SVG paint value without the fallback.
 ///
 /// Whereas the spec only allows PaintServer to have a fallback, Gecko lets the
