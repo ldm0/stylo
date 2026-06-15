@@ -2653,7 +2653,6 @@ affects = "overflow"
 type = "LengthPercentageOrAuto"
 initial = "computed::LengthPercentageOrAuto::auto()"
 struct = "inherited_text"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-text-decor-4/#underline-offset"
 affects = "overflow"
 
@@ -2772,10 +2771,17 @@ affects = "paint"
 type = "TextDecorationInset"
 initial = "computed::text::TextDecorationInset::get_initial_value()"
 struct = "text"
-engine = "gecko"
 boxed = true
 gecko_pref = "layout.css.text-decoration-inset.enabled"
 spec = "https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-inset-property"
+affects = "overflow"
+
+[text-decoration-skip-spaces]
+type = "TextDecorationSkipSpaces"
+initial = "computed::TextDecorationSkipSpaces::start_end()"
+struct = "text"
+animation_type = "discrete"
+spec = "https://drafts.csswg.org/css-text-decor-4/#text-decoration-skip-spaces-property"
 affects = "overflow"
 
 [initial-letter]
@@ -2792,7 +2798,6 @@ affects = "layout"
 type = "TextDecorationLength"
 initial = "generics::text::GenericTextDecorationLength::Auto"
 struct = "text"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-text-decor-4/#text-decoration-width-property"
 affects = "overflow"
 

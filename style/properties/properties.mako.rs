@@ -1819,10 +1819,15 @@ impl ComputedValues {
             longhands::text_decoration_style::SpecifiedValue::from_computed_value(
                 &self.clone_text_decoration_style(),
             );
+        let text_decoration_thickness =
+            longhands::text_decoration_thickness::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_thickness(),
+            );
         let longhands = shorthands::text_decoration::LonghandsToSerialize {
             text_decoration_color: &text_decoration_color,
             text_decoration_line: &text_decoration_line,
             text_decoration_style: &text_decoration_style,
+            text_decoration_thickness: &text_decoration_thickness,
         };
         longhands.to_css(&mut CssWriter::new(dest))
     }

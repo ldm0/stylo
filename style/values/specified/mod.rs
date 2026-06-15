@@ -106,7 +106,8 @@ pub use self::text::{TextAlignKeyword, TextDecorationLine, TextOverflow, WordSpa
 pub use self::text::{TextAlignLast, TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};
 pub use self::text::{
-    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextJustify, TextTransform,
+    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextDecorationSkipSpaces,
+    TextJustify, TextTransform,
 };
 pub use self::time::Time;
 pub use self::transform::{Rotate, Scale, Transform};

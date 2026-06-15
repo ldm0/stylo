@@ -620,6 +620,7 @@ class Longhand(Property):
                 "MozScriptSizeMultiplier",
                 "TransformBox",
                 "TextDecorationSkipInk",
+                "TextDecorationSkipSpaces",
                 "NonNegativeNumber",
                 "OffsetRotate",
                 "Opacity",
