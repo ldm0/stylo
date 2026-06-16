@@ -9,6 +9,7 @@
 use crate::color::parsing::ChannelKeyword;
 use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::values::computed::ToComputedValue;
 use crate::values::generics::calc::{
     self as generic, CalcNodeLeaf, CalcUnits, GenericAnchorFunctionFallback, MinMaxOp, ModRemOp,
     PositivePercentageBasis, RoundingStrategy, SortKey,
@@ -631,6 +632,45 @@ pub type CalcAnchorSizeFunction = generic::GenericCalcAnchorSizeFunction<Leaf>;
 /// A calc node representation for specified values.
 pub type CalcNode = generic::GenericCalcNode<Leaf>;
 impl CalcNode {
+    /// Returns whether this expression contains any font-relative length.
+    pub fn has_font_relative_length(&self) -> bool {
+        fn has_font_relative_leaf(leaf: &Leaf) -> bool {
+            matches!(leaf, Leaf::Length(NoCalcLength::FontRelative(..)))
+        }
+
+        match *self {
+            CalcNode::Leaf(ref leaf) => has_font_relative_leaf(leaf),
+            CalcNode::Negate(ref child)
+            | CalcNode::Invert(ref child)
+            | CalcNode::Abs(ref child)
+            | CalcNode::Sign(ref child) => child.has_font_relative_length(),
+            CalcNode::Sum(ref children)
+            | CalcNode::Product(ref children)
+            | CalcNode::MinMax(ref children, _)
+            | CalcNode::Hypot(ref children) => children.iter().any(Self::has_font_relative_length),
+            CalcNode::Clamp {
+                ref min,
+                ref center,
+                ref max,
+            } => {
+                min.has_font_relative_length()
+                    || center.has_font_relative_length()
+                    || max.has_font_relative_length()
+            },
+            CalcNode::Round {
+                ref value,
+                ref step,
+                ..
+            }
+            | CalcNode::ModRem {
+                dividend: ref value,
+                divisor: ref step,
+                ..
+            } => value.has_font_relative_length() || step.has_font_relative_length(),
+            CalcNode::Anchor(..) | CalcNode::AnchorSize(..) => false,
+        }
+    }
+
     /// Tries to parse a single element in the expression, that is, a
     /// `<length>`, `<angle>`, `<time>`, `<percentage>`, `<resolution>`, etc.
     ///
@@ -1242,6 +1282,37 @@ impl CalcNode {
         Ok(result)
     }
 
+    /// Tries to simplify this expression into a `<number>` using computed context for
+    /// font-, viewport-, and container-relative dimensions inside math functions like `sign()`.
+    pub fn to_number_with_context(
+        &self,
+        context: &crate::values::computed::Context,
+    ) -> Result<CSSFloat, ()> {
+        use crate::values::computed::length_percentage::CalcLengthPercentageLeaf;
+
+        let mut unsupported = false;
+        let node = self.map_leaves(|leaf| match *leaf {
+            Leaf::Number(n) => CalcLengthPercentageLeaf::Number(n),
+            Leaf::Percentage(p) => {
+                CalcLengthPercentageLeaf::Percentage(crate::values::computed::Percentage(p))
+            },
+            Leaf::Length(ref l) => CalcLengthPercentageLeaf::Length(l.to_computed_value(context)),
+            Leaf::Angle(..) | Leaf::Time(..) | Leaf::Resolution(..) | Leaf::ColorComponent(..) => {
+                unsupported = true;
+                CalcLengthPercentageLeaf::Number(0.0)
+            },
+        });
+        if unsupported {
+            return Err(());
+        }
+        let number = if let CalcLengthPercentageLeaf::Number(number) = node.resolve()? {
+            number
+        } else {
+            return Err(());
+        };
+        Ok(number)
+    }
+
     /// Tries to simplify this expression into a `<percentage>` value.
     fn to_percentage(&self) -> Result<CSSFloat, ()> {
         if let Leaf::Percentage(percentage) = self.resolve()? {
@@ -1325,6 +1396,23 @@ impl CalcNode {
         Self::parse(context, input, function, AllowParse::new(CalcUnits::LENGTH))?
             .into_length_or_percentage(clamping_mode)
             .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+    }
+
+    /// Convenience parsing function for `<number>`.
+    pub fn parse_number_node<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        function: MathFunction,
+    ) -> Result<Self, ParseError<'i>> {
+        let node = Self::parse(context, input, function, AllowParse::new(CalcUnits::ALL))?;
+        if node
+            .unit()
+            .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?
+            != CalcUnits::empty()
+        {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(node)
     }
 
     /// Convenience parsing function for `<number>`.

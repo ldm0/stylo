@@ -207,6 +207,7 @@ enum IdentFunctionComponent {
     Ident(OwnedStr),
     String(OwnedStr),
     Integer(specified::Integer),
+    CalcNumber(specified::calc::CalcNode),
 }
 
 impl ToCss for IdentFunctionComponent {
@@ -218,6 +219,7 @@ impl ToCss for IdentFunctionComponent {
             Self::Ident(ref ident) => serialize_identifier(ident, dest),
             Self::String(ref string) => string.to_css(dest),
             Self::Integer(ref integer) => integer.to_css(dest),
+            Self::CalcNumber(ref calc) => calc.to_css(dest),
         }
     }
 }
@@ -241,7 +243,7 @@ impl ToCss for SpecifiedIdentFunction {
 }
 
 impl SpecifiedIdentFunction {
-    fn parse<'i, 't>(
+    pub(crate) fn parse<'i, 't>(
         context: &ParserContext,
         input: &mut CSSParser<'i, 't>,
     ) -> Result<Self, StyleParseError<'i>> {
@@ -272,10 +274,8 @@ impl SpecifiedIdentFunction {
                         let function =
                             specified::calc::CalcNode::math_function(context, name, location)?;
                         let value =
-                            specified::calc::CalcNode::parse_number(context, input, function)?;
-                        components.push(IdentFunctionComponent::Integer(
-                            specified::Integer::from_calc(value),
-                        ));
+                            specified::calc::CalcNode::parse_number_node(context, input, function)?;
+                        components.push(IdentFunctionComponent::CalcNumber(value));
                     },
                     ref token => return Err(location.new_unexpected_token_error(token.clone())),
                 }
@@ -290,7 +290,7 @@ impl SpecifiedIdentFunction {
         })
     }
 
-    fn to_computed_ident(&self, context: &computed::Context) -> CustomIdent {
+    pub(crate) fn to_computed_ident(&self, context: &computed::Context) -> CustomIdent {
         let mut result = String::new();
         for component in self.components.iter() {
             match *component {
@@ -299,9 +299,23 @@ impl SpecifiedIdentFunction {
                 IdentFunctionComponent::Integer(ref integer) => {
                     result.push_str(&integer.to_computed_value(context).to_string())
                 },
+                IdentFunctionComponent::CalcNumber(ref calc) => {
+                    let value = calc
+                        .to_number_with_context(context)
+                        .map(|value| (value + 0.5).floor() as i32)
+                        .unwrap_or_default();
+                    result.push_str(&value.to_string());
+                },
             }
         }
         CustomIdent(Atom::from(result))
+    }
+
+    pub(crate) fn has_font_relative_length(&self) -> bool {
+        self.components.iter().any(|component| match *component {
+            IdentFunctionComponent::CalcNumber(ref calc) => calc.has_font_relative_length(),
+            _ => false,
+        })
     }
 }
 
@@ -955,9 +969,12 @@ mod tests {
     #[test]
     fn registered_custom_ident_accepts_ident_function() {
         let value = parse_specified_value(
-            r#"ident("--myident" calc(42 * sign(1px - 0px)))"#,
+            r#"ident("--myident" calc(42 * sign(1em - 1px)))"#,
             "<custom-ident>",
         );
-        assert_eq!(value.to_css_string(), r#"ident("--myident" calc(42))"#);
+        assert_eq!(
+            value.to_css_string(),
+            r#"ident("--myident" calc(42 * sign(1em - 1px)))"#
+        );
     }
 }

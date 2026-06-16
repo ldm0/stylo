@@ -21,7 +21,7 @@ use crate::properties_and_values::{
     syntax::{data_type::DependentDataTypes, Descriptor as SyntaxDescriptor},
     value::{
         AllowComputationallyDependent, ComputedValue as ComputedRegisteredValue,
-        SpecifiedValue as SpecifiedRegisteredValue,
+        SpecifiedIdentFunction, SpecifiedValue as SpecifiedRegisteredValue,
     },
 };
 use crate::selector_map::{PrecomputedHashMap, PrecomputedHashSet};
@@ -29,7 +29,6 @@ use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use crate::stylist::Stylist;
 use crate::values::computed::{self, ToComputedValue};
 use crate::values::generics::calc::SortKey as AttrUnit;
-use crate::values::specified::calc::CalcNode as SpecifiedCalcNode;
 use crate::values::specified::FontRelativeLength;
 use crate::values::specified::ParsedNamespace;
 use crate::{derives::*, Namespace, Prefix};
@@ -240,47 +239,72 @@ pub fn parse_name(s: &str) -> Result<&str, ()> {
     }
 }
 
+fn custom_property_name_from_ident(ident: &str) -> Option<Name> {
+    parse_name(ident).ok().map(Atom::from)
+}
+
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToShmem)]
+enum SubstitutionFunctionName {
+    Static(Name),
+    DynamicIdent(SpecifiedIdentFunction),
+}
+
+impl SubstitutionFunctionName {
+    fn parse_var<'i, 't>(
+        input: &mut Parser<'i, 't>,
+        context: &ParserContext,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(name) = input.try_parse(|input| input.expect_ident_cloned()) {
+            return match custom_property_name_from_ident(&name) {
+                Some(name) => Ok(Self::Static(name)),
+                None => Err(input.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name))),
+            };
+        }
+
+        input.expect_function_matching("ident")?;
+        Ok(Self::DynamicIdent(SpecifiedIdentFunction::parse(
+            context, input,
+        )?))
+    }
+
+    fn from_static_name(name: Name) -> Self {
+        Self::Static(name)
+    }
+
+    fn as_static_name(&self) -> Option<&Name> {
+        match *self {
+            Self::Static(ref name) => Some(name),
+            Self::DynamicIdent(_) => None,
+        }
+    }
+
+    fn to_resolved_var_name(&self, context: &computed::Context) -> Option<Name> {
+        match *self {
+            Self::Static(ref name) => Some(name.clone()),
+            Self::DynamicIdent(ref function) => {
+                let ident = function.to_computed_ident(context);
+                custom_property_name_from_ident(ident.0.as_ref())
+            },
+        }
+    }
+
+    fn has_font_relative_length(&self) -> bool {
+        matches!(*self, Self::DynamicIdent(ref function) if function.has_font_relative_length())
+    }
+
+    fn to_css_string_for_reification(&self) -> String {
+        match *self {
+            Self::Static(ref name) => format!("--{}", name),
+            Self::DynamicIdent(ref function) => function.to_css_string(),
+        }
+    }
+}
+
 fn parse_var_reference_name<'i, 't>(
     input: &mut Parser<'i, 't>,
     context: &ParserContext,
-) -> Result<Name, ParseError<'i>> {
-    let location = input.current_source_location();
-    let name = if let Ok(name) = input.try_parse(|input| input.expect_ident_cloned()) {
-        name.to_string()
-    } else {
-        input.expect_function_matching("ident")?;
-        input.parse_nested_block(|input| {
-            let mut name = String::new();
-            while !input.is_exhausted() {
-                let location = input.current_source_location();
-                match *input.next()? {
-                    Token::Ident(ref ident) => name.push_str(ident),
-                    Token::QuotedString(ref string) => name.push_str(string),
-                    Token::Number {
-                        int_value: Some(value),
-                        ..
-                    } => name.push_str(&value.to_string()),
-                    Token::Function(ref function_name) => {
-                        let function =
-                            SpecifiedCalcNode::math_function(context, function_name, location)?;
-                        let value = SpecifiedCalcNode::parse_number(context, input, function)?;
-                        name.push_str(&((value + 0.5).floor() as i32).to_string());
-                    },
-                    ref token => return Err(location.new_unexpected_token_error(token.clone())),
-                }
-            }
-            Ok(name)
-        })?
-    };
-
-    match parse_name(&name) {
-        Ok(name) => Ok(Atom::from(name)),
-        Err(()) => Err(
-            location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(CowRcStr::from(
-                name,
-            ))),
-        ),
-    }
+) -> Result<SubstitutionFunctionName, ParseError<'i>> {
+    SubstitutionFunctionName::parse_var(input, context)
 }
 
 /// A value for a custom property is just a set of tokens.
@@ -420,7 +444,7 @@ fn reify_variable_value_range(
         };
 
         values.push(UnparsedSegment::VariableReference(VariableReferenceValue {
-            variable: CssString::from(format!("--{}", reference.name)),
+            variable: CssString::from(reference.name.to_css_string_for_reification()),
             fallback,
             has_fallback,
         }));
@@ -777,7 +801,7 @@ struct VariableFallback {
 
 #[derive(Clone, Debug, MallocSizeOf, PartialEq, ToShmem)]
 struct SubstitutionFunctionReference {
-    name: Name,
+    name: SubstitutionFunctionName,
     start: usize,
     end: usize,
     fallback: Option<VariableFallback>,
@@ -1165,8 +1189,15 @@ fn parse_declaration_value_block<'i, 't>(
                             );
                             parse_var_reference_name(input, &context)?
                         } else {
-                            Atom::from(input.expect_ident()?.as_ref())
+                            SubstitutionFunctionName::from_static_name(Atom::from(
+                                input.expect_ident()?.as_ref(),
+                            ))
                         };
+                        if name.has_font_relative_length() {
+                            references
+                                .non_custom_references
+                                .insert(NonCustomReferences::FONT_UNITS);
+                        }
 
                         let attribute_kind = if substitution_kind == SubstitutionFunctionKind::Attr
                         {
@@ -1681,9 +1712,8 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                 if reference.substitution_kind != SubstitutionFunctionKind::Var {
                     return None;
                 }
-                let registration = self
-                    .stylist
-                    .get_custom_property_registration(&reference.name);
+                let name = reference.name.as_static_name()?;
+                let registration = self.stylist.get_custom_property_registration(name);
                 if !registration
                     .syntax
                     .as_ref()?
@@ -1692,7 +1722,7 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                 {
                     return None;
                 }
-                Some(reference.name.clone())
+                Some(name.clone())
             })
             .collect();
         references.for_each(|idx| {
@@ -1850,18 +1880,22 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
 
         for next in &refs.refs {
             // Skip non-attrs and attributes we've already processed.
+            let Some(name) = next.name.as_static_name() else {
+                debug_assert_ne!(next.substitution_kind, SubstitutionFunctionKind::Attr);
+                continue;
+            };
             if next.substitution_kind != SubstitutionFunctionKind::Attr
-                || !self.seen.attr.insert(&next.name)
+                || !self.seen.attr.insert(name)
             {
                 continue;
             }
             if let Ok(v) = parse_attribute_value(
-                &next.name,
+                name,
                 &next.attribute_data,
                 &value.url_data,
                 attribute_tracker,
             ) {
-                self.substitution_functions.insert_attr(&next.name, v);
+                self.substitution_functions.insert_attr(name, v);
             }
         }
     }
@@ -2250,39 +2284,42 @@ fn substitute_all(
             let mut reference_index = 0;
             while reference_index < v.references.refs.len() {
                 let next = v.references.refs[reference_index].clone();
+                let resolved_name = next.name.to_resolved_var_name(context.computed_context);
                 let has_substitution = match next.substitution_kind {
-                    SubstitutionFunctionKind::Var => {
-                        let registration =
-                            context.stylist.get_custom_property_registration(&next.name);
-                        context.map.get_var(registration, &next.name).is_some()
-                    },
-                    SubstitutionFunctionKind::Env => {
+                    SubstitutionFunctionKind::Var => resolved_name.as_ref().is_some_and(|name| {
+                        let registration = context.stylist.get_custom_property_registration(name);
+                        context.map.get_var(registration, name).is_some()
+                    }),
+                    SubstitutionFunctionKind::Env => resolved_name.as_ref().is_some_and(|name| {
                         let device = context.stylist.device();
                         device
                             .environment()
-                            .get(&next.name, device, &v.url_data)
+                            .get(name, device, &v.url_data)
                             .is_some()
-                    },
-                    SubstitutionFunctionKind::Attr => {
-                        if context.map.get_attr(&next.name).is_none() {
+                    }),
+                    SubstitutionFunctionKind::Attr => resolved_name.as_ref().is_some_and(|name| {
+                        if context.map.get_attr(name).is_none() {
                             if let Ok(val) = parse_attribute_value(
-                                &next.name,
+                                name,
                                 &next.attribute_data,
                                 &v.url_data,
                                 attribute_tracker,
                             ) {
-                                context.map.insert_attr(&next.name, val);
+                                context.map.insert_attr(name, val);
                             }
                         }
-                        context.map.get_attr(&next.name).is_some()
-                    },
+                        context.map.get_attr(name).is_some()
+                    }),
                 };
 
                 if has_substitution {
                     match next.substitution_kind {
                         SubstitutionFunctionKind::Var => {
+                            let Some(name) = resolved_name else {
+                                continue;
+                            };
                             visit_link(
-                                VarType::Custom(next.name.clone()),
+                                VarType::Custom(name),
                                 context,
                                 &mut lowlink,
                                 &mut self_ref,
@@ -2290,8 +2327,11 @@ fn substitute_all(
                             );
                         },
                         SubstitutionFunctionKind::Attr => {
+                            let Some(name) = resolved_name else {
+                                continue;
+                            };
                             visit_link(
-                                VarType::Attr(next.name.clone()),
+                                VarType::Attr(name),
                                 context,
                                 &mut lowlink,
                                 &mut self_ref,
@@ -2440,9 +2480,9 @@ fn substitute_all(
                 .is_some()
                     || v.references.refs.iter().any(|reference| {
                         (reference.substitution_kind == SubstitutionFunctionKind::Var
-                            && deferred
-                                .get(&reference.name, SubstitutionFunctionKind::Var)
-                                .is_some())
+                            && reference.name.as_static_name().is_some_and(|name| {
+                                deferred.get(name, SubstitutionFunctionKind::Var).is_some()
+                            }))
                             || reference.substitution_kind == SubstitutionFunctionKind::Attr
                     });
                 if defer {
@@ -2915,26 +2955,35 @@ fn substitute_one_reference<'a>(
         ))
     };
     let substitution: Option<_> = match reference.substitution_kind {
-        SubstitutionFunctionKind::Var => {
-            let registration = stylist.get_custom_property_registration(&reference.name);
-            substitution_functions
-                .get_var(registration, &reference.name)
-                .filter(|v| v.is_valid_for_substitution())
-                .map(|v| Substitution::from_value(v.to_variable_value(), v.attr_tainted))
-        },
+        SubstitutionFunctionKind::Var => reference
+            .name
+            .to_resolved_var_name(computed_context)
+            .and_then(|name| {
+                let registration = stylist.get_custom_property_registration(&name);
+                substitution_functions
+                    .get_var(registration, &name)
+                    .filter(|v| v.is_valid_for_substitution())
+                    .map(|v| Substitution::from_value(v.to_variable_value(), v.attr_tainted))
+            }),
         SubstitutionFunctionKind::Env => {
+            let Some(name) = reference.name.as_static_name() else {
+                return Err(());
+            };
             let device = stylist.device();
             device
                 .environment()
-                .get(&reference.name, device, url_data)
+                .get(name, device, url_data)
                 .map(|v| Substitution::from_value(v, /* attr_tainted */ false))
         },
         // https://drafts.csswg.org/css-values-5/#attr-substitution
         SubstitutionFunctionKind::Attr => {
+            let Some(name) = reference.name.as_static_name() else {
+                return Err(());
+            };
             #[cfg(feature = "gecko")]
-            let local_name = LocalName::cast(&reference.name);
+            let local_name = LocalName::cast(name);
             #[cfg(feature = "servo")]
-            let local_name = LocalName::from(reference.name.as_ref());
+            let local_name = LocalName::from(name.as_ref());
             let namespace = match reference.attribute_data.namespace {
                 ParsedNamespace::Known(ref ns) => Some(ns),
                 ParsedNamespace::Unknown => None,
@@ -2965,7 +3014,7 @@ fn substitute_one_reference<'a>(
                                 attr
                             } else {
                                 substitution_functions
-                                    .get_attr(&reference.name)
+                                    .get_attr(name)
                                     .map(|v| v.to_variable_value())?
                                     .css
                             }
@@ -3118,9 +3167,26 @@ mod tests {
 
     #[test]
     fn var_reference_name_allows_ident_function() {
-        let value = parse_variable_value(r#"var(ident("--myprop" calc(3 * sign(1px - 0px))))"#);
+        let value = parse_variable_value(r#"var(ident("--myprop" calc(3 * sign(1em - 1px))))"#);
         assert_eq!(value.references.refs.len(), 1);
-        assert_eq!(value.references.refs[0].name, Atom::from("myprop3"));
+        assert!(matches!(
+            value.references.refs[0].name,
+            SubstitutionFunctionName::DynamicIdent(_)
+        ));
+        assert!(value
+            .references
+            .non_custom_references(false)
+            .intersects(NonCustomReferences::FONT_UNITS));
+    }
+
+    #[test]
+    fn invalid_var_reference_ident_function_uses_fallback_at_computed_time() {
+        let value = parse_variable_value(r#"var(ident("nodash"), PASS)"#);
+        assert_eq!(value.references.refs.len(), 1);
+        assert!(matches!(
+            value.references.refs[0].name,
+            SubstitutionFunctionName::DynamicIdent(_)
+        ));
     }
 
     #[test]
