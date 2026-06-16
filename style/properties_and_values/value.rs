@@ -214,12 +214,15 @@ pub struct Value<Component> {
     /// Flag indicating whether this value is tainted by an attr().
     #[css(skip)]
     pub attr_tainted: bool,
+    /// Whether this value can be used as the source of a var() substitution.
+    #[css(skip)]
+    valid_for_substitution: bool,
 }
 
 impl<Component: PartialEq> PartialEq for Value<Component> {
     // Ignore the url_data field when comparing values for equality.
     fn eq(&self, other: &Self) -> bool {
-        self.v == other.v
+        self.v == other.v && self.valid_for_substitution == other.valid_for_substitution
     }
 }
 
@@ -230,6 +233,7 @@ impl<Component: Animate> Animate for Value<Component> {
             v,
             url_data: self.url_data.clone(),
             attr_tainted: self.attr_tainted,
+            valid_for_substitution: self.valid_for_substitution && other.valid_for_substitution,
         })
     }
 }
@@ -241,6 +245,7 @@ impl<Component> Value<Component> {
             v,
             url_data,
             attr_tainted: Default::default(),
+            valid_for_substitution: true,
         }
     }
 
@@ -253,7 +258,19 @@ impl<Component> Value<Component> {
             v,
             url_data,
             attr_tainted,
+            valid_for_substitution: true,
         }
+    }
+
+    /// Mark this computed value as unavailable for var() substitution.
+    pub(crate) fn invalid_for_substitution(mut self) -> Self {
+        self.valid_for_substitution = false;
+        self
+    }
+
+    /// Returns whether this value is available as a var() substitution source.
+    pub(crate) fn is_valid_for_substitution(&self) -> bool {
+        self.valid_for_substitution
     }
 }
 

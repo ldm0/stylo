@@ -2313,6 +2313,7 @@ fn substitute_all(
                     kind,
                     &mut context.map,
                     context.computed_context,
+                    /* valid_for_substitution = */ true,
                 );
             };
         loop {
@@ -2455,6 +2456,7 @@ fn handle_invalid_at_computed_value_time(
     kind: SubstitutionFunctionKind,
     substitution_functions: &mut ComputedSubstitutionFunctions,
     computed_context: &computed::Context,
+    valid_for_substitution: bool,
 ) {
     if kind == SubstitutionFunctionKind::Attr {
         // Early return: `attr()` is always treated as unregistered.
@@ -2470,7 +2472,12 @@ fn handle_invalid_at_computed_value_time(
         if registration.inherits() && !computed_context.is_root_element() {
             let inherited = computed_context.inherited_custom_properties();
             if let Some(value) = inherited.get(registration, name) {
-                substitution_functions.insert_var(registration, name, value.clone());
+                let value = if valid_for_substitution {
+                    value.clone()
+                } else {
+                    value.clone().invalid_for_substitution()
+                };
+                substitution_functions.insert_var(registration, name, value);
                 return;
             }
         } else if let Some(ref initial_value) = registration.initial_value {
@@ -2481,6 +2488,11 @@ fn handle_invalid_at_computed_value_time(
                 computed_context,
                 AttrTaint::default(),
             ) {
+                let initial_value = if valid_for_substitution {
+                    initial_value
+                } else {
+                    initial_value.invalid_for_substitution()
+                };
                 substitution_functions.insert_var(registration, name, initial_value);
                 return;
             }
@@ -2526,6 +2538,7 @@ fn substitute_references_if_needed_and_apply(
                 kind,
                 substitution_functions,
                 computed_context,
+                /* valid_for_substitution = */ true,
             );
             return None;
         },
@@ -2592,6 +2605,7 @@ fn substitute_references_if_needed_and_apply(
                         kind,
                         substitution_functions,
                         computed_context,
+                        /* valid_for_substitution = */ value.has_references(),
                     );
                     return None;
                 },
@@ -2839,6 +2853,7 @@ fn substitute_one_reference<'a>(
             let registration = stylist.get_custom_property_registration(&reference.name);
             substitution_functions
                 .get_var(registration, &reference.name)
+                .filter(|v| v.is_valid_for_substitution())
                 .map(|v| Substitution::from_value(v.to_variable_value(), v.attr_tainted))
         },
         SubstitutionFunctionKind::Env => {
