@@ -19,10 +19,14 @@ use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use crate::values::{
     animated::{self, Animate, Procedure},
     computed::{self, ToComputedValue},
+    resolved::ToResolvedValue,
     specified, CustomIdent,
 };
-use crate::{Namespace, Prefix};
-use cssparser::{BasicParseErrorKind, ParseErrorKind, Parser as CSSParser, TokenSerializationType};
+use crate::{Atom, Namespace, Prefix};
+use cssparser::{
+    serialize_identifier, BasicParseErrorKind, ParseErrorKind, Parser as CSSParser, Token,
+    TokenSerializationType,
+};
 use rustc_hash::FxHashMap;
 use selectors::matching::QuirksMode;
 use servo_arc::Arc;
@@ -47,6 +51,7 @@ pub type ComputedValueComponent = GenericValueComponent<
     computed::Time,
     computed::Resolution,
     computed::Transform,
+    CustomIdent,
 >;
 
 /// A single component of the specified value.
@@ -63,10 +68,11 @@ pub type SpecifiedValueComponent = GenericValueComponent<
     specified::Time,
     specified::Resolution,
     specified::Transform,
+    SpecifiedCustomIdent,
 >;
 
-impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
-    GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
+impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform, CustomIdent>
+    GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform, CustomIdent>
 {
     fn serialization_types(&self) -> (TokenSerializationType, TokenSerializationType) {
         let first_token_type = match self {
@@ -96,7 +102,7 @@ impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
 #[derive(
     Animate, Clone, ToCss, ToComputedValue, ToResolvedValue, Debug, MallocSizeOf, PartialEq, ToShmem,
 )]
-#[animation(no_bound(Image, Url))]
+#[animation(no_bound(Image, Url, CustomIdent))]
 pub enum GenericValueComponent<
     Length,
     Number,
@@ -110,6 +116,7 @@ pub enum GenericValueComponent<
     Time,
     Resolution,
     TransformFunction,
+    CustomIdent,
 > {
     /// A <length> value
     Length(Length),
@@ -147,6 +154,155 @@ pub enum GenericValueComponent<
     /// A <string> value
     #[animation(error)]
     String(OwnedStr),
+}
+
+/// A specified `<custom-ident>` component for registered custom properties.
+#[derive(Clone, ToCss, Debug, MallocSizeOf, PartialEq, ToShmem)]
+pub enum SpecifiedCustomIdent {
+    /// A plain identifier.
+    Ident(CustomIdent),
+    /// An `ident()` function, resolved at computed-value time.
+    IdentFunction(SpecifiedIdentFunction),
+}
+
+impl ToComputedValue for SpecifiedCustomIdent {
+    type ComputedValue = CustomIdent;
+
+    fn to_computed_value(&self, context: &computed::Context) -> Self::ComputedValue {
+        match *self {
+            Self::Ident(ref ident) => ident.clone(),
+            Self::IdentFunction(ref function) => function.to_computed_ident(context),
+        }
+    }
+
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        Self::Ident(computed.clone())
+    }
+}
+
+impl ToResolvedValue for SpecifiedCustomIdent {
+    type ResolvedValue = Self;
+    fn to_resolved_value(self, _: &crate::values::resolved::Context) -> Self {
+        self
+    }
+    fn from_resolved_value(resolved: Self::ResolvedValue) -> Self {
+        resolved
+    }
+}
+
+impl Animate for SpecifiedCustomIdent {
+    fn animate(&self, _other: &Self, _procedure: Procedure) -> Result<Self, ()> {
+        Err(())
+    }
+}
+
+/// A specified `ident()` function.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToShmem)]
+pub struct SpecifiedIdentFunction {
+    components: crate::OwnedSlice<IdentFunctionComponent>,
+}
+
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToShmem)]
+enum IdentFunctionComponent {
+    Ident(OwnedStr),
+    String(OwnedStr),
+    Integer(specified::Integer),
+}
+
+impl ToCss for IdentFunctionComponent {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::Ident(ref ident) => serialize_identifier(ident, dest),
+            Self::String(ref string) => string.to_css(dest),
+            Self::Integer(ref integer) => integer.to_css(dest),
+        }
+    }
+}
+
+impl ToCss for SpecifiedIdentFunction {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        dest.write_str("ident(")?;
+        let mut iter = self.components.iter();
+        if let Some(first) = iter.next() {
+            first.to_css(dest)?;
+            for component in iter {
+                dest.write_str(" ")?;
+                component.to_css(dest)?;
+            }
+        }
+        dest.write_str(")")
+    }
+}
+
+impl SpecifiedIdentFunction {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut CSSParser<'i, 't>,
+    ) -> Result<Self, StyleParseError<'i>> {
+        let mut components = vec![];
+        input.parse_nested_block(|input| {
+            while !input.is_exhausted() {
+                let location = input.current_source_location();
+                match *input.next()? {
+                    Token::Ident(ref ident) => {
+                        components.push(IdentFunctionComponent::Ident(OwnedStr::from(
+                            ident.as_ref().to_owned(),
+                        )));
+                    },
+                    Token::QuotedString(ref string) => {
+                        components.push(IdentFunctionComponent::String(OwnedStr::from(
+                            string.as_ref().to_owned(),
+                        )));
+                    },
+                    Token::Number {
+                        int_value: Some(value),
+                        ..
+                    } => {
+                        components.push(IdentFunctionComponent::Integer(specified::Integer::new(
+                            value,
+                        )));
+                    },
+                    Token::Function(ref name) => {
+                        let function =
+                            specified::calc::CalcNode::math_function(context, name, location)?;
+                        let value =
+                            specified::calc::CalcNode::parse_number(context, input, function)?;
+                        components.push(IdentFunctionComponent::Integer(
+                            specified::Integer::from_calc(value),
+                        ));
+                    },
+                    ref token => return Err(location.new_unexpected_token_error(token.clone())),
+                }
+            }
+            if components.is_empty() {
+                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            }
+            Ok(())
+        })?;
+        Ok(Self {
+            components: components.into(),
+        })
+    }
+
+    fn to_computed_ident(&self, context: &computed::Context) -> CustomIdent {
+        let mut result = String::new();
+        for component in self.components.iter() {
+            match *component {
+                IdentFunctionComponent::Ident(ref ident)
+                | IdentFunctionComponent::String(ref ident) => result.push_str(ident),
+                IdentFunctionComponent::Integer(ref integer) => {
+                    result.push_str(&integer.to_computed_value(context).to_string())
+                },
+            }
+        }
+        CustomIdent(Atom::from(result))
+    }
 }
 
 /// A list of component values, including the list's multiplier.
@@ -274,8 +430,8 @@ impl<Component> Value<Component> {
     }
 }
 
-impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>
-    Value<GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform>>
+impl<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform, CustomIdent>
+    Value<GenericValueComponent<L, N, P, LP, C, Image, U, Integer, A, T, R, Transform, CustomIdent>>
 where
     Self: ToCss,
 {
@@ -526,7 +682,9 @@ impl<'a> Parser<'a> {
                 if ident != *name {
                     return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
                 }
-                return Ok(SpecifiedValueComponent::CustomIdent(ident));
+                return Ok(SpecifiedValueComponent::CustomIdent(
+                    SpecifiedCustomIdent::Ident(ident),
+                ));
             },
         };
 
@@ -568,7 +726,13 @@ impl<'a> Parser<'a> {
                 specified::Transform::parse(context, input)?,
             ),
             DataType::CustomIdent => {
-                let name = CustomIdent::parse(input, &[])?;
+                let name = input
+                    .try_parse(|input| {
+                        input.expect_function_matching("ident")?;
+                        SpecifiedIdentFunction::parse(context, input)
+                    })
+                    .map(SpecifiedCustomIdent::IdentFunction)
+                    .or_else(|_| CustomIdent::parse(input, &[]).map(SpecifiedCustomIdent::Ident))?;
                 SpecifiedValueComponent::CustomIdent(name)
             },
             DataType::TransformList => {
@@ -763,5 +927,37 @@ impl CustomAnimatedValue {
                 None => CustomDeclarationValue::CSSWideKeyword(CSSWideKeyword::Initial),
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::properties_and_values::syntax::Descriptor as SyntaxDescriptor;
+    use crate::stylesheets::UrlExtraData;
+
+    fn parse_specified_value(css: &str, syntax: &str) -> SpecifiedValue {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let descriptor = SyntaxDescriptor::from_str(syntax, /* save_specified = */ false).unwrap();
+        let mut input = cssparser::ParserInput::new(css);
+        let mut input = CSSParser::new(&mut input);
+        SpecifiedValue::parse(
+            &mut input,
+            &descriptor,
+            &url_data,
+            None,
+            AllowComputationallyDependent::Yes,
+            AttrTaint::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn registered_custom_ident_accepts_ident_function() {
+        let value = parse_specified_value(
+            r#"ident("--myident" calc(42 * sign(1px - 0px)))"#,
+            "<custom-ident>",
+        );
+        assert_eq!(value.to_css_string(), r#"ident("--myident" calc(42))"#);
     }
 }

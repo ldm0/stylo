@@ -686,7 +686,7 @@ impl Integer {
     }
 
     /// Trivially constructs a new integer value from a `calc()` expression.
-    fn from_calc(val: CSSFloat) -> Self {
+    pub(crate) fn from_calc(val: CSSFloat) -> Self {
         Self::Calc(val)
     }
 }

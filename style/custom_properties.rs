@@ -11,6 +11,7 @@ use crate::computed_value_flags::ComputedValueFlags;
 use crate::custom_properties_map::{AllSubstitutionFunctions, CustomPropertiesMap, OwnMap};
 use crate::device::Device;
 use crate::dom::AttributeTracker;
+use crate::parser::ParserContext;
 use crate::properties::{
     CSSWideKeyword, CustomDeclaration, CustomDeclarationValue, LonghandId, LonghandIdSet,
     PropertyDeclaration,
@@ -24,10 +25,11 @@ use crate::properties_and_values::{
     },
 };
 use crate::selector_map::{PrecomputedHashMap, PrecomputedHashSet};
-use crate::stylesheets::UrlExtraData;
+use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
 use crate::stylist::Stylist;
 use crate::values::computed::{self, ToComputedValue};
 use crate::values::generics::calc::SortKey as AttrUnit;
+use crate::values::specified::calc::CalcNode as SpecifiedCalcNode;
 use crate::values::specified::FontRelativeLength;
 use crate::values::specified::ParsedNamespace;
 use crate::{derives::*, Namespace, Prefix};
@@ -36,6 +38,7 @@ use cssparser::{
     CowRcStr, Delimiter, Parser, ParserInput, SourcePosition, Token, TokenSerializationType,
 };
 use rustc_hash::FxHashMap;
+use selectors::matching::QuirksMode;
 use selectors::parser::SelectorParseErrorKind;
 use servo_arc::Arc;
 use smallvec::SmallVec;
@@ -44,6 +47,7 @@ use std::collections::hash_map::Entry;
 use std::fmt::{self, Write};
 use std::ops::{Index, IndexMut};
 use std::{cmp, num};
+use style_traits::ParsingMode;
 use style_traits::{
     CssString, CssWriter, ParseError, StyleParseErrorKind, ToCss, ToTyped, TypedValue,
     UnparsedSegment, UnparsedValue, VariableReferenceValue,
@@ -233,6 +237,49 @@ pub fn parse_name(s: &str) -> Result<&str, ()> {
         Ok(&s[2..])
     } else {
         Err(())
+    }
+}
+
+fn parse_var_reference_name<'i, 't>(
+    input: &mut Parser<'i, 't>,
+    context: &ParserContext,
+) -> Result<Name, ParseError<'i>> {
+    let location = input.current_source_location();
+    let name = if let Ok(name) = input.try_parse(|input| input.expect_ident_cloned()) {
+        name.to_string()
+    } else {
+        input.expect_function_matching("ident")?;
+        input.parse_nested_block(|input| {
+            let mut name = String::new();
+            while !input.is_exhausted() {
+                let location = input.current_source_location();
+                match *input.next()? {
+                    Token::Ident(ref ident) => name.push_str(ident),
+                    Token::QuotedString(ref string) => name.push_str(string),
+                    Token::Number {
+                        int_value: Some(value),
+                        ..
+                    } => name.push_str(&value.to_string()),
+                    Token::Function(ref function_name) => {
+                        let function =
+                            SpecifiedCalcNode::math_function(context, function_name, location)?;
+                        let value = SpecifiedCalcNode::parse_number(context, input, function)?;
+                        name.push_str(&((value + 0.5).floor() as i32).to_string());
+                    },
+                    ref token => return Err(location.new_unexpected_token_error(token.clone())),
+                }
+            }
+            Ok(name)
+        })?
+    };
+
+    match parse_name(&name) {
+        Ok(name) => Ok(Atom::from(name)),
+        Err(()) => Err(
+            location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(CowRcStr::from(
+                name,
+            ))),
+        ),
     }
 }
 
@@ -853,6 +900,7 @@ impl VariableValue {
             input,
             start_position,
             namespaces,
+            url_data,
             &mut references,
             &mut missing_closing_characters,
         )?;
@@ -978,6 +1026,7 @@ fn parse_declaration_value<'i, 't>(
     input: &mut Parser<'i, 't>,
     input_start: SourcePosition,
     namespaces: Option<&FxHashMap<Prefix, Namespace>>,
+    url_data: &UrlExtraData,
     references: &mut References,
     missing_closing_characters: &mut String,
 ) -> Result<(TokenSerializationType, TokenSerializationType), ParseError<'i>> {
@@ -986,6 +1035,7 @@ fn parse_declaration_value<'i, 't>(
             input,
             input_start,
             namespaces,
+            url_data,
             references,
             missing_closing_characters,
         )
@@ -997,6 +1047,7 @@ fn parse_declaration_value_block<'i, 't>(
     input: &mut Parser<'i, 't>,
     input_start: SourcePosition,
     namespaces: Option<&FxHashMap<Prefix, Namespace>>,
+    url_data: &UrlExtraData,
     references: &mut References,
     missing_closing_characters: &mut String,
 ) -> Result<(TokenSerializationType, TokenSerializationType), ParseError<'i>> {
@@ -1026,6 +1077,7 @@ fn parse_declaration_value_block<'i, 't>(
                         input,
                         input_start,
                         namespaces,
+                        url_data,
                         references,
                         missing_closing_characters,
                     )?;
@@ -1099,21 +1151,22 @@ fn parse_declaration_value_block<'i, 't>(
                         }
                         // TODO(emilio): For env() this should be <custom-ident> per spec, but no other browser does
                         // that, see https://github.com/w3c/csswg-drafts/issues/3262.
-                        let name = input.expect_ident()?;
-                        let name =
-                            Atom::from(if substitution_kind == SubstitutionFunctionKind::Var {
-                                match parse_name(name.as_ref()) {
-                                    Ok(name) => name,
-                                    Err(()) => {
-                                        let name = name.clone();
-                                        return Err(input.new_custom_error(
-                                            SelectorParseErrorKind::UnexpectedIdent(name),
-                                        ));
-                                    },
-                                }
-                            } else {
-                                name.as_ref()
-                            });
+                        let name = if substitution_kind == SubstitutionFunctionKind::Var {
+                            let context = ParserContext::new(
+                                Origin::Author,
+                                url_data,
+                                Some(CssRuleType::Style),
+                                ParsingMode::DEFAULT,
+                                QuirksMode::NoQuirks,
+                                /* namespaces = */ Default::default(),
+                                None,
+                                None,
+                                Default::default(),
+                            );
+                            parse_var_reference_name(input, &context)?
+                        } else {
+                            Atom::from(input.expect_ident()?.as_ref())
+                        };
 
                         let attribute_kind = if substitution_kind == SubstitutionFunctionKind::Attr
                         {
@@ -1156,6 +1209,7 @@ fn parse_declaration_value_block<'i, 't>(
                                 input,
                                 input_start,
                                 namespaces,
+                                url_data,
                                 references,
                                 missing_closing_characters,
                             )?;
@@ -1174,6 +1228,7 @@ fn parse_declaration_value_block<'i, 't>(
                                 input,
                                 input_start,
                                 namespaces,
+                                url_data,
                                 references,
                                 missing_closing_characters,
                             )?;
@@ -3059,6 +3114,13 @@ mod tests {
         let references = value.references.non_custom_references(false);
         assert!(references.intersects(NonCustomReferences::FONT_UNITS));
         assert!(references.intersects(NonCustomReferences::LH_UNITS));
+    }
+
+    #[test]
+    fn var_reference_name_allows_ident_function() {
+        let value = parse_variable_value(r#"var(ident("--myprop" calc(3 * sign(1px - 0px))))"#);
+        assert_eq!(value.references.refs.len(), 1);
+        assert_eq!(value.references.refs[0].name, Atom::from("myprop3"));
     }
 
     #[test]
