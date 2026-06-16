@@ -115,7 +115,7 @@ pub enum TreeCountingFunction {
 }
 
 impl TreeCountingFunction {
-    fn parse<'i, 't>(
+    pub(crate) fn parse<'i, 't>(
         name: &CowRcStr<'i>,
         input: &mut Parser<'i, 't>,
     ) -> Result<Option<Self>, ParseError<'i>> {

@@ -17,7 +17,7 @@ use crate::{
     values::{
         animated::ToAnimatedValue,
         generics::calc::{CalcUnits, GenericCalcNode},
-        specified::calc::{AllowParse, Leaf},
+        specified::calc::{AllowParse, Leaf, TreeCountingFunction},
     },
 };
 use cssparser::{color::OPAQUE, Parser, Token};
@@ -101,7 +101,13 @@ impl<ValueType: ColorComponentType> ColorComponent<ValueType> {
                 Ok(ColorComponent::ChannelKeyword(channel_keyword))
             },
             Token::Function(ref name) => {
-                let function = GenericCalcNode::math_function(context, name, location)?;
+                let name = name.clone();
+                if let Some(function) = TreeCountingFunction::parse(&name, input)? {
+                    return Ok(Self::Calc(Box::new(GenericCalcNode::Leaf(
+                        Leaf::TreeCountingFunction(function),
+                    ))));
+                }
+                let function = GenericCalcNode::math_function(context, &name, location)?;
                 let allow = AllowParse::new(if rcs_enabled() {
                     ValueType::units() | CalcUnits::COLOR_COMPONENT
                 } else {
