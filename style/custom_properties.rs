@@ -1705,6 +1705,20 @@ impl<'a, 'b: 'a> CustomPropertiesBuilder<'a, 'b> {
                     return existing_value != value;
                 }
                 if !registration.is_universal() {
+                    // Font-relative dependencies must be computed after prioritary
+                    // font properties. A speculative early compute can match the
+                    // initial value by accident, e.g. 10lh before line-height applies.
+                    if find_non_custom_references(
+                        registration,
+                        value,
+                        /* may_have_color_scheme = */ false,
+                        self.computed_context.is_root_element(),
+                        /* include_universal = */ false,
+                    )
+                    .is_some()
+                    {
+                        return true;
+                    }
                     compute_value(
                         &value.css,
                         &value.url_data,
@@ -3029,4 +3043,42 @@ pub fn substitute<'a>(
         css: v.css,
         attr_taint,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_variable_value(css: &str) -> VariableValue {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let mut input = ParserInput::new(css);
+        let mut parser = Parser::new(&mut input);
+        VariableValue::parse(&mut parser, None, &url_data).unwrap()
+    }
+
+    #[test]
+    fn custom_property_references_track_lh_units() {
+        let value = parse_variable_value("10lh");
+        let references = value.references.non_custom_references(false);
+        assert!(references.intersects(NonCustomReferences::FONT_UNITS));
+        assert!(references.intersects(NonCustomReferences::LH_UNITS));
+    }
+
+    #[test]
+    fn registered_length_lh_units_require_non_custom_dependency_resolution() {
+        let value = parse_variable_value("10lh");
+        let mut registration = PropertyDescriptors::default();
+        registration.syntax =
+            Some(SyntaxDescriptor::from_str("<length>", /* save_specified = */ false).unwrap());
+        let references = find_non_custom_references(
+            &registration,
+            &value,
+            /* may_have_color_scheme = */ false,
+            /* is_root_element = */ false,
+            /* include_universal = */ false,
+        )
+        .expect("registered <length> value with lh units should require deferral");
+        assert!(references.intersects(NonCustomReferences::FONT_UNITS));
+        assert!(references.intersects(NonCustomReferences::LH_UNITS));
+    }
 }
