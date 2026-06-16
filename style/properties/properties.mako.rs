@@ -1770,6 +1770,9 @@ impl ComputedValues {
         if shorthand == ShorthandId::TextDecoration {
             return self.computed_or_resolved_text_decoration_shorthand_value(context, dest);
         }
+        if shorthand == ShorthandId::WhiteSpace {
+            return self.computed_or_resolved_white_space_shorthand_value(context, dest);
+        }
 
         let mut values = Vec::new();
         for longhand in shorthand.longhands() {
@@ -1828,6 +1831,38 @@ impl ComputedValues {
             text_decoration_line: &text_decoration_line,
             text_decoration_style: &text_decoration_style,
             text_decoration_thickness: &text_decoration_thickness,
+        };
+        longhands.to_css(&mut CssWriter::new(dest))
+    }
+
+    fn computed_or_resolved_white_space_shorthand_value(
+        &self,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        let text_wrap_mode = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::TextWrapMode);
+                self.clone_text_wrap_mode().to_resolved_value(context)
+            },
+            None => self.clone_text_wrap_mode(),
+        };
+        let white_space_collapse = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::WhiteSpaceCollapse);
+                self.clone_white_space_collapse().to_resolved_value(context)
+            },
+            None => self.clone_white_space_collapse(),
+        };
+        let text_wrap_mode =
+            longhands::text_wrap_mode::SpecifiedValue::from_computed_value(&text_wrap_mode);
+        let white_space_collapse =
+            longhands::white_space_collapse::SpecifiedValue::from_computed_value(
+                &white_space_collapse,
+            );
+        let longhands = shorthands::white_space::LonghandsToSerialize {
+            text_wrap_mode: &text_wrap_mode,
+            white_space_collapse: &white_space_collapse,
         };
         longhands.to_css(&mut CssWriter::new(dest))
     }
