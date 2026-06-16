@@ -427,6 +427,7 @@ impl StyleFeaturePlain {
                 stylist,
                 ctx,
                 attribute_tracker,
+                false,
             ) {
                 Ok(sub) => sub,
                 Err(_) => return current_value.is_none(),
@@ -897,6 +898,7 @@ impl QueryCondition {
                 stylist,
                 context,
                 attribute_tracker,
+                false,
             ) {
                 Ok(sub) => sub,
                 Err(_) => return KleeneValue::Unknown,

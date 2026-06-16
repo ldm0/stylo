@@ -2636,6 +2636,7 @@ fn substitute_references_if_needed_and_apply(
         computed_context,
         attribute_tracker,
         None,
+        false,
     ) {
         Ok(v) => v,
         Err(..) => {
@@ -2854,6 +2855,7 @@ fn do_substitute_chunk<'a>(
     references: &mut std::iter::Peekable<std::slice::Iter<SubstitutionFunctionReference>>,
     attribute_tracker: &mut AttributeTracker,
     mut attr_taint: Option<&mut AttrTaint>,
+    allow_invalid_registered_values_for_substitution: bool,
 ) -> Result<Substitution<'a>, ()> {
     if start == end {
         // Empty string. Easy.
@@ -2896,6 +2898,7 @@ fn do_substitute_chunk<'a>(
             computed_context,
             references,
             attribute_tracker,
+            allow_invalid_registered_values_for_substitution,
         )?;
 
         // Optimize the property: var(--...) case to avoid allocating at all.
@@ -2945,6 +2948,7 @@ fn substitute_one_reference<'a>(
     computed_context: &computed::Context,
     references: &mut std::iter::Peekable<std::slice::Iter<SubstitutionFunctionReference>>,
     attribute_tracker: &mut AttributeTracker,
+    allow_invalid_registered_values_for_substitution: bool,
 ) -> Result<Substitution<'a>, ()> {
     let simple_attr_subst = |s: &str| {
         Some(Substitution::new(
@@ -2962,7 +2966,10 @@ fn substitute_one_reference<'a>(
                 let registration = stylist.get_custom_property_registration(&name);
                 substitution_functions
                     .get_var(registration, &name)
-                    .filter(|v| v.is_valid_for_substitution())
+                    .filter(|v| {
+                        v.is_valid_for_substitution()
+                            || allow_invalid_registered_values_for_substitution
+                    })
                     .map(|v| Substitution::from_value(v.to_variable_value(), v.attr_tainted))
             }),
         SubstitutionFunctionKind::Env => {
@@ -3093,6 +3100,7 @@ fn substitute_one_reference<'a>(
         references,
         attribute_tracker,
         /* attr_taint */ None,
+        allow_invalid_registered_values_for_substitution,
     )
 }
 
@@ -3104,6 +3112,7 @@ fn substitute_internal<'a>(
     computed_context: &computed::Context,
     attribute_tracker: &mut AttributeTracker,
     mut attr_taint: Option<&mut AttrTaint>,
+    allow_invalid_registered_values_for_substitution: bool,
 ) -> Result<Substitution<'a>, ()> {
     let mut refs = variable_value.references.refs.iter().peekable();
     do_substitute_chunk(
@@ -3119,6 +3128,7 @@ fn substitute_internal<'a>(
         &mut refs,
         attribute_tracker,
         attr_taint.as_deref_mut(),
+        allow_invalid_registered_values_for_substitution,
     )
 }
 
@@ -3129,6 +3139,7 @@ pub fn substitute<'a>(
     stylist: &Stylist,
     computed_context: &computed::Context,
     attribute_tracker: &mut AttributeTracker,
+    allow_invalid_registered_values_for_substitution: bool,
 ) -> Result<SubstitutionResult<'a>, ()> {
     debug_assert!(variable_value.has_references());
     let mut attr_taint = AttrTaint::default();
@@ -3139,6 +3150,7 @@ pub fn substitute<'a>(
         computed_context,
         attribute_tracker,
         Some(&mut attr_taint),
+        allow_invalid_registered_values_for_substitution,
     )?;
     Ok(SubstitutionResult {
         css: v.css,

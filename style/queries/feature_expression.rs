@@ -1049,6 +1049,7 @@ impl QueryStyleRange {
                     stylist,
                     context,
                     attribute_tracker,
+                    false,
                 )
                 .ok()?;
                 Self::resolve_universal(

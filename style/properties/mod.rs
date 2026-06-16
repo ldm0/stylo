@@ -1506,6 +1506,7 @@ impl UnparsedValue {
             stylist,
             computed_context,
             attribute_tracker,
+            true,
         ) {
             Ok(css) => css,
             Err(..) => return invalid_at_computed_value_time(),
