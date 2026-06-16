@@ -2245,17 +2245,14 @@ fn substitute_all(
                         },
                         SubstitutionFunctionKind::Env => {},
                     }
-
-                    reference_index += 1;
-                    while reference_index < v.references.refs.len()
-                        && v.references.refs[reference_index].end <= next.end
-                    {
-                        reference_index += 1;
-                    }
-                    continue;
                 }
 
                 reference_index += 1;
+                while reference_index < v.references.refs.len()
+                    && v.references.refs[reference_index].end <= next.end
+                {
+                    reference_index += 1;
+                }
             }
 
             // ... Then non-custom properties.
