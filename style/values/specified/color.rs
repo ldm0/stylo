@@ -883,11 +883,17 @@ impl Color {
                 ComputedColor::Absolute(color)
             },
             Color::ColorFunction(ref color_function) => {
-                debug_assert!(color_function.has_origin_color(),
-                    "no need for a ColorFunction if it doesn't contain an unresolvable origin color");
+                debug_assert!(
+                    color_function.has_origin_color() || color_function.has_tree_counting_function(),
+                    "no need for a ColorFunction if it doesn't contain an unresolvable origin color or dynamic math"
+                );
 
                 // Try to eagerly resolve the color function before making it a computed color.
-                if let Ok(absolute) = color_function.resolve_to_absolute() {
+                let absolute_color_function = color_function
+                    .map_origin_color(|origin_color| origin_color.resolve_to_absolute())?;
+                if let Ok(absolute) =
+                    absolute_color_function.resolve_to_absolute_with_context(context)
+                {
                     ComputedColor::Absolute(absolute)
                 } else {
                     let color_function = color_function

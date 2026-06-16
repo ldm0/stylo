@@ -226,9 +226,43 @@ pub struct Context<'a> {
 
     /// Container size query for this context.
     container_size_query: RefCell<ContainerSizeQuery<'a>>,
+
+    /// Tree-counting context for CSS Values functions like `sibling-index()`.
+    tree_counting: TreeCountingContext,
+}
+
+/// Tree-counting data needed by CSS Values tree-counting functions.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TreeCountingContext {
+    /// The current element's one-based sibling index.
+    pub sibling_index: Option<CSSFloat>,
+    /// The number of element siblings in the current element's parent.
+    pub sibling_count: Option<CSSFloat>,
 }
 
 impl<'a> Context<'a> {
+    /// Return the current element's one-based sibling index, if available.
+    pub fn sibling_index(&self) -> Option<CSSFloat> {
+        self.tree_counting.sibling_index
+    }
+
+    /// Return the current element's sibling count, if available.
+    pub fn sibling_count(&self) -> Option<CSSFloat> {
+        self.tree_counting.sibling_count
+    }
+
+    /// Set tree-counting context for CSS Values functions.
+    pub fn set_tree_counting_context(
+        &mut self,
+        sibling_index: Option<CSSFloat>,
+        sibling_count: Option<CSSFloat>,
+    ) {
+        self.tree_counting = TreeCountingContext {
+            sibling_index,
+            sibling_count,
+        };
+    }
+
     /// Lazily evaluate the container size query, returning the result.
     pub fn get_container_size_query(&self) -> ContainerSizeQueryResult {
         let mut resolved = self.container_size_query.borrow_mut();
@@ -256,6 +290,7 @@ impl<'a> Context<'a> {
             scope: CascadeLevel::same_tree_author_normal(),
             included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(ContainerSizeQuery::none()),
+            tree_counting: TreeCountingContext::default(),
         };
         f(&context)
     }
@@ -294,6 +329,7 @@ impl<'a> Context<'a> {
             scope: CascadeLevel::same_tree_author_normal(),
             included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(container_size_query),
+            tree_counting: TreeCountingContext::default(),
         };
 
         f(&context)
@@ -326,6 +362,7 @@ impl<'a> Context<'a> {
             scope: CascadeLevel::same_tree_author_normal(),
             included_cascade_flags,
             container_size_query: RefCell::new(container_size_query),
+            tree_counting: TreeCountingContext::default(),
         }
     }
 
@@ -349,6 +386,7 @@ impl<'a> Context<'a> {
             scope: CascadeLevel::same_tree_author_normal(),
             included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(container_size_query),
+            tree_counting: TreeCountingContext::default(),
         }
     }
 
@@ -373,6 +411,7 @@ impl<'a> Context<'a> {
             scope: CascadeLevel::same_tree_author_normal(),
             included_cascade_flags: RuleCascadeFlags::empty(),
             container_size_query: RefCell::new(ContainerSizeQuery::none()),
+            tree_counting: TreeCountingContext::default(),
         }
     }
 

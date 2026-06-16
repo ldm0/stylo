@@ -13,6 +13,7 @@ use super::{
 use crate::derives::*;
 use crate::{
     parser::ParserContext,
+    values::computed,
     values::{
         animated::ToAnimatedValue,
         generics::calc::{CalcUnits, GenericCalcNode},
@@ -43,6 +44,20 @@ impl<ValueType> ColorComponent<ValueType> {
     #[inline]
     pub fn is_none(&self) -> bool {
         matches!(self, Self::None)
+    }
+
+    /// Return whether this component contains a tree-counting math function.
+    pub fn has_tree_counting_function(&self) -> bool {
+        let Self::Calc(node) = self else {
+            return false;
+        };
+        let mut found = false;
+        node.clone().visit_depth_first(|node| {
+            if let GenericCalcNode::Leaf(Leaf::TreeCountingFunction(_)) = node {
+                found = true;
+            }
+        });
+        found
     }
 }
 
@@ -109,7 +124,11 @@ impl<ValueType: ColorComponentType> ColorComponent<ValueType> {
     }
 
     /// Resolve a [ColorComponent] into a float.  None is "none".
-    pub fn resolve(&self, origin_color: Option<&AbsoluteColor>) -> Result<Option<ValueType>, ()> {
+    pub fn resolve(
+        &self,
+        origin_color: Option<&AbsoluteColor>,
+        context: Option<&computed::Context>,
+    ) -> Result<Option<ValueType>, ()> {
         Ok(match self {
             ColorComponent::None => None,
             ColorComponent::Value(value) => Some(value.clone()),
@@ -130,6 +149,12 @@ impl<ValueType: ColorComponentType> ColorComponent<ValueType> {
                                 Leaf::Number(value.unwrap_or(0.0))
                             },
                             None => return Err(()),
+                        },
+                        Leaf::TreeCountingFunction(function) => {
+                            let Some(context) = context else {
+                                return Err(());
+                            };
+                            Leaf::Number(function.to_number(context)?)
                         },
                         l => l.clone(),
                     })

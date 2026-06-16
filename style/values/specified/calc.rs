@@ -100,6 +100,50 @@ pub enum Leaf {
     Percentage(CSSFloat),
     /// `<number>`
     Number(CSSFloat),
+    /// A tree-counting function that resolves to a number at computed-value time.
+    TreeCountingFunction(TreeCountingFunction),
+}
+
+/// CSS Values tree-counting functions.
+#[derive(Clone, Copy, Debug, MallocSizeOf, PartialEq, ToShmem)]
+#[repr(u8)]
+pub enum TreeCountingFunction {
+    /// `sibling-index()`
+    SiblingIndex,
+    /// `sibling-count()`
+    SiblingCount,
+}
+
+impl TreeCountingFunction {
+    fn parse<'i, 't>(
+        name: &CowRcStr<'i>,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Option<Self>, ParseError<'i>> {
+        let function = match_ignore_ascii_case! { &**name,
+            "sibling-index" => Self::SiblingIndex,
+            "sibling-count" => Self::SiblingCount,
+            _ => return Ok(None),
+        };
+        input.parse_nested_block(|input| {
+            if input.is_exhausted() {
+                Ok(())
+            } else {
+                Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+            }
+        })?;
+        Ok(Some(function))
+    }
+
+    pub(crate) fn to_number(
+        self,
+        context: &crate::values::computed::Context,
+    ) -> Result<CSSFloat, ()> {
+        match self {
+            Self::SiblingIndex => context.sibling_index(),
+            Self::SiblingCount => context.sibling_count(),
+        }
+        .ok_or(())
+    }
 }
 
 impl Leaf {
@@ -124,6 +168,12 @@ impl ToCss for Leaf {
             Self::Angle(ref a) => a.to_css(dest),
             Self::Time(ref t) => t.to_css(dest),
             Self::ColorComponent(ref s) => s.to_css(dest),
+            Self::TreeCountingFunction(TreeCountingFunction::SiblingIndex) => {
+                dest.write_str("sibling-index()")
+            },
+            Self::TreeCountingFunction(TreeCountingFunction::SiblingCount) => {
+                dest.write_str("sibling-count()")
+            },
         }
     }
 }
@@ -236,7 +286,7 @@ impl generic::CalcNodeLeaf for Leaf {
             Leaf::Resolution(_) => CalcUnits::RESOLUTION,
             Leaf::ColorComponent(_) => CalcUnits::COLOR_COMPONENT,
             Leaf::Percentage(_) => CalcUnits::PERCENTAGE,
-            Leaf::Number(_) => CalcUnits::empty(),
+            Leaf::Number(_) | Leaf::TreeCountingFunction(_) => CalcUnits::empty(),
         }
     }
 
@@ -247,7 +297,7 @@ impl generic::CalcNodeLeaf for Leaf {
             Self::Resolution(ref r) => r.dppx(),
             Self::Angle(ref a) => a.degrees(),
             Self::Time(ref t) => t.seconds(),
-            Self::ColorComponent(_) => return None,
+            Self::ColorComponent(_) | Self::TreeCountingFunction(_) => return None,
         })
     }
 
@@ -290,10 +340,17 @@ impl generic::CalcNodeLeaf for Leaf {
             (&Resolution(ref one), &Resolution(ref other)) => one.dppx().partial_cmp(&other.dppx()),
             (&Number(ref one), &Number(ref other)) => one.partial_cmp(other),
             (&ColorComponent(ref one), &ColorComponent(ref other)) => one.partial_cmp(other),
+            (&TreeCountingFunction(_), &TreeCountingFunction(_)) => None,
             _ => {
                 match *self {
-                    Length(..) | Percentage(..) | Angle(..) | Time(..) | Number(..)
-                    | Resolution(..) | ColorComponent(..) => {},
+                    Length(..)
+                    | Percentage(..)
+                    | Angle(..)
+                    | Time(..)
+                    | Number(..)
+                    | Resolution(..)
+                    | ColorComponent(..)
+                    | TreeCountingFunction(..) => {},
                 }
                 unsafe {
                     debug_unreachable!("Forgot a branch?");
@@ -309,14 +366,15 @@ impl generic::CalcNodeLeaf for Leaf {
             | Leaf::Time(_)
             | Leaf::Resolution(_)
             | Leaf::Percentage(_)
-            | Leaf::ColorComponent(_) => None,
+            | Leaf::ColorComponent(_)
+            | Leaf::TreeCountingFunction(_) => None,
             Leaf::Number(value) => Some(value),
         }
     }
 
     fn sort_key(&self) -> SortKey {
         match *self {
-            Self::Number(..) => SortKey::Number,
+            Self::Number(..) | Self::TreeCountingFunction(..) => SortKey::Number,
             Self::Percentage(..) => SortKey::Percentage,
             Self::Time(..) => SortKey::S,
             Self::Resolution(..) => SortKey::Dppx,
@@ -415,10 +473,17 @@ impl generic::CalcNodeLeaf for Leaf {
                 // Can not get the sum of color components, because they haven't been resolved yet.
                 return Err(());
             },
+            (&mut TreeCountingFunction(_), &TreeCountingFunction(_)) => return Err(()),
             _ => {
                 match *other {
-                    Number(..) | Percentage(..) | Angle(..) | Time(..) | Resolution(..)
-                    | Length(..) | ColorComponent(..) => {},
+                    Number(..)
+                    | Percentage(..)
+                    | Angle(..)
+                    | Time(..)
+                    | Resolution(..)
+                    | Length(..)
+                    | ColorComponent(..)
+                    | TreeCountingFunction(..) => {},
                 }
                 unsafe {
                     debug_unreachable!();
@@ -496,10 +561,19 @@ impl generic::CalcNodeLeaf for Leaf {
             (&ColorComponent(..), &ColorComponent(..)) => {
                 return Err(());
             },
+            (&TreeCountingFunction(..), &TreeCountingFunction(..)) => {
+                return Err(());
+            },
             _ => {
                 match *other {
-                    Number(..) | Percentage(..) | Angle(..) | Time(..) | Length(..)
-                    | Resolution(..) | ColorComponent(..) => {},
+                    Number(..)
+                    | Percentage(..)
+                    | Angle(..)
+                    | Time(..)
+                    | Length(..)
+                    | Resolution(..)
+                    | ColorComponent(..)
+                    | TreeCountingFunction(..) => {},
                 }
                 unsafe {
                     debug_unreachable!();
@@ -517,6 +591,7 @@ impl generic::CalcNodeLeaf for Leaf {
             Leaf::Percentage(one) => *one = op(*one),
             Leaf::Number(one) => *one = op(*one),
             Leaf::ColorComponent(..) => return Err(()),
+            Leaf::TreeCountingFunction(..) => return Err(()),
         })
     }
 }
@@ -740,7 +815,11 @@ impl CalcNode {
                 Ok(CalcNode::AnchorSize(Box::new(anchor_size_function)))
             },
             &Token::Function(ref name) => {
-                let function = CalcNode::math_function(context, name, location)?;
+                let name = name.clone();
+                if let Some(function) = TreeCountingFunction::parse(&name, input)? {
+                    return Ok(CalcNode::Leaf(Leaf::TreeCountingFunction(function)));
+                }
+                let function = CalcNode::math_function(context, &name, location)?;
                 CalcNode::parse(context, input, function, allowed)
             },
             &Token::Ident(ref ident) => {
@@ -1293,6 +1372,13 @@ impl CalcNode {
         let mut unsupported = false;
         let node = self.map_leaves(|leaf| match *leaf {
             Leaf::Number(n) => CalcLengthPercentageLeaf::Number(n),
+            Leaf::TreeCountingFunction(function) => match function.to_number(context) {
+                Ok(number) => CalcLengthPercentageLeaf::Number(number),
+                Err(()) => {
+                    unsupported = true;
+                    CalcLengthPercentageLeaf::Number(0.0)
+                },
+            },
             Leaf::Percentage(p) => {
                 CalcLengthPercentageLeaf::Percentage(crate::values::computed::Percentage(p))
             },

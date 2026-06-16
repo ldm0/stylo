@@ -438,6 +438,11 @@ pub trait TElement:
         true
     }
 
+    /// Tree-counting data for CSS Values functions such as `sibling-index()`.
+    fn tree_counting_context(&self) -> crate::values::computed::TreeCountingContext {
+        crate::values::computed::TreeCountingContext::default()
+    }
+
     /// Whether this element should match user and content rules.
     ///
     /// We use this for Native Anonymous Content in Gecko.

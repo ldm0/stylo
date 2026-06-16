@@ -106,6 +106,8 @@ pub fn parse_color_with<'i, 't>(
                     Ok(SpecifiedColor::ColorFunction(Box::new(color_function)))
                 } else if let Ok(resolved) = color_function.resolve_to_absolute() {
                     Ok(SpecifiedColor::from_absolute_color(resolved))
+                } else if color_function.has_tree_counting_function() {
+                    Ok(SpecifiedColor::ColorFunction(Box::new(color_function)))
                 } else {
                     // This will only happen when the parsed color contains errors like calc units
                     // that cannot be resolved at parse time, but will fail when trying to resolve
@@ -149,7 +151,7 @@ fn parse_color_function<'i, 't>(
         let abs = color
             .map_origin_color(|_| Ok(AbsoluteColor::TRANSPARENT_BLACK))
             .unwrap();
-        if abs.resolve_to_absolute().is_err() {
+        if abs.resolve_to_absolute().is_err() && !abs.has_tree_counting_function() {
             return Err(arguments.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
     }
