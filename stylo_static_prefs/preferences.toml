@@ -1,7 +1,7 @@
 "dom.select.customizable_select.enabled" = false
 "dom.viewTransitions.cross-document.enabled" = false
 "layout.columns.enabled" = false
-"layout.container-queries.enabled" = false
+"layout.container-queries.enabled" = true
 "layout.css.anchor-positioning.enabled" = false
 "layout.css.appearance-base.enabled" = false
 "layout.css.at-scope.enabled" = false
