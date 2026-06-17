@@ -2520,8 +2520,8 @@ pub mod font {
     };
     use crate::properties::longhands::{
         font_kerning, font_optical_sizing, font_stretch, font_style, font_variant_caps,
-        font_variant_east_asian, font_variant_ligatures, font_variant_numeric, font_variation_settings,
-        font_weight,
+        font_variant_east_asian, font_variant_ligatures, font_variant_numeric,
+        font_variation_settings, font_weight,
     };
     #[cfg(feature = "gecko")]
     use crate::values::specified::font::SystemFont;
@@ -2839,7 +2839,9 @@ pub mod font_variant {
     use crate::properties::longhands::{
         font_variant_alternates, font_variant_emoji, font_variant_position,
     };
-    use crate::properties::longhands::{font_variant_caps, font_variant_east_asian, font_variant_ligatures, font_variant_numeric};
+    use crate::properties::longhands::{
+        font_variant_caps, font_variant_east_asian, font_variant_ligatures, font_variant_numeric,
+    };
     use crate::values::specified::FontVariantLigatures;
 
     pub fn parse_value<'i, 't>(
