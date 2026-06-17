@@ -134,7 +134,7 @@ impl LightmountSiblingInvalidationSummary {
 /// Lightmount-facing invalidation dependency kind extracted from Stylo's
 /// selector invalidation maps.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum LightmountDependencyKind {
+enum LightmountDependencyKind {
     /// The changed element itself can be invalidated.
     Element,
     /// The changed element and descendants can be invalidated.
@@ -181,7 +181,7 @@ pub enum LightmountDependencyInvalidationAction {
     /// Scope dependency handling needs the scope-specific retained path.
     Scope(LightmountScopeDependencyInvalidationAction),
     /// This dependency cannot be executed by Lightmount's retained path.
-    Fallback(LightmountDependencyFallbackReason),
+    Fallback(LightmountSourceInvalidationFallbackReason),
 }
 
 /// Sink for applying one retained dependency invalidation action.
@@ -316,6 +316,13 @@ pub enum LightmountStyleInvalidationQuery<'a> {
     CustomState(&'a str),
 }
 
+/// One pseudo-class state invalidation root derived for Lightmount.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LightmountStateInvalidationRoot<Root> {
+    root: Root,
+    state: ElementState,
+}
+
 /// Source-local retained invalidation query after the runtime-owned retained
 /// query has been borrowed into Stylo invalidation-map query shape.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -324,6 +331,26 @@ pub struct LightmountSourceStyleInvalidationQuery<'a, Root> {
     query: LightmountStyleInvalidationQuery<'a>,
     previous_sibling: Option<Root>,
     next_sibling: Option<Root>,
+}
+
+impl<Root: Copy> LightmountStateInvalidationRoot<Root> {
+    /// Create one state invalidation root.
+    #[inline]
+    pub fn new(root: Root, state: ElementState) -> Self {
+        Self { root, state }
+    }
+
+    /// Return the root that should be invalidated for this state change.
+    #[inline]
+    pub fn root(&self) -> Root {
+        self.root
+    }
+
+    /// Return the pseudo-class state represented by this root.
+    #[inline]
+    pub fn state(&self) -> ElementState {
+        self.state
+    }
 }
 
 /// Sibling context used when querying retained style invalidation for a root
@@ -436,6 +463,27 @@ pub struct LightmountStyleMutationElementSnapshot {
     old_custom_states: Option<Vec<String>>,
 }
 
+/// Materialized old element state used by Stylo's invalidation selector
+/// matching for one Lightmount element.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LightmountStyleInvalidationSnapshot<Root> {
+    element: Root,
+    state: Option<ElementState>,
+    custom_states: Option<Vec<String>>,
+    changed_attributes: Vec<String>,
+    attributes: Vec<LightmountStyleInvalidationSnapshotAttribute>,
+}
+
+/// One materialized attribute in a [`LightmountStyleInvalidationSnapshot`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LightmountStyleInvalidationSnapshotAttribute {
+    local_name: String,
+    name: String,
+    namespace: String,
+    prefix: Option<String>,
+    value: String,
+}
+
 /// One retained mutation attribute change borrowed from
 /// [`LightmountStyleMutationElementSnapshot`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -451,15 +499,21 @@ pub struct LightmountDependencyInvalidationContextRoots<Root> {
     roots: Vec<Root>,
 }
 
+/// Opaque context-root plan derived from a dependency query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LightmountDependencyContextRootPlan {
+    flags: LightmountDependencyContextRootFlags,
+    allow_direct_previous_following_sibling_fallback: bool,
+}
+
 /// Adapter used by the source dependency planner when mutation-context roots
 /// require DOM traversal.
 pub trait LightmountSourceDependencyInvalidationContextRootsProvider<Root> {
-    /// Build conservative context roots for one dependency query.
+    /// Build conservative context roots from a Stylo-derived root plan.
     fn context_roots_for_source_dependency(
         &mut self,
         root: Root,
-        query: &LightmountDependencyQueryResult,
-        allow_direct_previous_following_sibling_fallback: bool,
+        plan: LightmountDependencyContextRootPlan,
         context: LightmountDependencyInvalidationFallbackContext<Root>,
     ) -> LightmountDependencyInvalidationContextRoots<Root>;
 }
@@ -505,6 +559,26 @@ pub struct LightmountRetainedStyleChildListInvalidationQueries<Root> {
     base_roots: Vec<Root>,
     empty_target_fallback_roots: Vec<Root>,
     relative_previous_sibling_cleanup_roots: Vec<Root>,
+}
+
+/// Sink used to drain child-list retained invalidation query batches into a
+/// runtime-owned pending plan.
+pub trait LightmountRetainedStyleChildListInvalidationQueriesSink<Root> {
+    /// Record one retained query and its source dependency requirement.
+    fn record_child_list_retained_query(
+        &mut self,
+        query: LightmountRetainedStyleInvalidationQuery<Root>,
+        requirement: LightmountSourceDependencyRequestRequirement,
+    );
+
+    /// Extend base structural-boundary cleanup roots.
+    fn extend_child_list_base_roots(&mut self, roots: Vec<Root>);
+
+    /// Extend empty-target fallback roots.
+    fn extend_child_list_empty_target_fallback_roots(&mut self, roots: Vec<Root>);
+
+    /// Extend direct previous-sibling relative cleanup roots.
+    fn extend_child_list_relative_previous_sibling_cleanup_roots(&mut self, roots: Vec<Root>);
 }
 
 /// Builder for retained invalidation queries and cleanup roots produced from
@@ -1020,7 +1094,7 @@ impl LightmountSourceDependencyRequestRequirement {
 
     /// Merge requirements for duplicate retained queries.
     #[inline]
-    pub fn merged_with(self, incoming: Self) -> Self {
+    fn merged_with(self, incoming: Self) -> Self {
         Self {
             requires_child_list_structural_dependency: self
                 .requires_child_list_structural_dependency
@@ -1043,6 +1117,15 @@ impl LightmountSourceDependencyRequestRequirement {
     pub fn requires_relative_previous_sibling_dependency(self) -> bool {
         self.requires_relative_previous_sibling_dependency
     }
+}
+
+/// Merge source dependency request requirements for duplicate retained queries.
+#[inline]
+pub fn lightmount_merge_source_dependency_request_requirement(
+    existing: LightmountSourceDependencyRequestRequirement,
+    incoming: LightmountSourceDependencyRequestRequirement,
+) -> LightmountSourceDependencyRequestRequirement {
+    existing.merged_with(incoming)
 }
 
 impl<Root> LightmountDependencyInvalidationFallbackContext<Root> {
@@ -1172,6 +1255,118 @@ impl LightmountStyleMutationElementSnapshot {
     }
 }
 
+impl<Root: Copy> LightmountStyleInvalidationSnapshot<Root> {
+    /// Create a materialized invalidation snapshot.
+    #[inline]
+    pub fn new(
+        element: Root,
+        state: Option<ElementState>,
+        custom_states: Option<Vec<String>>,
+        changed_attributes: Vec<String>,
+        attributes: Vec<LightmountStyleInvalidationSnapshotAttribute>,
+    ) -> Self {
+        Self {
+            element,
+            state,
+            custom_states,
+            changed_attributes,
+            attributes,
+        }
+    }
+
+    /// Return the element this snapshot belongs to.
+    #[inline]
+    pub fn element(&self) -> Root {
+        self.element
+    }
+
+    /// Return the old pseudo-class state, when captured.
+    #[inline]
+    pub fn state(&self) -> Option<ElementState> {
+        self.state
+    }
+
+    /// Return the old custom-state set, when captured.
+    #[inline]
+    pub fn custom_states(&self) -> Option<&[String]> {
+        self.custom_states.as_deref()
+    }
+
+    /// Return old attribute values after applying captured mutation facts.
+    #[inline]
+    pub fn attributes(&self) -> &[LightmountStyleInvalidationSnapshotAttribute] {
+        &self.attributes
+    }
+
+    /// Return attribute local names changed by this mutation.
+    #[inline]
+    pub fn changed_attributes(&self) -> &[String] {
+        &self.changed_attributes
+    }
+}
+
+impl LightmountStyleInvalidationSnapshotAttribute {
+    /// Create one materialized invalidation snapshot attribute.
+    #[inline]
+    pub fn new(
+        local_name: String,
+        name: String,
+        namespace: String,
+        prefix: Option<String>,
+        value: String,
+    ) -> Self {
+        Self {
+            local_name,
+            name,
+            namespace,
+            prefix,
+            value,
+        }
+    }
+
+    /// Return the local name.
+    #[inline]
+    pub fn local_name(&self) -> &str {
+        &self.local_name
+    }
+
+    /// Return the qualified attribute name.
+    #[inline]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Return the namespace string.
+    #[inline]
+    pub fn namespace(&self) -> &str {
+        &self.namespace
+    }
+
+    /// Return the prefix, when present.
+    #[inline]
+    pub fn prefix(&self) -> Option<&str> {
+        self.prefix.as_deref()
+    }
+
+    /// Return the attribute value.
+    #[inline]
+    pub fn value(&self) -> &str {
+        &self.value
+    }
+
+    /// Replace the materialized attribute value.
+    #[inline]
+    pub fn set_value(&mut self, value: String) {
+        self.value = value;
+    }
+
+    /// Return whether this attribute has no namespace and the given local name.
+    #[inline]
+    pub fn is_no_namespace_local_name(&self, local_name: &str) -> bool {
+        self.namespace.is_empty() && self.local_name == local_name
+    }
+}
+
 impl<'a> LightmountStyleMutationAttributeChange<'a> {
     /// Return the changed attribute local name.
     #[inline]
@@ -1189,7 +1384,7 @@ impl<'a> LightmountStyleMutationAttributeChange<'a> {
 impl<Root> LightmountDependencyInvalidationContextRoots<Root> {
     /// Create context-derived fallback roots.
     #[inline]
-    pub fn new(requires_source_fallback: bool, roots: Vec<Root>) -> Self {
+    fn new(requires_source_fallback: bool, roots: Vec<Root>) -> Self {
         Self {
             requires_source_fallback,
             roots,
@@ -1199,19 +1394,19 @@ impl<Root> LightmountDependencyInvalidationContextRoots<Root> {
     /// Returns whether these roots are insufficient for exact-safety fallback
     /// and source fallback roots are required.
     #[inline]
-    pub fn requires_source_fallback(&self) -> bool {
+    fn requires_source_fallback(&self) -> bool {
         self.requires_source_fallback
     }
 
     /// Return the context-derived roots.
     #[inline]
-    pub fn roots(&self) -> &[Root] {
+    fn roots(&self) -> &[Root] {
         &self.roots
     }
 
     /// Consume this value and return the context-derived roots.
     #[inline]
-    pub fn into_roots(self) -> Vec<Root> {
+    fn into_roots(self) -> Vec<Root> {
         self.roots
     }
 }
@@ -1236,27 +1431,27 @@ where
 
     /// Return the retained query for this request.
     #[inline]
-    pub fn query(&self) -> &'a LightmountRetainedStyleInvalidationQuery<Root> {
+    fn query(&self) -> &'a LightmountRetainedStyleInvalidationQuery<Root> {
         self.query
     }
 
     /// Return the optional mutation-time fallback context.
     #[inline]
-    pub fn context(&self) -> Option<LightmountDependencyInvalidationFallbackContext<Root>> {
+    fn context(&self) -> Option<LightmountDependencyInvalidationFallbackContext<Root>> {
         self.context
     }
 
     /// Return whether this request requires child-list structural dependencies
     /// in the source.
     #[inline]
-    pub fn requires_child_list_structural_dependency(&self) -> bool {
+    fn requires_child_list_structural_dependency(&self) -> bool {
         self.requirement.requires_child_list_structural_dependency()
     }
 
     /// Return whether this request requires direct previous-sibling relative
     /// dependencies in the source.
     #[inline]
-    pub fn requires_relative_previous_sibling_dependency(&self) -> bool {
+    fn requires_relative_previous_sibling_dependency(&self) -> bool {
         self.requirement
             .requires_relative_previous_sibling_dependency()
     }
@@ -1284,16 +1479,102 @@ impl LightmountSourceDependencySummary {
         )
     }
 
-    /// Return the underlying source dependency summary.
+    /// Query dependencies for a changed class through this source summary.
     #[inline]
-    pub fn dependency_summary(&self) -> &LightmountDependencyInvalidationSummary {
-        &self.dependency_summary
+    pub fn query_class(&self, class: &Atom) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_class(class)
+    }
+
+    /// Query dependencies for a changed id through this source summary.
+    #[inline]
+    pub fn query_id(&self, id: &Atom) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_id(id)
+    }
+
+    /// Query dependencies for a changed attribute through this source summary.
+    #[inline]
+    pub fn query_attribute(&self, attribute: &LocalName) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_attribute(attribute)
+    }
+
+    /// Query dependencies for an inserted or removed element local name.
+    #[inline]
+    pub fn query_type(&self, local_name: &LocalName) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_type(local_name)
+    }
+
+    /// Query dependencies for an inserted or removed element matching `*`.
+    #[inline]
+    pub fn query_universal(&self) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_universal()
+    }
+
+    /// Query dependencies for a changed element state bitset.
+    #[inline]
+    pub fn query_state(&self, state: ElementState) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_state(state)
+    }
+
+    /// Query dependencies for a changed CSS custom state.
+    #[inline]
+    pub fn query_custom_state(&self, state: &AtomIdent) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_custom_state(state)
+    }
+
+    /// Query dependencies for focus-like state changes.
+    #[inline]
+    pub fn query_focus(&self) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_focus()
+    }
+
+    /// Query dependencies for `:focus-within` state changes.
+    #[inline]
+    pub fn query_focus_within(&self) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_focus_within()
+    }
+
+    /// Query dependencies for `:target` state changes.
+    #[inline]
+    pub fn query_target(&self) -> LightmountDependencyQueryResult {
+        self.dependency_summary.query_target()
     }
 
     /// Return whether this source has child-list structural dependencies.
     #[inline]
     pub fn has_child_list_structural_dependency(&self) -> bool {
         self.has_child_list_structural_dependency
+    }
+
+    /// Return whether this source has any relative selector dependency.
+    #[inline]
+    pub fn has_relative_selector_dependency(&self) -> bool {
+        self.dependency_summary.has_relative_selector_dependency()
+    }
+
+    /// Return whether this source has any focus-like state dependency.
+    #[inline]
+    pub fn has_focus_dependency(&self) -> bool {
+        self.dependency_summary.query_focus().has_any_dependency()
+    }
+
+    /// Return whether this source has any `:focus-within` dependency.
+    #[inline]
+    pub fn has_focus_within_dependency(&self) -> bool {
+        self.dependency_summary
+            .query_focus_within()
+            .has_any_dependency()
+    }
+
+    /// Return whether this source has any `:target` dependency.
+    #[inline]
+    pub fn has_target_dependency(&self) -> bool {
+        self.dependency_summary.query_target().has_any_dependency()
+    }
+
+    /// Return whether this source has any following-sibling dependency.
+    #[inline]
+    pub fn has_sibling_dependency(&self) -> bool {
+        self.dependency_summary.has_sibling_dependency()
     }
 
     /// Query this source dependency summary for one retained invalidation
@@ -1304,34 +1585,26 @@ impl LightmountSourceDependencySummary {
         query: LightmountStyleInvalidationQuery<'_>,
     ) -> LightmountDependencyQueryResult {
         match query {
-            LightmountStyleInvalidationQuery::Universal => {
-                self.dependency_summary.query_universal()
+            LightmountStyleInvalidationQuery::Universal => self.query_universal(),
+            LightmountStyleInvalidationQuery::Type(local_name) => {
+                self.query_type(&LocalName::from(local_name))
             },
-            LightmountStyleInvalidationQuery::Type(local_name) => self
-                .dependency_summary
-                .query_type(&LocalName::from(local_name)),
-            LightmountStyleInvalidationQuery::Attribute(name) => self
-                .dependency_summary
-                .query_attribute(&LocalName::from(name)),
-            LightmountStyleInvalidationQuery::Class(token) => {
-                self.dependency_summary.query_class(&Atom::from(token))
+            LightmountStyleInvalidationQuery::Attribute(name) => {
+                self.query_attribute(&LocalName::from(name))
             },
-            LightmountStyleInvalidationQuery::Id(value) => {
-                self.dependency_summary.query_id(&Atom::from(value))
+            LightmountStyleInvalidationQuery::Class(token) => self.query_class(&Atom::from(token)),
+            LightmountStyleInvalidationQuery::Id(value) => self.query_id(&Atom::from(value)),
+            LightmountStyleInvalidationQuery::State(state) => self.query_state(state),
+            LightmountStyleInvalidationQuery::CustomState(name) => {
+                self.query_custom_state(&AtomIdent::from(name))
             },
-            LightmountStyleInvalidationQuery::State(state) => {
-                self.dependency_summary.query_state(state)
-            },
-            LightmountStyleInvalidationQuery::CustomState(name) => self
-                .dependency_summary
-                .query_custom_state(&AtomIdent::from(name)),
         }
     }
 
     /// Return whether child-list structural dependencies are present for any
     /// request that requires them.
     #[inline]
-    pub fn has_child_list_structural_dependency_for_requests<Root>(
+    fn has_child_list_structural_dependency_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
     ) -> bool
@@ -1347,7 +1620,7 @@ impl LightmountSourceDependencySummary {
     /// Return whether direct previous-sibling relative dependencies are
     /// present for any request.
     #[inline]
-    pub fn has_relative_previous_sibling_dependency_for_requests<Root>(
+    fn has_relative_previous_sibling_dependency_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
     ) -> bool
@@ -1362,7 +1635,7 @@ impl LightmountSourceDependencySummary {
 
     /// Return whether slotted dependencies are present for any request.
     #[inline]
-    pub fn has_slotted_dependency_for_requests<Root>(
+    fn has_slotted_dependency_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
     ) -> bool
@@ -1378,7 +1651,7 @@ impl LightmountSourceDependencySummary {
     /// Return whether this source needs an empty-target fallback for the
     /// requested source dependency batch.
     #[inline]
-    pub fn requires_empty_target_fallback_for_requests<Root>(
+    fn requires_empty_target_fallback_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
     ) -> bool
@@ -1393,7 +1666,7 @@ impl LightmountSourceDependencySummary {
     /// Return structural-boundary cleanup roots for the requested source
     /// dependency batch.
     #[inline]
-    pub fn structural_boundary_cleanup_roots_for_requests<Root>(
+    fn structural_boundary_cleanup_roots_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
         relative_previous_sibling_cleanup_roots: &[Root],
@@ -1428,13 +1701,13 @@ impl<'a, Root> LightmountSourceDependencyInvalidationBatchSource<'a, Root> {
 
     /// Return this source's dependency summary.
     #[inline]
-    pub fn dependency_summary(&self) -> &'a LightmountSourceDependencySummary {
+    fn dependency_summary(&self) -> &'a LightmountSourceDependencySummary {
         self.dependency_summary
     }
 
     /// Return the selected fallback roots, preferring cause roots when present.
     #[inline]
-    pub fn selected_fallback_roots(&self) -> &'a [Root] {
+    fn selected_fallback_roots(&self) -> &'a [Root] {
         self.fallback_roots.selected_roots()
     }
 }
@@ -1459,7 +1732,7 @@ impl<'a, Root> LightmountSourceDependencyFallbackRoots<'a, Root> {
 impl<Root> LightmountRetainedStyleChildListInvalidationQueries<Root> {
     /// Create a child-list retained invalidation batch.
     #[inline]
-    pub fn new(
+    fn new(
         queries: Vec<LightmountRetainedStyleChildListInvalidationQuery<Root>>,
         base_roots: Vec<Root>,
         empty_target_fallback_roots: Vec<Root>,
@@ -1473,40 +1746,21 @@ impl<Root> LightmountRetainedStyleChildListInvalidationQueries<Root> {
         }
     }
 
-    /// Return child-list retained invalidation queries.
+    /// Consume this batch into a runtime-owned pending plan sink.
     #[inline]
-    pub fn queries(&self) -> &[LightmountRetainedStyleChildListInvalidationQuery<Root>] {
-        &self.queries
-    }
-
-    /// Return base cleanup roots for this child-list invalidation batch.
-    #[inline]
-    pub fn base_roots(&self) -> &[Root] {
-        &self.base_roots
-    }
-
-    /// Return fallback roots for empty-target structural invalidation.
-    #[inline]
-    pub fn empty_target_fallback_roots(&self) -> &[Root] {
-        &self.empty_target_fallback_roots
-    }
-
-    /// Consume this batch into its owned parts.
-    #[inline]
-    pub fn into_parts(
+    pub fn drain_into(
         self,
-    ) -> (
-        Vec<LightmountRetainedStyleChildListInvalidationQuery<Root>>,
-        Vec<Root>,
-        Vec<Root>,
-        Vec<Root>,
+        target: &mut impl LightmountRetainedStyleChildListInvalidationQueriesSink<Root>,
     ) {
-        (
-            self.queries,
-            self.base_roots,
-            self.empty_target_fallback_roots,
+        for row in self.queries {
+            let (query, requirement) = row.into_query_and_requirement();
+            target.record_child_list_retained_query(query, requirement);
+        }
+        target.extend_child_list_base_roots(self.base_roots);
+        target.extend_child_list_empty_target_fallback_roots(self.empty_target_fallback_roots);
+        target.extend_child_list_relative_previous_sibling_cleanup_roots(
             self.relative_previous_sibling_cleanup_roots,
-        )
+        );
     }
 }
 
@@ -1546,7 +1800,10 @@ where
             self.queries
                 .entry(query)
                 .and_modify(|existing| {
-                    *existing = existing.merged_with(requirement);
+                    *existing = lightmount_merge_source_dependency_request_requirement(
+                        *existing,
+                        requirement,
+                    );
                 })
                 .or_insert(requirement);
         }
@@ -1608,27 +1865,31 @@ impl<Root> LightmountChildListSiblingBoundaryPlan<Root> {
     }
 
     /// Return the sibling boundary root.
+    #[cfg(test)]
     #[inline]
-    pub fn root(&self) -> &Root {
+    fn root(&self) -> &Root {
         &self.root
     }
 
     /// Return whether this boundary contributes to base cleanup roots.
+    #[cfg(test)]
     #[inline]
-    pub fn includes_base_root(&self) -> bool {
+    fn includes_base_root(&self) -> bool {
         self.include_base_root
     }
 
     /// Return whether this boundary contributes to empty-target fallback roots.
+    #[cfg(test)]
     #[inline]
-    pub fn includes_empty_target_fallback_root(&self) -> bool {
+    fn includes_empty_target_fallback_root(&self) -> bool {
         self.include_empty_target_fallback_root
     }
 
     /// Return whether this boundary contributes to relative previous-sibling
     /// cleanup roots.
+    #[cfg(test)]
     #[inline]
-    pub fn includes_relative_previous_sibling_cleanup_root(&self) -> bool {
+    fn includes_relative_previous_sibling_cleanup_root(&self) -> bool {
         self.include_relative_previous_sibling_cleanup_root
     }
 
@@ -1685,28 +1946,16 @@ pub fn lightmount_child_list_sibling_boundary_plan<Root>(
 impl<Root> LightmountRetainedStyleChildListInvalidationQuery<Root> {
     /// Create one child-list retained invalidation query row.
     #[inline]
-    pub fn new(
+    fn new(
         query: LightmountRetainedStyleInvalidationQuery<Root>,
         requirement: LightmountSourceDependencyRequestRequirement,
     ) -> Self {
         Self { query, requirement }
     }
 
-    /// Return the retained query.
-    #[inline]
-    pub fn query(&self) -> &LightmountRetainedStyleInvalidationQuery<Root> {
-        &self.query
-    }
-
-    /// Return the source dependency gate requirement.
-    #[inline]
-    pub fn requirement(&self) -> LightmountSourceDependencyRequestRequirement {
-        self.requirement
-    }
-
     /// Consume this row into query and requirement parts.
     #[inline]
-    pub fn into_query_and_requirement(
+    fn into_query_and_requirement(
         self,
     ) -> (
         LightmountRetainedStyleInvalidationQuery<Root>,
@@ -1718,7 +1967,7 @@ impl<Root> LightmountRetainedStyleChildListInvalidationQuery<Root> {
 
 /// Reason a dependency query cannot be represented as exact dependency kinds.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum LightmountDependencyFallbackReason {
+enum LightmountDependencyFallbackReason {
     /// Stylo recorded an unknown dependency for this query.
     UnknownDependency,
     /// Stylo's invalidation map requires full-selector invalidation.
@@ -1729,8 +1978,6 @@ pub enum LightmountDependencyFallbackReason {
     ScopeDependency,
     /// State dependencies are present but not exposed precisely.
     UnsupportedStateDependency,
-    /// Shadow dependency exactness could not be represented by this query.
-    UnsupportedShadowDependency,
     /// The dependency shape cannot currently be represented by an exact retained
     /// invalidator path.
     UnsupportedDependency,
@@ -1978,6 +2225,15 @@ pub fn lightmount_merge_retained_source_invalidation_kind(
     existing.merged_with(incoming)
 }
 
+/// Return whether this kind can be used as a fallback-root payload instead of
+/// retained source-local queries.
+#[inline]
+pub fn lightmount_retained_source_invalidation_kind_can_use_fallback_payload(
+    kind: LightmountRetainedSourceStyleInvalidationKind,
+) -> bool {
+    !kind.carries_retained_queries()
+}
+
 /// Merge optional fallback-root retained source kinds.
 ///
 /// `RetainedQueries` is intentionally rejected here because this helper only
@@ -1991,13 +2247,13 @@ pub fn lightmount_merge_retained_source_invalidation_fallback_kind(
         return existing;
     };
     debug_assert!(
-        !incoming.carries_retained_queries(),
+        lightmount_retained_source_invalidation_kind_can_use_fallback_payload(incoming),
         "fallback kind should describe fallback roots"
     );
     Some(match existing {
         Some(existing) => {
             debug_assert!(
-                !existing.carries_retained_queries(),
+                lightmount_retained_source_invalidation_kind_can_use_fallback_payload(existing),
                 "fallback kind should describe fallback roots"
             );
             existing.merged_with(incoming)
@@ -2122,7 +2378,7 @@ pub enum LightmountRetainedSourceStyleInvalidationKind {
 impl LightmountRetainedSourceStyleInvalidationKind {
     /// Merge two fallback kinds using the conservative priority Lightmount needs
     /// when co-batching source dependency targets.
-    pub fn merged_with(self, incoming: Self) -> Self {
+    fn merged_with(self, incoming: Self) -> Self {
         if self == Self::RetainedQueries || incoming == Self::RetainedQueries {
             return Self::RetainedQueries;
         }
@@ -2143,19 +2399,19 @@ impl LightmountRetainedSourceStyleInvalidationKind {
 
     /// Returns whether this kind carries retained invalidation queries.
     #[inline]
-    pub fn carries_retained_queries(self) -> bool {
+    fn carries_retained_queries(self) -> bool {
         self == Self::RetainedQueries
     }
 
     /// Returns whether this kind can be represented as a fallback-root target.
     #[inline]
-    pub fn can_target_fallback_root(self) -> bool {
+    fn can_target_fallback_root(self) -> bool {
         matches!(self, Self::FallbackOnly | Self::SourceScopeFallback)
     }
 
     /// Returns the source result kind represented by this retained source kind.
     #[inline]
-    pub fn fallback_source_result_kind(
+    fn fallback_source_result_kind(
         self,
         has_fallback_reasons: bool,
     ) -> LightmountSourceStyleInvalidationSourceResultKind {
@@ -2180,7 +2436,7 @@ impl LightmountRetainedSourceStyleInvalidationKind {
     /// Returns fallback root availability represented by this source kind and
     /// the number of fallback roots available to it.
     #[inline]
-    pub fn fallback_root_availability(
+    fn fallback_root_availability(
         self,
         fallback_root_count: usize,
     ) -> Option<LightmountSourceFallbackRootAvailability> {
@@ -2192,7 +2448,7 @@ impl LightmountRetainedSourceStyleInvalidationKind {
 
     /// Returns the fallback reason implied directly by this kind, if any.
     #[inline]
-    pub fn fallback_reason(self) -> Option<LightmountSourceInvalidationFallbackReason> {
+    fn fallback_reason(self) -> Option<LightmountSourceInvalidationFallbackReason> {
         match self {
             Self::SourceScopeFallback => {
                 Some(LightmountSourceInvalidationFallbackReason::SourceScopeFallback)
@@ -2206,7 +2462,11 @@ impl LightmountRetainedSourceStyleInvalidationKind {
 }
 
 /// One retained stylesheet source input for a source-aware invalidation batch.
-pub enum LightmountRetainedSourceStyleInvalidation<'a, Root, Snapshot> {
+pub struct LightmountRetainedSourceStyleInvalidation<'a, Root, Snapshot> {
+    input: LightmountRetainedSourceStyleInvalidationInput<'a, Root, Snapshot>,
+}
+
+enum LightmountRetainedSourceStyleInvalidationInput<'a, Root, Snapshot> {
     /// Run retained Stylo invalidation queries against this source's cascade
     /// data.
     RetainedQueries {
@@ -2237,6 +2497,22 @@ pub enum LightmountRetainedSourceStyleInvalidation<'a, Root, Snapshot> {
         /// Fallback reasons selected by the runtime/source owner.
         fallback_reasons: &'a IndexSet<LightmountSourceInvalidationFallbackReason>,
     },
+}
+
+impl<'a, Root, Snapshot> Copy for LightmountRetainedSourceStyleInvalidationInput<'a, Root, Snapshot> where
+    Root: Copy
+{
+}
+
+impl<'a, Root, Snapshot> Clone
+    for LightmountRetainedSourceStyleInvalidationInput<'a, Root, Snapshot>
+where
+    Root: Copy,
+{
+    #[inline]
+    fn clone(&self) -> Self {
+        *self
+    }
 }
 
 /// Sink used by a runtime owner to execute one retained source invalidation
@@ -2317,7 +2593,7 @@ pub fn lightmount_retained_source_style_invalidation_from_parts<'a, Root, Snapsh
 impl<'a, Root, Snapshot> LightmountRetainedSourceStyleInvalidation<'a, Root, Snapshot> {
     /// Create retained source-local query input.
     #[inline]
-    pub fn retained_queries(
+    fn retained_queries(
         fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
         cascade_data: Option<&'a ServoArc<CascadeData>>,
         shadow_root: Option<Root>,
@@ -2335,21 +2611,23 @@ impl<'a, Root, Snapshot> LightmountRetainedSourceStyleInvalidation<'a, Root, Sna
             fallback_kind.is_none_or(|kind| !kind.carries_retained_queries()),
             "retained-query fallback kind must describe fallback roots"
         );
-        Self::RetainedQueries {
-            fallback_kind,
-            cascade_data,
-            shadow_root,
-            queries,
-            reasoned_fallback_roots,
-            exact_safety_fallback_roots,
-            fallback_reasons,
-            mutation_snapshot,
+        Self {
+            input: LightmountRetainedSourceStyleInvalidationInput::RetainedQueries {
+                fallback_kind,
+                cascade_data,
+                shadow_root,
+                queries,
+                reasoned_fallback_roots,
+                exact_safety_fallback_roots,
+                fallback_reasons,
+                mutation_snapshot,
+            },
         }
     }
 
     /// Create fallback-only retained source input.
     #[inline]
-    pub fn fallback(
+    fn fallback(
         kind: LightmountRetainedSourceStyleInvalidationKind,
         fallback_roots: &'a IndexSet<Root>,
         fallback_reasons: &'a IndexSet<LightmountSourceInvalidationFallbackReason>,
@@ -2358,10 +2636,12 @@ impl<'a, Root, Snapshot> LightmountRetainedSourceStyleInvalidation<'a, Root, Sna
             !kind.carries_retained_queries(),
             "fallback source invalidation must not carry retained queries"
         );
-        Self::Fallback {
-            kind,
-            fallback_roots,
-            fallback_reasons,
+        Self {
+            input: LightmountRetainedSourceStyleInvalidationInput::Fallback {
+                kind,
+                fallback_roots,
+                fallback_reasons,
+            },
         }
     }
 
@@ -2371,8 +2651,8 @@ impl<'a, Root, Snapshot> LightmountRetainedSourceStyleInvalidation<'a, Root, Sna
         self,
         target: &mut impl LightmountRetainedSourceStyleInvalidationSink<'a, Root, Snapshot>,
     ) {
-        match self {
-            Self::RetainedQueries {
+        match self.input {
+            LightmountRetainedSourceStyleInvalidationInput::RetainedQueries {
                 fallback_kind,
                 cascade_data,
                 shadow_root,
@@ -2393,7 +2673,7 @@ impl<'a, Root, Snapshot> LightmountRetainedSourceStyleInvalidation<'a, Root, Sna
                     mutation_snapshot,
                 );
             },
-            Self::Fallback {
+            LightmountRetainedSourceStyleInvalidationInput::Fallback {
                 kind,
                 fallback_roots,
                 fallback_reasons,
@@ -2418,9 +2698,6 @@ impl From<LightmountDependencyFallbackReason> for LightmountSourceInvalidationFa
             LightmountDependencyFallbackReason::UnsupportedStateDependency => {
                 Self::UnsupportedStateDependency
             },
-            LightmountDependencyFallbackReason::UnsupportedShadowDependency => {
-                Self::UnsupportedShadowDependency
-            },
             LightmountDependencyFallbackReason::UnsupportedDependency => {
                 Self::UnsupportedDependency
             },
@@ -2444,7 +2721,7 @@ impl LightmountDependencyInvalidationAction {
             Self::SlottedElements => target.invalidate_slotted_elements(),
             Self::Parts => target.invalidate_parts(),
             Self::Scope(action) => target.invalidate_scope(action),
-            Self::Fallback(reason) => target.invalidate_fallback(reason.into()),
+            Self::Fallback(reason) => target.invalidate_fallback(reason),
         }
     }
 }
@@ -2640,18 +2917,6 @@ impl<'a, Root> LightmountSourceDependencyBoundaryRoots<'a, Root> {
             relative_previous_sibling_cleanup_roots,
         }
     }
-
-    /// Return fallback roots for empty-target structural invalidation.
-    #[inline]
-    pub fn empty_target_fallback_roots(&self) -> &'a [Root] {
-        self.empty_target_fallback_roots
-    }
-
-    /// Return cleanup roots for direct previous-sibling relative dependencies.
-    #[inline]
-    pub fn relative_previous_sibling_cleanup_roots(&self) -> &'a [Root] {
-        self.relative_previous_sibling_cleanup_roots
-    }
 }
 
 impl<Root> Default for LightmountSourceDependencyBoundaryRoots<'_, Root> {
@@ -2671,7 +2936,13 @@ pub struct LightmountPlannedSourceDependencyInvalidation<Root> {
 
 /// Planned source dependency invalidation target.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LightmountPlannedSourceDependencyInvalidationTarget<Root> {
+pub struct LightmountPlannedSourceDependencyInvalidationTarget<Root> {
+    target: LightmountPlannedSourceDependencyInvalidationTargetKind<Root>,
+}
+
+/// Fork-private planned source dependency invalidation target shape.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LightmountPlannedSourceDependencyInvalidationTargetKind<Root> {
     /// Run retained queries, optionally carrying a fallback target for
     /// dependency shapes that cannot be exact.
     RetainedQueries {
@@ -2700,7 +2971,7 @@ pub enum LightmountPlannedSourceDependencyInvalidationTarget<Root> {
 
 /// Drainable parts for a planned source dependency invalidation target.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
+enum LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
     /// Retained-query target parts.
     RetainedQueries {
         /// Exact retained dependency queries to run for this source.
@@ -2772,14 +3043,6 @@ pub trait LightmountPlannedSourceDependencyInvalidationPartsSink<Root>:
     );
 }
 
-/// Drainable planned source dependency invalidation row.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LightmountPlannedSourceDependencyInvalidationParts<Root> {
-    source_index: usize,
-    target: LightmountPlannedSourceDependencyInvalidationTarget<Root>,
-    structural_boundary_cleanup_roots: Vec<Root>,
-}
-
 /// Fallback-root invalidation target used when no source retained query target
 /// is available.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2823,7 +3086,7 @@ pub trait LightmountStylesheetSourceScopeFallbackRootsResolver<Root> {
 
 /// Source-local dependency invalidation plan before it is added to a batch.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LightmountSourceDependencyInvalidationSourcePlan<Root> {
+enum LightmountSourceDependencyInvalidationSourcePlan<Root> {
     /// Source-local retained or fallback work. `None` means this source does
     /// not need a planned row for the current request batch.
     Work {
@@ -2840,7 +3103,7 @@ pub enum LightmountSourceDependencyInvalidationSourcePlan<Root> {
 
 /// Drainable fallback-root invalidation target parts.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
+struct LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
     fallback_kind: LightmountRetainedSourceStyleInvalidationKind,
     fallback_roots: Vec<Root>,
     fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
@@ -2860,7 +3123,7 @@ pub trait LightmountPlannedFallbackRootInvalidationTargetPartsSink<Root> {
 impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
     /// Create a planned source dependency invalidation from a typed target.
     #[inline]
-    pub fn from_target(
+    fn from_target(
         source_index: usize,
         target: LightmountPlannedSourceDependencyInvalidationTarget<Root>,
         structural_boundary_cleanup_roots: Vec<Root>,
@@ -2872,30 +3135,11 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
         }
     }
 
-    /// Create a retained-query planned source dependency invalidation.
-    #[inline]
-    pub fn retained_queries(
-        source_index: usize,
-        exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<Root>>,
-        reasoned_fallback_roots: Vec<Root>,
-        fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
-        structural_boundary_cleanup_roots: Vec<Root>,
-    ) -> Self {
-        Self::retained_queries_with_fallback_kind(
-            source_index,
-            exact_queries,
-            None,
-            reasoned_fallback_roots,
-            Vec::new(),
-            fallback_reasons,
-            structural_boundary_cleanup_roots,
-        )
-    }
-
     /// Create a retained-query planned source dependency invalidation with a
     /// fallback kind for inexact dependency branches.
+    #[cfg(test)]
     #[inline]
-    pub fn retained_queries_with_fallback_kind(
+    fn retained_queries_with_fallback_kind(
         source_index: usize,
         exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<Root>>,
         fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
@@ -2918,8 +3162,9 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
     }
 
     /// Create a fallback-only planned source dependency invalidation.
+    #[cfg(test)]
     #[inline]
-    pub fn fallback_only(
+    fn fallback_only(
         source_index: usize,
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
@@ -2936,8 +3181,9 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
 
     /// Create a fallback planned source dependency invalidation with an
     /// explicit fallback kind.
+    #[cfg(test)]
     #[inline]
-    pub fn fallback_with_kind(
+    fn fallback_with_kind(
         source_index: usize,
         fallback_kind: LightmountRetainedSourceStyleInvalidationKind,
         fallback_roots: Vec<Root>,
@@ -2957,8 +3203,9 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
 
     /// Create a planned source dependency invalidation for unavailable fallback
     /// roots.
+    #[cfg(test)]
     #[inline]
-    pub fn missing_fallback_roots(
+    fn missing_fallback_roots(
         source_index: usize,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
         structural_boundary_cleanup_roots: Vec<Root>,
@@ -2972,34 +3219,6 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
         )
     }
 
-    /// Create a planned source dependency invalidation for source-scope
-    /// fallback.
-    #[inline]
-    pub fn source_scope_fallback(
-        source_index: usize,
-        fallback_roots: Vec<Root>,
-        fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
-        structural_boundary_cleanup_roots: Vec<Root>,
-    ) -> Self {
-        Self::fallback_with_kind(
-            source_index,
-            LightmountRetainedSourceStyleInvalidationKind::SourceScopeFallback,
-            fallback_roots,
-            fallback_reasons,
-            structural_boundary_cleanup_roots,
-        )
-    }
-
-    /// Consume this row into drainable parts.
-    #[inline]
-    pub fn into_parts(self) -> LightmountPlannedSourceDependencyInvalidationParts<Root> {
-        LightmountPlannedSourceDependencyInvalidationParts {
-            source_index: self.source_index,
-            target: self.target,
-            structural_boundary_cleanup_roots: self.structural_boundary_cleanup_roots,
-        }
-    }
-
     /// Drain this row into a sink.
     #[inline]
     pub fn drain_into(
@@ -3010,7 +3229,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidation<Root> {
         target.set_planned_source_dependency_structural_boundary_cleanup_roots(
             self.structural_boundary_cleanup_roots,
         );
-        self.target.into_parts().drain_into(target);
+        self.target.drain_into(target);
     }
 }
 
@@ -3021,7 +3240,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
     /// source produced no exact queries, those roots become an explicit
     /// inexact-empty fallback target instead of being silently dropped.
     #[inline]
-    pub fn from_source_dependency_work_parts(
+    fn from_source_dependency_work_parts(
         exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<Root>>,
         fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
         reasoned_fallback_roots: Vec<Root>,
@@ -3062,7 +3281,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
     /// Missing roots are represented as an explicit fallback kind and reason,
     /// not as an empty generic fallback-root payload.
     #[inline]
-    pub fn source_dependency_fallback(
+    fn source_dependency_fallback(
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
     ) -> Self {
@@ -3079,7 +3298,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
 
     /// Create a retained-query target with optional fallback target policy.
     #[inline]
-    pub fn retained_queries_with_fallback_kind(
+    fn retained_queries_with_fallback_kind(
         exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<Root>>,
         fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
         reasoned_fallback_roots: Vec<Root>,
@@ -3094,18 +3313,20 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
             fallback_kind.is_none_or(|kind| !kind.carries_retained_queries()),
             "retained planned source dependency fallback kind should describe fallback roots"
         );
-        Self::RetainedQueries {
-            exact_queries,
-            fallback_kind,
-            reasoned_fallback_roots,
-            exact_safety_fallback_roots,
-            fallback_reasons: fallback_reasons.into_iter().collect(),
+        Self {
+            target: LightmountPlannedSourceDependencyInvalidationTargetKind::RetainedQueries {
+                exact_queries,
+                fallback_kind,
+                reasoned_fallback_roots,
+                exact_safety_fallback_roots,
+                fallback_reasons: fallback_reasons.into_iter().collect(),
+            },
         }
     }
 
     /// Create a fallback target with an explicit fallback kind.
     #[inline]
-    pub fn fallback_with_kind(
+    fn fallback_with_kind(
         fallback_kind: LightmountRetainedSourceStyleInvalidationKind,
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
@@ -3118,18 +3339,20 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
         if let Some(fallback_reason) = fallback_kind.fallback_reason() {
             fallback_reasons.insert(fallback_reason);
         }
-        Self::FallbackOnly {
-            fallback_kind,
-            fallback_roots,
-            fallback_reasons,
+        Self {
+            target: LightmountPlannedSourceDependencyInvalidationTargetKind::FallbackOnly {
+                fallback_kind,
+                fallback_roots,
+                fallback_reasons,
+            },
         }
     }
 
     /// Consume this target into drainable parts.
     #[inline]
-    pub fn into_parts(self) -> LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
-        match self {
-            Self::RetainedQueries {
+    fn into_parts(self) -> LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
+        match self.target {
+            LightmountPlannedSourceDependencyInvalidationTargetKind::RetainedQueries {
                 exact_queries,
                 fallback_kind,
                 reasoned_fallback_roots,
@@ -3142,7 +3365,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
                 exact_safety_fallback_roots,
                 fallback_reasons,
             },
-            Self::FallbackOnly {
+            LightmountPlannedSourceDependencyInvalidationTargetKind::FallbackOnly {
                 fallback_kind: LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots,
                 fallback_roots,
                 fallback_reasons,
@@ -3155,7 +3378,7 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
                     fallback_reasons,
                 }
             },
-            Self::FallbackOnly {
+            LightmountPlannedSourceDependencyInvalidationTargetKind::FallbackOnly {
                 fallback_kind,
                 fallback_roots,
                 fallback_reasons,
@@ -3172,12 +3395,21 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTarget<Root> {
             },
         }
     }
+
+    /// Drain this target into a sink.
+    #[inline]
+    pub fn drain_into(
+        self,
+        target: &mut impl LightmountPlannedSourceDependencyInvalidationTargetPartsSink<Root>,
+    ) {
+        self.into_parts().drain_into(target);
+    }
 }
 
 impl<Root> LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
     /// Drain these target parts into a sink.
     #[inline]
-    pub fn drain_into(
+    fn drain_into(
         self,
         target: &mut impl LightmountPlannedSourceDependencyInvalidationTargetPartsSink<Root>,
     ) {
@@ -3212,30 +3444,10 @@ impl<Root> LightmountPlannedSourceDependencyInvalidationTargetParts<Root> {
     }
 }
 
-impl<Root> LightmountPlannedSourceDependencyInvalidationParts<Root> {
-    /// Return the stylesheet source index for this planned row.
-    #[inline]
-    pub fn source_index(&self) -> usize {
-        self.source_index
-    }
-
-    /// Consume this row into its typed target and structural-boundary cleanup
-    /// roots.
-    #[inline]
-    pub fn into_target_and_structural_boundary_cleanup_roots(
-        self,
-    ) -> (
-        LightmountPlannedSourceDependencyInvalidationTarget<Root>,
-        Vec<Root>,
-    ) {
-        (self.target, self.structural_boundary_cleanup_roots)
-    }
-}
-
 impl<Root> LightmountPlannedFallbackRootInvalidationTarget<Root> {
     /// Create a fallback-only target.
     #[inline]
-    pub fn fallback_only(
+    fn fallback_only(
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
     ) -> Self {
@@ -3248,7 +3460,7 @@ impl<Root> LightmountPlannedFallbackRootInvalidationTarget<Root> {
 
     /// Create a source-scope fallback target.
     #[inline]
-    pub fn source_scope_fallback(
+    fn source_scope_fallback(
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
     ) -> Self {
@@ -3261,7 +3473,7 @@ impl<Root> LightmountPlannedFallbackRootInvalidationTarget<Root> {
 
     /// Create a fallback-root target with an explicit fallback kind.
     #[inline]
-    pub fn fallback_with_kind(
+    fn fallback_with_kind(
         fallback_kind: LightmountRetainedSourceStyleInvalidationKind,
         fallback_roots: Vec<Root>,
         fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
@@ -3277,12 +3489,12 @@ impl<Root> LightmountPlannedFallbackRootInvalidationTarget<Root> {
 
     /// Consume this fallback target into drainable parts.
     #[inline]
-    pub fn into_parts(self) -> LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
-        let LightmountPlannedSourceDependencyInvalidationTarget::FallbackOnly {
+    fn into_parts(self) -> LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
+        let LightmountPlannedSourceDependencyInvalidationTargetKind::FallbackOnly {
             fallback_kind,
             fallback_roots,
             fallback_reasons,
-        } = self.target
+        } = self.target.target
         else {
             unreachable!("fallback-root invalidation target should not carry retained queries");
         };
@@ -3372,7 +3584,7 @@ pub fn lightmount_runtime_or_source_scope_fallback_plan<Root>(
 impl<Root> LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
     /// Drain these fallback target parts into a sink.
     #[inline]
-    pub fn drain_into(
+    fn drain_into(
         self,
         target: &mut impl LightmountPlannedFallbackRootInvalidationTargetPartsSink<Root>,
     ) {
@@ -3387,13 +3599,13 @@ impl<Root> LightmountPlannedFallbackRootInvalidationTargetParts<Root> {
 impl<Root> LightmountSourceDependencyInvalidationSourcePlan<Root> {
     /// Create a source-local work plan.
     #[inline]
-    pub fn work(target: Option<LightmountPlannedSourceDependencyInvalidationTarget<Root>>) -> Self {
+    fn work(target: Option<LightmountPlannedSourceDependencyInvalidationTarget<Root>>) -> Self {
         Self::Work { target }
     }
 
     /// Create a source-local plan that requires source fallback.
     #[inline]
-    pub fn requires_source_fallback(
+    fn requires_source_fallback(
         target: LightmountPlannedSourceDependencyInvalidationTarget<Root>,
     ) -> Self {
         Self::RequiresSourceFallback { target }
@@ -3402,7 +3614,13 @@ impl<Root> LightmountSourceDependencyInvalidationSourcePlan<Root> {
 
 /// Source dependency planning result for a batch of stylesheet sources.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LightmountSourceDependencyInvalidationBatchPlan<Root> {
+pub struct LightmountSourceDependencyInvalidationBatchPlan<Root> {
+    plan: LightmountSourceDependencyInvalidationBatchPlanKind<Root>,
+}
+
+/// Fork-private backing shape for source dependency batch plans.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LightmountSourceDependencyInvalidationBatchPlanKind<Root> {
     /// At least one source has retained or fallback work, with optional
     /// fallback-root work for an empty exact target.
     Work {
@@ -3420,6 +3638,69 @@ pub enum LightmountSourceDependencyInvalidationBatchPlan<Root> {
     },
 }
 
+/// Sink for a source dependency batch plan.
+pub trait LightmountSourceDependencyInvalidationBatchPlanSink<Root> {
+    /// Record source-local planned work with an optional empty-target boundary
+    /// fallback.
+    fn set_source_dependency_batch_work(
+        &mut self,
+        sources: Vec<LightmountPlannedSourceDependencyInvalidation<Root>>,
+        boundary_fallback: Option<LightmountPlannedFallbackRootInvalidationTarget<Root>>,
+    );
+
+    /// Record the source row that requires fallback when boundary roots are
+    /// unavailable.
+    fn set_source_dependency_batch_requires_source_fallback(
+        &mut self,
+        source: LightmountPlannedSourceDependencyInvalidation<Root>,
+    );
+}
+
+impl<Root> LightmountSourceDependencyInvalidationBatchPlan<Root> {
+    /// Create a source dependency batch plan with source-local work.
+    #[inline]
+    fn work(
+        sources: Vec<LightmountPlannedSourceDependencyInvalidation<Root>>,
+        boundary_fallback: Option<LightmountPlannedFallbackRootInvalidationTarget<Root>>,
+    ) -> Self {
+        Self {
+            plan: LightmountSourceDependencyInvalidationBatchPlanKind::Work {
+                sources,
+                boundary_fallback,
+            },
+        }
+    }
+
+    /// Create a source dependency batch plan that requires source fallback.
+    #[inline]
+    fn requires_source_fallback(
+        source: LightmountPlannedSourceDependencyInvalidation<Root>,
+    ) -> Self {
+        Self {
+            plan: LightmountSourceDependencyInvalidationBatchPlanKind::RequiresSourceFallback {
+                source,
+            },
+        }
+    }
+
+    /// Drain this batch plan into a runtime-owned pending target sink.
+    #[inline]
+    pub fn drain_into(
+        self,
+        target: &mut impl LightmountSourceDependencyInvalidationBatchPlanSink<Root>,
+    ) {
+        match self.plan {
+            LightmountSourceDependencyInvalidationBatchPlanKind::Work {
+                sources,
+                boundary_fallback,
+            } => target.set_source_dependency_batch_work(sources, boundary_fallback),
+            LightmountSourceDependencyInvalidationBatchPlanKind::RequiresSourceFallback {
+                source,
+            } => target.set_source_dependency_batch_requires_source_fallback(source),
+        }
+    }
+}
+
 /// Return source-local invalidation planning for a batch of queries against one
 /// Stylo source dependency summary.
 ///
@@ -3427,10 +3708,7 @@ pub enum LightmountSourceDependencyInvalidationBatchPlan<Root> {
 /// `context_roots_provider`; dependency interpretation, fallback priority,
 /// exact-safety roots, and source fallback target shape stay in the
 /// Lightmount-facing Stylo boundary.
-pub fn lightmount_source_dependency_invalidation_plan<
-    Root: Copy + Eq + Hash,
-    ContextRootsProvider,
->(
+fn lightmount_source_dependency_invalidation_plan<Root: Copy + Eq + Hash, ContextRootsProvider>(
     summary: &LightmountSourceDependencySummary,
     selected_fallback_roots: &[Root],
     requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
@@ -3449,6 +3727,7 @@ where
     let mut exact_safety_fallback_roots = Vec::new();
     let mut exact_safety_fallback_seen = HashSet::new();
     let mut fallback_reasons = IndexSet::new();
+    let mut missing_fallback_root_reasons = IndexSet::new();
     for request in requests {
         let dependency = summary.query_result(request.query().as_stylo_query());
         if !dependency.has_any_dependency() {
@@ -3471,12 +3750,15 @@ where
             &dependency,
         ) {
             if let Some(context) = request.context() {
-                let fallback = context_roots_provider.context_roots_for_source_dependency(
-                    request.query().root(),
+                let context_plan = LightmountDependencyContextRootPlan::new(
                     &dependency,
                     request
                         .query()
                         .allows_direct_previous_following_sibling_fallback(),
+                );
+                let fallback = context_roots_provider.context_roots_for_source_dependency(
+                    request.query().root(),
+                    context_plan,
                     context,
                 );
                 let context_roots = fallback.roots();
@@ -3502,12 +3784,15 @@ where
                     if request.context().is_some() =>
                 {
                     let context = request.context().expect("checked above");
-                    let fallback = context_roots_provider.context_roots_for_source_dependency(
-                        request.query().root(),
+                    let context_plan = LightmountDependencyContextRootPlan::new(
                         &dependency,
                         request
                             .query()
                             .allows_direct_previous_following_sibling_fallback(),
+                    );
+                    let fallback = context_roots_provider.context_roots_for_source_dependency(
+                        request.query().root(),
+                        context_plan,
                         context,
                     );
                     let context_roots = fallback.roots();
@@ -3525,10 +3810,7 @@ where
                         continue;
                     }
                     if selected_fallback_roots.is_empty() {
-                        return lightmount_source_dependency_requires_source_fallback_plan(
-                            selected_fallback_roots,
-                            reasons,
-                        );
+                        missing_fallback_root_reasons.extend(reasons);
                     } else {
                         fallback_kind = lightmount_merge_retained_source_invalidation_fallback_kind(
                             fallback_kind,
@@ -3545,10 +3827,7 @@ where
                 LightmountDependencyFallbackHandling::ContextRoots(reasons)
                 | LightmountDependencyFallbackHandling::SourceFallback(reasons) => {
                     if selected_fallback_roots.is_empty() {
-                        return lightmount_source_dependency_requires_source_fallback_plan(
-                            selected_fallback_roots,
-                            reasons,
-                        );
+                        missing_fallback_root_reasons.extend(reasons);
                     } else {
                         fallback_kind = lightmount_merge_retained_source_invalidation_fallback_kind(
                             fallback_kind,
@@ -3566,12 +3845,15 @@ where
             continue;
         }
         if let Some(context) = request.context() {
-            let fallback = context_roots_provider.context_roots_for_source_dependency(
-                request.query().root(),
+            let context_plan = LightmountDependencyContextRootPlan::new(
                 &dependency,
                 request
                     .query()
                     .allows_direct_previous_following_sibling_fallback(),
+            );
+            let fallback = context_roots_provider.context_roots_for_source_dependency(
+                request.query().root(),
+                context_plan,
                 context,
             );
             if fallback.requires_source_fallback() {
@@ -3591,10 +3873,7 @@ where
                         context_roots,
                     );
                 } else if selected_fallback_roots.is_empty() {
-                    return lightmount_source_dependency_requires_source_fallback_plan(
-                        selected_fallback_roots,
-                        reasons,
-                    );
+                    missing_fallback_root_reasons.extend(reasons);
                 } else {
                     fallback_kind = lightmount_merge_retained_source_invalidation_fallback_kind(
                         fallback_kind,
@@ -3615,13 +3894,9 @@ where
                 request.query().is_universal(),
             ) {
                 if context_roots.is_empty() {
-                    let mut fallback_reasons = IndexSet::new();
-                    fallback_reasons
+                    missing_fallback_root_reasons
                         .insert(LightmountSourceInvalidationFallbackReason::InexactEmptyResult);
-                    return lightmount_source_dependency_requires_source_fallback_plan(
-                        selected_fallback_roots,
-                        fallback_reasons,
-                    );
+                    continue;
                 }
                 // This request is intentionally fallback-only: the context
                 // roots are the cleanup target for structural relative
@@ -3656,6 +3931,12 @@ where
             );
         }
         exact_queries.push((*request.query()).clone());
+    }
+    if !missing_fallback_root_reasons.is_empty() {
+        return lightmount_source_dependency_requires_source_fallback_plan(
+            selected_fallback_roots,
+            missing_fallback_root_reasons,
+        );
     }
     LightmountSourceDependencyInvalidationSourcePlan::work(
         LightmountPlannedSourceDependencyInvalidationTarget::from_source_dependency_work_parts(
@@ -3718,7 +3999,7 @@ where
                     .dependency_summary()
                     .structural_boundary_cleanup_roots_for_requests(
                         requests,
-                        boundary_roots.relative_previous_sibling_cleanup_roots(),
+                        boundary_roots.relative_previous_sibling_cleanup_roots,
                     );
                 let planned_source = LightmountPlannedSourceDependencyInvalidation::from_target(
                     source_index,
@@ -3728,21 +4009,21 @@ where
                 planned_sources.push(planned_source);
             },
             LightmountSourceDependencyInvalidationSourcePlan::RequiresSourceFallback { target } => {
-                return LightmountSourceDependencyInvalidationBatchPlan::RequiresSourceFallback {
-                    source: LightmountPlannedSourceDependencyInvalidation::from_target(
+                return LightmountSourceDependencyInvalidationBatchPlan::requires_source_fallback(
+                    LightmountPlannedSourceDependencyInvalidation::from_target(
                         source_index,
                         target,
                         Vec::new(),
                     ),
-                };
+                );
             },
         }
     }
     let boundary_fallback = match (planned_sources.is_empty(), empty_target_fallback_source) {
         (true, Some((source_index, selected_fallback_roots))) => {
-            if boundary_roots.empty_target_fallback_roots().is_empty() {
-                return LightmountSourceDependencyInvalidationBatchPlan::RequiresSourceFallback {
-                        source: LightmountPlannedSourceDependencyInvalidation::from_target(
+            if boundary_roots.empty_target_fallback_roots.is_empty() {
+                return LightmountSourceDependencyInvalidationBatchPlan::requires_source_fallback(
+                        LightmountPlannedSourceDependencyInvalidation::from_target(
                             source_index,
                             LightmountPlannedSourceDependencyInvalidationTarget::source_dependency_fallback(
                                 selected_fallback_roots,
@@ -3750,21 +4031,18 @@ where
                             ),
                             Vec::new(),
                         ),
-                    };
+                    );
             }
             Some(
                 LightmountPlannedFallbackRootInvalidationTarget::fallback_only(
-                    boundary_roots.empty_target_fallback_roots().to_vec(),
+                    boundary_roots.empty_target_fallback_roots.to_vec(),
                     [LightmountSourceInvalidationFallbackReason::InexactEmptyResult],
                 ),
             )
         },
         _ => None,
     };
-    LightmountSourceDependencyInvalidationBatchPlan::Work {
-        sources: planned_sources,
-        boundary_fallback,
-    }
+    LightmountSourceDependencyInvalidationBatchPlan::work(planned_sources, boundary_fallback)
 }
 
 fn lightmount_source_dependency_requires_source_fallback_plan<Root: Copy>(
@@ -3898,11 +4176,56 @@ pub struct LightmountSourceStyleInvalidationResult<Root> {
     matched_dependency_count: usize,
 }
 
+/// Drainable parts for one classified source-local invalidation result.
+pub struct LightmountSourceStyleInvalidationResultParts<Root> {
+    affected_roots: Vec<Root>,
+    fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+    fallback_kind: Option<LightmountSourceStyleInvalidationSourceResultKind>,
+    fallback_root_availability: Option<LightmountSourceFallbackRootAvailability>,
+    empty_result_is_exact: bool,
+    matched_dependency_count: usize,
+}
+
+/// Sink used to drain source-local invalidation result policy into its owner.
+pub trait LightmountSourceStyleInvalidationResultSink<Root> {
+    /// Record a fully classified source-local invalidation result artifact.
+    fn set_source_style_invalidation_result(
+        &mut self,
+        parts: LightmountSourceStyleInvalidationResultParts<Root>,
+    );
+}
+
+/// Sink used by diagnostics and tests that need source-local result parts.
+pub trait LightmountSourceStyleInvalidationResultPartsSink<Root> {
+    /// Record the classified source-local invalidation result parts.
+    fn set_source_style_invalidation_result_parts(
+        &mut self,
+        affected_roots: Vec<Root>,
+        fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+        fallback_kind: Option<LightmountSourceStyleInvalidationSourceResultKind>,
+        fallback_root_availability: Option<LightmountSourceFallbackRootAvailability>,
+        empty_result_is_exact: bool,
+        matched_dependency_count: usize,
+    );
+}
+
 impl<Root> LightmountSourceStyleInvalidationQueryResult<Root> {
+    /// Construct an exact empty result for a query whose matched dependencies
+    /// have already been accounted for by the fork-owned dependency plan.
+    #[inline]
+    pub fn exact_empty(matched_dependency_count: usize) -> Self {
+        Self {
+            affected_roots: Vec::new(),
+            empty_result_is_exact: true,
+            matched_dependency_count,
+            fallback_reasons: IndexSet::new(),
+        }
+    }
+
     /// Construct a single-query invalidation result from already-classified
     /// parts.
     #[inline]
-    pub fn from_parts(
+    fn from_parts(
         affected_roots: Vec<Root>,
         empty_result_is_exact: bool,
         matched_dependency_count: usize,
@@ -3916,53 +4239,41 @@ impl<Root> LightmountSourceStyleInvalidationQueryResult<Root> {
         }
     }
 
-    /// DOM roots affected by this source-local query.
-    #[inline]
-    pub fn affected_roots(&self) -> &[Root] {
-        &self.affected_roots
-    }
-
-    /// Whether an empty affected-root list is an exact no-op for this query.
-    #[inline]
-    pub fn empty_result_is_exact(&self) -> bool {
-        self.empty_result_is_exact
-    }
-
-    /// Number of Stylo dependency records matched by this query.
-    #[inline]
-    pub fn matched_dependency_count(&self) -> usize {
-        self.matched_dependency_count
-    }
-
-    /// Reasons this query could not remain exact.
-    #[inline]
-    pub fn fallback_reasons(&self) -> &IndexSet<LightmountSourceInvalidationFallbackReason> {
-        &self.fallback_reasons
-    }
-
     /// Consume this query result and drain affected roots into a runtime-owned
     /// root collection.
     #[inline]
     pub fn drain_affected_roots_into(self, target: &mut impl Extend<Root>) {
         target.extend(self.affected_roots);
     }
+}
 
-    /// Consume this query result into classified parts.
+impl<Root> LightmountSourceStyleInvalidationResultParts<Root> {
     #[inline]
-    pub fn into_parts(
+    fn from_result(result: LightmountSourceStyleInvalidationResult<Root>) -> Self {
+        Self {
+            affected_roots: result.affected_roots,
+            fallback_reasons: result.fallback_reasons,
+            fallback_kind: result.fallback_kind,
+            fallback_root_availability: result.fallback_root_availability,
+            empty_result_is_exact: result.empty_result_is_exact,
+            matched_dependency_count: result.matched_dependency_count,
+        }
+    }
+
+    /// Drain this artifact into a result-parts sink.
+    #[inline]
+    pub fn drain_into(
         self,
-    ) -> (
-        Vec<Root>,
-        bool,
-        usize,
-        IndexSet<LightmountSourceInvalidationFallbackReason>,
+        target: &mut impl LightmountSourceStyleInvalidationResultPartsSink<Root>,
     ) {
-        (
+        target.set_source_style_invalidation_result_parts(
             self.affected_roots,
+            self.fallback_reasons,
+            self.fallback_kind,
+            self.fallback_root_availability,
             self.empty_result_is_exact,
             self.matched_dependency_count,
-            self.fallback_reasons,
-        )
+        );
     }
 }
 
@@ -4118,6 +4429,22 @@ where
         };
         lightmount_dependency_invalidation_action(dependency).drain_into(&mut application);
         application.invalidates_self
+    }
+}
+
+impl<'a, 'b, E, Root, RootMapper> Extend<Root>
+    for LightmountStyleInvalidationProcessor<'a, 'b, E, Root, RootMapper>
+where
+    E: TElement + Copy,
+    Root: Copy + Eq + Hash,
+    RootMapper: LightmountStyleInvalidationElementRoot<E, Root>,
+{
+    #[inline]
+    fn extend<T>(&mut self, iter: T)
+    where
+        T: IntoIterator<Item = Root>,
+    {
+        self.result_builder.extend_affected_roots(iter);
     }
 }
 
@@ -4414,19 +4741,13 @@ impl<Root> LightmountSnapshotRelativeDependencyRoots<Root> {
 
     /// Snapshot-relative roots collected for this query.
     #[inline]
-    pub fn roots(&self) -> &[Root] {
+    fn roots(&self) -> &[Root] {
         &self.roots
-    }
-
-    /// Number of relative dependencies verified by old-value snapshots.
-    #[inline]
-    pub fn verified_dependency_count(&self) -> usize {
-        self.verified_dependency_count
     }
 
     /// Return whether every matched dependency was verified by snapshots.
     #[inline]
-    pub fn verified_all_dependencies(
+    fn verified_all_dependencies(
         &self,
         matched_dependency_count: usize,
         dependency_count: usize,
@@ -4439,13 +4760,13 @@ impl<Root> LightmountSnapshotRelativeDependencyRoots<Root> {
     /// Return whether every collected dependency in one dependency subset was
     /// verified by snapshots.
     #[inline]
-    pub fn verified_all_collected_dependencies(&self, dependency_count: usize) -> bool {
+    fn verified_all_collected_dependencies(&self, dependency_count: usize) -> bool {
         dependency_count != 0 && self.verified_dependency_count == dependency_count
     }
 
     /// Return whether a relative query's empty result can be treated as exact.
     #[inline]
-    pub fn empty_result_is_exact(
+    fn empty_result_is_exact(
         &self,
         matched_dependency_count: usize,
         dependency_count: usize,
@@ -4455,19 +4776,37 @@ impl<Root> LightmountSnapshotRelativeDependencyRoots<Root> {
             || has_affected_roots
             || self.verified_all_dependencies(matched_dependency_count, dependency_count)
     }
+
+    /// Consume this snapshot-relative result and drain affected roots into an
+    /// invalidation root collection.
+    #[inline]
+    pub fn drain_affected_roots_into(self, target: &mut impl Extend<Root>) {
+        target.extend(self.roots);
+    }
 }
 
 impl LightmountNormalStyleInvalidationDependencyPlan {
+    /// Drain this plan into an adapter-owned normal invalidation action sink.
+    #[inline]
+    pub fn drain_into(self, target: &mut impl LightmountNormalStyleInvalidationDependencyPlanSink) {
+        if self.should_drop_relative_dependencies() {
+            target.drop_collected_relative_dependencies();
+        }
+        if self.empty_result_is_exact() {
+            target.record_exact_empty_result();
+        }
+    }
+
     /// Return whether normal invalidation should drop collected relative
     /// dependencies before running the normal invalidator.
     #[inline]
-    pub fn should_drop_relative_dependencies(&self) -> bool {
+    fn should_drop_relative_dependencies(&self) -> bool {
         self.drop_relative_dependencies
     }
 
     /// Return whether the normal invalidation query is an exact empty result.
     #[inline]
-    pub fn empty_result_is_exact(&self) -> bool {
+    fn empty_result_is_exact(&self) -> bool {
         self.empty_result_is_exact
     }
 }
@@ -4475,9 +4814,19 @@ impl LightmountNormalStyleInvalidationDependencyPlan {
 impl LightmountRelativeStyleInvalidationDependencyPlan {
     /// Return whether the relative invalidation query is an exact empty result.
     #[inline]
-    pub fn empty_result_is_exact(&self) -> bool {
+    fn empty_result_is_exact(&self) -> bool {
         self.empty_result_is_exact
     }
+}
+
+/// Sink for normal invalidation dependency plan actions.
+pub trait LightmountNormalStyleInvalidationDependencyPlanSink {
+    /// Drop relative dependencies collected by the normal invalidator before
+    /// running it.
+    fn drop_collected_relative_dependencies(&mut self);
+
+    /// Record that this normal invalidation query can return exact empty.
+    fn record_exact_empty_result(&mut self);
 }
 
 /// Return normal invalidation dependency policy after snapshot-relative
@@ -4644,7 +4993,7 @@ where
     /// Merge two query results while preserving first-seen root and fallback
     /// reason order.
     #[inline]
-    pub fn merged_with(self, other: Self) -> Self {
+    fn merged_with(self, other: Self) -> Self {
         let mut affected_roots = IndexSet::new();
         affected_roots.extend(self.affected_roots.into_iter().chain(other.affected_roots));
 
@@ -4661,11 +5010,24 @@ where
     }
 }
 
+/// Merge two source-local query results while preserving Stylo-owned fallback
+/// and exactness semantics.
+#[inline]
+pub fn lightmount_merge_source_style_invalidation_query_results<Root>(
+    existing: LightmountSourceStyleInvalidationQueryResult<Root>,
+    incoming: LightmountSourceStyleInvalidationQueryResult<Root>,
+) -> LightmountSourceStyleInvalidationQueryResult<Root>
+where
+    Root: Eq + Hash,
+{
+    existing.merged_with(incoming)
+}
+
 impl<Root> LightmountSourceStyleInvalidationResult<Root> {
     /// Construct a source-local invalidation result from already-classified
     /// parts.
     #[inline]
-    pub fn from_parts(
+    fn from_parts(
         affected_roots: Vec<Root>,
         fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
         fallback_kind: Option<LightmountSourceStyleInvalidationSourceResultKind>,
@@ -4683,27 +5045,12 @@ impl<Root> LightmountSourceStyleInvalidationResult<Root> {
         }
     }
 
-    /// Consume this result and expose its classified parts to the caller that
-    /// owns runtime-specific cleanup/root sinks.
+    /// Drain this result into the source-result policy owner.
     #[inline]
-    pub fn into_parts(
-        self,
-    ) -> (
-        Vec<Root>,
-        IndexSet<LightmountSourceInvalidationFallbackReason>,
-        Option<LightmountSourceStyleInvalidationSourceResultKind>,
-        Option<LightmountSourceFallbackRootAvailability>,
-        bool,
-        usize,
-    ) {
-        (
-            self.affected_roots,
-            self.fallback_reasons,
-            self.fallback_kind,
-            self.fallback_root_availability,
-            self.empty_result_is_exact,
-            self.matched_dependency_count,
-        )
+    pub fn drain_into(self, target: &mut impl LightmountSourceStyleInvalidationResultSink<Root>) {
+        target.set_source_style_invalidation_result(
+            LightmountSourceStyleInvalidationResultParts::from_result(self),
+        );
     }
 }
 
@@ -4737,7 +5084,7 @@ where
     /// Merge one retained dependency-query result into this source-local
     /// accumulator.
     #[inline]
-    pub fn merge_query_result(
+    fn merge_query_result(
         &mut self,
         affected_roots: Vec<Root>,
         empty_result_is_exact: bool,
@@ -4763,8 +5110,12 @@ where
         &mut self,
         result: LightmountSourceStyleInvalidationQueryResult<Root>,
     ) {
-        let (affected_roots, empty_result_is_exact, matched_dependency_count, fallback_reasons) =
-            result.into_parts();
+        let LightmountSourceStyleInvalidationQueryResult {
+            affected_roots,
+            empty_result_is_exact,
+            matched_dependency_count,
+            fallback_reasons,
+        } = result;
         self.merge_query_result(
             affected_roots,
             empty_result_is_exact,
@@ -4882,7 +5233,7 @@ pub trait LightmountInvalidationSourceResultsSink<Root> {
 impl<Root> LightmountInvalidationResult<Root> {
     /// Create a result table from already classified source-result rows.
     #[inline]
-    pub fn from_source_results(
+    fn from_source_results(
         source_results: Vec<LightmountSourceStyleInvalidationSourceResult<Root>>,
     ) -> Self {
         Self { source_results }
@@ -4898,13 +5249,6 @@ impl<Root> LightmountInvalidationResult<Root> {
         for result in self.source_results {
             target.record_lightmount_invalidation_source_result(result);
         }
-    }
-
-    /// Return source-result rows for tests and source-adapter guardrails.
-    #[cfg(test)]
-    #[inline]
-    pub fn source_results(&self) -> &[LightmountSourceStyleInvalidationSourceResult<Root>] {
-        &self.source_results
     }
 }
 
@@ -4933,11 +5277,48 @@ impl<Root> LightmountInvalidationResultBuilder<Root> {
 
     /// Push an already-classified source-result row.
     #[inline]
-    pub fn push_source_result(
-        &mut self,
-        result: LightmountSourceStyleInvalidationSourceResult<Root>,
-    ) {
+    fn push_source_result(&mut self, result: LightmountSourceStyleInvalidationSourceResult<Root>) {
         self.source_results.push(result);
+    }
+
+    /// Push an exact source-result row.
+    #[inline]
+    pub fn push_exact_source_result(
+        &mut self,
+        source_index: usize,
+        affected_roots: Vec<Root>,
+        empty_result_is_exact: bool,
+        matched_dependency_count: usize,
+    ) {
+        self.push_source_result(LightmountSourceStyleInvalidationSourceResult::exact_result(
+            source_index,
+            affected_roots,
+            empty_result_is_exact,
+            matched_dependency_count,
+        ));
+    }
+
+    /// Push a fallback source-result row.
+    #[inline]
+    pub fn push_fallback_source_result(
+        &mut self,
+        source_index: usize,
+        kind: LightmountSourceStyleInvalidationSourceResultKind,
+        empty_result_is_exact: bool,
+        matched_dependency_count: usize,
+        fallback_reasons: impl IntoIterator<Item = LightmountSourceInvalidationFallbackReason>,
+        fallback_root_availability: Option<LightmountSourceFallbackRootAvailability>,
+        affected_roots: Vec<Root>,
+    ) {
+        self.push_source_result(LightmountSourceStyleInvalidationSourceResult::fallback(
+            source_index,
+            kind,
+            empty_result_is_exact,
+            matched_dependency_count,
+            fallback_reasons.into_iter().collect(),
+            fallback_root_availability,
+            affected_roots,
+        ));
     }
 
     /// Finish and return the Lightmount-facing retained invalidation result.
@@ -4966,6 +5347,28 @@ where
                 kind,
                 fallback_reasons,
                 fallback_roots,
+            ),
+        );
+    }
+
+    /// Push a final source-result row from source-local query result policy and
+    /// a planned fallback policy.
+    #[inline]
+    pub fn push_source_result_from_planned_fallback(
+        &mut self,
+        source_index: usize,
+        source_result: LightmountSourceStyleInvalidationResult<Root>,
+        fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
+        reasoned_fallback_roots: &IndexSet<Root>,
+        fallback_reasons: &IndexSet<LightmountSourceInvalidationFallbackReason>,
+    ) {
+        self.push_source_result(
+            LightmountSourceStyleInvalidationSourceResult::from_source_result_and_planned_fallback(
+                source_index,
+                source_result,
+                fallback_kind,
+                reasoned_fallback_roots,
+                fallback_reasons,
             ),
         );
     }
@@ -5070,6 +5473,13 @@ pub struct LightmountSourceStyleInvalidationTargetResultRecord {
     diagnostic_facts: Option<LightmountSourceStyleInvalidationTargetResultDiagnosticFacts>,
 }
 
+/// Drainable parts for one retained source-result row.
+pub struct LightmountSourceStyleInvalidationSourceResultParts<Root> {
+    source_index: usize,
+    affected_roots: LightmountSourceAffectedRootsCleanup<Root>,
+    target_result_record: LightmountSourceStyleInvalidationTargetResultRecord,
+}
+
 /// Affected roots classified for exact cleanup or source-fallback cleanup.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LightmountSourceAffectedRootsCleanup<Root> {
@@ -5088,6 +5498,15 @@ pub trait LightmountSourceStyleInvalidationTargetResultDiagnosticFactsSink {
     /// Set diagnostic facts for one retained source-result row.
     fn set_source_style_invalidation_target_result_diagnostic_facts(
         &mut self,
+        facts: LightmountSourceStyleInvalidationTargetResultDiagnosticFacts,
+    );
+}
+
+/// Sink used by diagnostic owners that consume target-result diagnostic fields.
+pub trait LightmountSourceStyleInvalidationTargetResultDiagnosticFactsPartsSink {
+    /// Set diagnostic fact fields for one retained source-result row.
+    fn set_source_style_invalidation_target_result_diagnostic_fact_parts(
+        &mut self,
         kind: LightmountSourceStyleInvalidationSourceResultKind,
         exact: bool,
         empty_result_is_exact: bool,
@@ -5102,6 +5521,15 @@ pub trait LightmountSourceStyleInvalidationTargetResultDiagnosticFactsSink {
 pub trait LightmountSourceStyleInvalidationTargetResultCleanupFactsSink {
     /// Set cleanup facts for one retained source-result row.
     fn set_source_style_invalidation_target_result_cleanup_facts(
+        &mut self,
+        facts: LightmountSourceStyleInvalidationTargetResultCleanupFacts,
+    );
+}
+
+/// Sink used by cleanup owners that consume target-result cleanup fields.
+pub trait LightmountSourceStyleInvalidationTargetResultCleanupFactsPartsSink {
+    /// Set cleanup fact fields for one retained source-result row.
+    fn set_source_style_invalidation_target_result_cleanup_fact_parts(
         &mut self,
         fallback_context_reasons: Vec<LightmountSourceInvalidationFallbackReason>,
         clear_all_cleanup_reasons: Vec<LightmountSourceInvalidationFallbackReason>,
@@ -5126,8 +5554,17 @@ pub trait LightmountSourceStyleInvalidationSourceResultSink<Root> {
         true
     }
 
-    /// Record one retained source-result row.
+    /// Record one retained source-result row artifact.
     fn record_source_style_invalidation_source_result(
+        &mut self,
+        parts: LightmountSourceStyleInvalidationSourceResultParts<Root>,
+    );
+}
+
+/// Sink used by runtime owners that consume source-result row parts.
+pub trait LightmountSourceStyleInvalidationSourceResultPartsSink<Root> {
+    /// Record one retained source-result row's classified parts.
+    fn record_source_style_invalidation_source_result_parts(
         &mut self,
         source_index: usize,
         affected_roots: LightmountSourceAffectedRootsCleanup<Root>,
@@ -5142,7 +5579,16 @@ impl LightmountSourceStyleInvalidationTargetResultDiagnosticFacts {
         self,
         target: &mut impl LightmountSourceStyleInvalidationTargetResultDiagnosticFactsSink,
     ) {
-        target.set_source_style_invalidation_target_result_diagnostic_facts(
+        target.set_source_style_invalidation_target_result_diagnostic_facts(self);
+    }
+
+    /// Drain this diagnostic row into a field-level sink.
+    #[inline]
+    pub fn drain_parts_into(
+        self,
+        target: &mut impl LightmountSourceStyleInvalidationTargetResultDiagnosticFactsPartsSink,
+    ) {
+        target.set_source_style_invalidation_target_result_diagnostic_fact_parts(
             self.kind,
             self.exact,
             self.empty_result_is_exact,
@@ -5161,7 +5607,16 @@ impl LightmountSourceStyleInvalidationTargetResultCleanupFacts {
         self,
         target: &mut impl LightmountSourceStyleInvalidationTargetResultCleanupFactsSink,
     ) {
-        target.set_source_style_invalidation_target_result_cleanup_facts(
+        target.set_source_style_invalidation_target_result_cleanup_facts(self);
+    }
+
+    /// Drain this cleanup row into a field-level sink.
+    #[inline]
+    pub fn drain_parts_into(
+        self,
+        target: &mut impl LightmountSourceStyleInvalidationTargetResultCleanupFactsPartsSink,
+    ) {
+        target.set_source_style_invalidation_target_result_cleanup_fact_parts(
             self.fallback_context_reasons,
             self.clear_all_cleanup_reasons,
             self.include_fallback_context_for_clear_all,
@@ -5201,6 +5656,21 @@ impl LightmountSourceStyleInvalidationTargetResultRecord {
     }
 }
 
+impl<Root> LightmountSourceStyleInvalidationSourceResultParts<Root> {
+    /// Drain this source-result row artifact into a parts sink.
+    #[inline]
+    pub fn drain_into(
+        self,
+        target: &mut impl LightmountSourceStyleInvalidationSourceResultPartsSink<Root>,
+    ) {
+        target.record_source_style_invalidation_source_result_parts(
+            self.source_index,
+            self.affected_roots,
+            self.target_result_record,
+        );
+    }
+}
+
 impl<Root> LightmountSourceAffectedRootsCleanup<Root> {
     fn new(kind: LightmountSourceAffectedRootKind, roots: Vec<Root>) -> Self {
         Self { kind, roots }
@@ -5226,7 +5696,7 @@ where
 {
     /// Build a fallback-only source-result row.
     #[inline]
-    pub fn fallback_only(
+    fn fallback_only(
         source_index: usize,
         kind: LightmountRetainedSourceStyleInvalidationKind,
         fallback_reasons: &IndexSet<LightmountSourceInvalidationFallbackReason>,
@@ -5246,7 +5716,7 @@ where
     /// Build a source-result row for a retained source that could not be
     /// queried.
     #[inline]
-    pub fn unavailable_retained_source(
+    fn unavailable_retained_source(
         source_index: usize,
         reason: LightmountSourceInvalidationFallbackReason,
         fallback_reasons: &IndexSet<LightmountSourceInvalidationFallbackReason>,
@@ -5282,21 +5752,21 @@ where
     /// Build a final source-result row from source-local query result policy
     /// and a planned fallback policy.
     #[inline]
-    pub fn from_source_result_and_planned_fallback(
+    fn from_source_result_and_planned_fallback(
         source_index: usize,
         source_result: LightmountSourceStyleInvalidationResult<Root>,
         fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
         reasoned_fallback_roots: &IndexSet<Root>,
         fallback_reasons: &IndexSet<LightmountSourceInvalidationFallbackReason>,
     ) -> Self {
-        let (
+        let LightmountSourceStyleInvalidationResult {
             mut affected_roots,
-            source_fallback_reasons,
-            source_fallback_kind,
-            source_fallback_root_availability,
+            fallback_reasons: source_fallback_reasons,
+            fallback_kind: source_fallback_kind,
+            fallback_root_availability: source_fallback_root_availability,
             empty_result_is_exact,
             matched_dependency_count,
-        ) = source_result.into_parts();
+        } = source_result;
         if !fallback_reasons.is_empty() {
             let mut affected_root_set = affected_roots.iter().copied().collect();
             for &root in reasoned_fallback_roots {
@@ -5335,7 +5805,7 @@ where
 impl<Root> LightmountSourceStyleInvalidationSourceResult<Root> {
     /// Build an exact source-result row.
     #[inline]
-    pub fn exact_result(
+    fn exact_result(
         source_index: usize,
         affected_roots: Vec<Root>,
         empty_result_is_exact: bool,
@@ -5355,7 +5825,7 @@ impl<Root> LightmountSourceStyleInvalidationSourceResult<Root> {
 
     /// Build a fallback source-result row.
     #[inline]
-    pub fn fallback(
+    fn fallback(
         source_index: usize,
         kind: LightmountSourceStyleInvalidationSourceResultKind,
         empty_result_is_exact: bool,
@@ -5389,23 +5859,15 @@ impl<Root> LightmountSourceStyleInvalidationSourceResult<Root> {
     ) {
         let retain_diagnostics =
             target.retain_source_style_invalidation_target_result_diagnostics();
-        let (source_index, affected_roots, target_result_record) =
-            self.into_source_result_cleanup_and_target_record_parts(retain_diagnostics);
         target.record_source_style_invalidation_source_result(
-            source_index,
-            affected_roots,
-            target_result_record,
+            self.into_source_result_cleanup_and_target_record_parts(retain_diagnostics),
         );
     }
 
     fn into_source_result_cleanup_and_target_record_parts(
         self,
         retain_diagnostics: bool,
-    ) -> (
-        usize,
-        LightmountSourceAffectedRootsCleanup<Root>,
-        LightmountSourceStyleInvalidationTargetResultRecord,
-    ) {
+    ) -> LightmountSourceStyleInvalidationSourceResultParts<Root> {
         let source_index = self.source_index;
         let affected_root_kind = self.affected_root_kind();
         let affected_root_count = self.affected_root_count();
@@ -5444,7 +5906,11 @@ impl<Root> LightmountSourceStyleInvalidationSourceResult<Root> {
                 },
             )
         };
-        (source_index, affected_roots, target_result_record)
+        LightmountSourceStyleInvalidationSourceResultParts {
+            source_index,
+            affected_roots,
+            target_result_record,
+        }
     }
 
     fn affected_root_count(&self) -> usize {
@@ -5527,7 +5993,7 @@ fn lightmount_source_result_kind_includes_fallback_context_for_clear_all(
 /// Return the Lightmount fallback reason represented by a raw Stylo dependency
 /// kind.
 #[inline]
-pub fn lightmount_dependency_fallback_reason_for_dependency(
+fn lightmount_dependency_fallback_reason_for_dependency(
     dependency: &Dependency,
 ) -> LightmountDependencyFallbackReason {
     match dependency.invalidation_kind() {
@@ -5659,7 +6125,9 @@ pub fn lightmount_dependency_invalidation_action(
         },
         DependencyInvalidationKind::FullSelector | DependencyInvalidationKind::Relative(_) => {
             LightmountDependencyInvalidationAction::Fallback(
-                lightmount_dependency_fallback_reason_for_dependency(dependency),
+                LightmountSourceInvalidationFallbackReason::from(
+                    lightmount_dependency_fallback_reason_for_dependency(dependency),
+                ),
             )
         },
     }
@@ -5823,7 +6291,7 @@ pub fn lightmount_retained_processor_dependency_effect(
 
 /// Which fallback roots may be used when a dependency query is not exact.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum LightmountDependencyFallbackRootPolicy {
+enum LightmountDependencyFallbackRootPolicy {
     /// Mutation-context roots are sufficient as the conservative cleanup target.
     ContextRoots,
     /// The caller must use source-local or source-scope fallback roots.
@@ -5832,7 +6300,7 @@ pub enum LightmountDependencyFallbackRootPolicy {
 
 /// Source dependency fallback handling chosen from one dependency query result.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LightmountDependencyFallbackHandling {
+enum LightmountDependencyFallbackHandling {
     /// Mutation context roots can satisfy the fallback, when available.
     ContextRoots(IndexSet<LightmountSourceInvalidationFallbackReason>),
     /// The source's fallback roots are required.
@@ -5842,7 +6310,7 @@ pub enum LightmountDependencyFallbackHandling {
 /// Dependency root categories needed by Lightmount's DOM-backed fallback-root
 /// construction.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct LightmountDependencyContextRootFlags {
+struct LightmountDependencyContextRootFlags {
     /// The query cannot be covered by context roots and needs source fallback.
     requires_source_fallback: bool,
     /// The changed element's local subtree can be affected.
@@ -5909,14 +6377,62 @@ pub trait LightmountDependencyContextRootFlagsSink {
 pub trait LightmountDependencyInvalidationContextRootsSink<Root>:
     LightmountDependencyContextRootFlagsSink + Sized
 {
-    /// Consume the sink into `(requires_source_fallback, roots)` parts.
-    fn into_context_root_parts(self) -> (bool, Vec<Root>);
+    /// Drain collected context roots into a Stylo-owned typed roots builder.
+    fn drain_collected_context_roots_into(
+        self,
+        target: &mut impl LightmountDependencyInvalidationContextRootsPartsSink<Root>,
+    );
+}
+
+/// Sink for the final DOM-backed context roots collected by an adapter.
+pub trait LightmountDependencyInvalidationContextRootsPartsSink<Root> {
+    /// Context roots are insufficient and source fallback is required.
+    fn record_context_source_fallback(&mut self);
+
+    /// Extend the typed context-root result with collected DOM roots.
+    fn extend_context_roots(&mut self, roots: Vec<Root>);
+}
+
+struct LightmountDependencyInvalidationContextRootsBuilder<Root> {
+    requires_source_fallback: bool,
+    roots: Vec<Root>,
+}
+
+impl<Root> LightmountDependencyInvalidationContextRootsBuilder<Root> {
+    #[inline]
+    fn finish(self) -> LightmountDependencyInvalidationContextRoots<Root> {
+        LightmountDependencyInvalidationContextRoots::new(self.requires_source_fallback, self.roots)
+    }
+}
+
+impl<Root> Default for LightmountDependencyInvalidationContextRootsBuilder<Root> {
+    #[inline]
+    fn default() -> Self {
+        Self {
+            requires_source_fallback: false,
+            roots: Vec::new(),
+        }
+    }
+}
+
+impl<Root> LightmountDependencyInvalidationContextRootsPartsSink<Root>
+    for LightmountDependencyInvalidationContextRootsBuilder<Root>
+{
+    #[inline]
+    fn record_context_source_fallback(&mut self) {
+        self.requires_source_fallback = true;
+    }
+
+    #[inline]
+    fn extend_context_roots(&mut self, roots: Vec<Root>) {
+        self.roots.extend(roots);
+    }
 }
 
 impl LightmountDependencyContextRootFlags {
     /// Drain these context-root categories into a DOM-backed sink.
     #[inline]
-    pub fn drain_into(
+    fn drain_into(
         self,
         allow_direct_previous_following_sibling_fallback: bool,
         target: &mut impl LightmountDependencyContextRootFlagsSink,
@@ -5968,21 +6484,53 @@ impl LightmountDependencyContextRootFlags {
     }
 }
 
+impl LightmountDependencyContextRootPlan {
+    #[inline]
+    fn new(
+        query: &LightmountDependencyQueryResult,
+        allow_direct_previous_following_sibling_fallback: bool,
+    ) -> Self {
+        Self {
+            flags: query.context_root_flags(),
+            allow_direct_previous_following_sibling_fallback,
+        }
+    }
+
+    /// Drain this plan into a DOM-backed root sink.
+    #[inline]
+    pub fn drain_into<Root, Sink>(
+        self,
+        mut sink: Sink,
+    ) -> LightmountDependencyInvalidationContextRoots<Root>
+    where
+        Sink: LightmountDependencyInvalidationContextRootsSink<Root>,
+    {
+        self.flags.drain_into(
+            self.allow_direct_previous_following_sibling_fallback,
+            &mut sink,
+        );
+        let mut builder = LightmountDependencyInvalidationContextRootsBuilder::default();
+        sink.drain_collected_context_roots_into(&mut builder);
+        builder.finish()
+    }
+}
+
 /// Build typed dependency context roots by draining one dependency query's
 /// root-category plan into an adapter-provided DOM sink.
-pub fn lightmount_dependency_invalidation_context_roots<Root, Sink>(
+#[cfg(test)]
+fn lightmount_dependency_invalidation_context_roots<Root, Sink>(
     query: &LightmountDependencyQueryResult,
     allow_direct_previous_following_sibling_fallback: bool,
-    mut sink: Sink,
+    sink: Sink,
 ) -> LightmountDependencyInvalidationContextRoots<Root>
 where
     Sink: LightmountDependencyInvalidationContextRootsSink<Root>,
 {
-    query
-        .context_root_flags()
-        .drain_into(allow_direct_previous_following_sibling_fallback, &mut sink);
-    let (requires_source_fallback, roots) = sink.into_context_root_parts();
-    LightmountDependencyInvalidationContextRoots::new(requires_source_fallback, roots)
+    LightmountDependencyContextRootPlan::new(
+        query,
+        allow_direct_previous_following_sibling_fallback,
+    )
+    .drain_into(sink)
 }
 
 /// Conservative query result for one changed class/id/attribute/state token.
@@ -6031,15 +6579,45 @@ impl LightmountDependencyQueryResult {
         self.unknown_dependency || !self.kinds.is_empty() || !self.fallback_reasons.is_empty()
     }
 
+    /// Returns whether this query can invalidate descendants of the changed
+    /// element.
+    #[inline]
+    pub fn has_descendants_dependency(&self) -> bool {
+        self.kinds.contains(&LightmountDependencyKind::Descendants)
+    }
+
+    /// Returns whether this query can invalidate `::slotted(...)` elements.
+    #[inline]
+    pub fn has_slotted_elements_dependency(&self) -> bool {
+        self.kinds
+            .contains(&LightmountDependencyKind::SlottedElements)
+    }
+
+    /// Returns whether this query can invalidate `::part(...)` elements.
+    #[inline]
+    pub fn has_parts_dependency(&self) -> bool {
+        self.kinds.contains(&LightmountDependencyKind::Parts)
+    }
+
+    /// Returns whether this query can invalidate relative selector ancestor
+    /// anchors.
+    #[inline]
+    pub fn has_relative_ancestors_dependency(&self) -> bool {
+        self.kinds
+            .contains(&LightmountDependencyKind::RelativeAncestors)
+    }
+
     /// Returns the concrete dependency kinds captured for this query.
     #[inline]
-    pub fn kinds(&self) -> &[LightmountDependencyKind] {
+    #[cfg(test)]
+    fn kinds(&self) -> &[LightmountDependencyKind] {
         &self.kinds
     }
 
     /// Returns conservative fallback reasons captured for this query.
     #[inline]
-    pub fn fallback_reasons(&self) -> &[LightmountDependencyFallbackReason] {
+    #[cfg(test)]
+    fn fallback_reasons(&self) -> &[LightmountDependencyFallbackReason] {
         &self.fallback_reasons
     }
 
@@ -6051,7 +6629,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns the fallback-root policy for this dependency query.
     #[inline]
-    pub fn fallback_root_policy(&self) -> LightmountDependencyFallbackRootPolicy {
+    fn fallback_root_policy(&self) -> LightmountDependencyFallbackRootPolicy {
         if !self.fallback_reasons.is_empty()
             && self.fallback_reasons.iter().all(|reason| {
                 matches!(
@@ -6070,7 +6648,7 @@ impl LightmountDependencyQueryResult {
     /// Returns explicit fallback reasons, or conservative shape-derived reasons
     /// when the caller has already determined this query needs fallback handling.
     #[inline]
-    pub fn fallback_or_shape_reasons(&self) -> Vec<LightmountDependencyFallbackReason> {
+    fn fallback_or_shape_reasons(&self) -> Vec<LightmountDependencyFallbackReason> {
         if !self.fallback_reasons.is_empty() {
             return self.fallback_reasons.clone();
         }
@@ -6082,7 +6660,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns source invalidation fallback reasons for this query result.
     #[inline]
-    pub fn source_invalidation_fallback_reasons(
+    fn source_invalidation_fallback_reasons(
         &self,
     ) -> IndexSet<LightmountSourceInvalidationFallbackReason> {
         self.fallback_or_shape_reasons()
@@ -6093,7 +6671,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns source dependency fallback handling for this query result.
     #[inline]
-    pub fn source_dependency_fallback_handling(&self) -> LightmountDependencyFallbackHandling {
+    fn source_dependency_fallback_handling(&self) -> LightmountDependencyFallbackHandling {
         let reasons = self.source_invalidation_fallback_reasons();
         match self.fallback_root_policy() {
             LightmountDependencyFallbackRootPolicy::ContextRoots => {
@@ -6123,7 +6701,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns whether this query can affect relative selector anchors.
     #[inline]
-    pub fn has_relative_selector_dependency(&self) -> bool {
+    fn has_relative_selector_dependency(&self) -> bool {
         self.kinds.iter().any(|kind| {
             matches!(
                 kind,
@@ -6134,13 +6712,19 @@ impl LightmountDependencyQueryResult {
                     | LightmountDependencyKind::RelativeAncestorPrevSibling
                     | LightmountDependencyKind::RelativeAncestorEarlierSibling
             )
+        }) || self.fallback_reasons.iter().any(|reason| {
+            matches!(
+                reason,
+                LightmountDependencyFallbackReason::RelativeAnySelector
+                    | LightmountDependencyFallbackReason::NestedRelativeSelectorDependency
+            )
         })
     }
 
     /// Returns whether this query can affect previous-sibling relative selector
     /// anchors.
     #[inline]
-    pub fn has_relative_previous_sibling_dependency(&self) -> bool {
+    fn has_relative_previous_sibling_dependency(&self) -> bool {
         self.kinds.iter().any(|kind| {
             matches!(
                 kind,
@@ -6156,7 +6740,7 @@ impl LightmountDependencyQueryResult {
     /// relative dependency plus the following-sibling dependency Stylo records
     /// for `+`.
     #[inline]
-    pub fn has_only_direct_relative_previous_sibling_dependency(&self) -> bool {
+    fn has_only_direct_relative_previous_sibling_dependency(&self) -> bool {
         !self.kinds.is_empty()
             && self.kinds.iter().all(|kind| {
                 matches!(
@@ -6173,7 +6757,7 @@ impl LightmountDependencyQueryResult {
     /// Returns whether this dependency needs structural context fallback
     /// cleanup for a universal child-list structural request.
     #[inline]
-    pub fn requires_structural_context_fallback_cleanup(
+    fn requires_structural_context_fallback_cleanup(
         &self,
         request_requires_child_list_structural_dependency: bool,
         query_is_universal: bool,
@@ -6185,7 +6769,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns whether this query can affect `::slotted(...)` invalidation.
     #[inline]
-    pub fn has_slotted_dependency(&self) -> bool {
+    fn has_slotted_dependency(&self) -> bool {
         self.unknown_dependency
             || self
                 .kinds
@@ -6195,7 +6779,7 @@ impl LightmountDependencyQueryResult {
 
     /// Returns the fallback-root categories this query can affect.
     #[inline]
-    pub fn context_root_flags(&self) -> LightmountDependencyContextRootFlags {
+    fn context_root_flags(&self) -> LightmountDependencyContextRootFlags {
         let mut flags = LightmountDependencyContextRootFlags {
             requires_source_fallback: self.requires_fallback(),
             ..LightmountDependencyContextRootFlags::default()
@@ -6236,6 +6820,10 @@ impl LightmountDependencyQueryResult {
                     flags.ancestor_earlier_siblings = true;
                 },
                 LightmountDependencyKind::Scope => {
+                    // Source-batch planning only has a coarse dependency
+                    // summary. Scope dependencies need the retained scope
+                    // action walker with selector-offset and next-dependency
+                    // context, so mutation context roots are not sufficient.
                     flags.requires_source_fallback = true;
                 },
             }
@@ -6496,6 +7084,33 @@ impl LightmountDependencyInvalidationSummary {
                 .iter()
                 .map(|(_, result)| result)
                 .any(LightmountDependencyQueryResult::has_sibling_dependency)
+    }
+
+    /// Returns whether any known dependency can affect relative selector
+    /// anchors.
+    #[inline]
+    pub fn has_relative_selector_dependency(&self) -> bool {
+        self.class_dependencies
+            .iter()
+            .chain(self.id_dependencies.iter())
+            .map(|(_, result)| result)
+            .chain(self.attribute_dependencies.iter().map(|(_, result)| result))
+            .chain(
+                self.custom_state_dependencies
+                    .iter()
+                    .map(|(_, result)| result),
+            )
+            .chain(self.state_dependencies.iter().map(|(_, result)| result))
+            .chain(std::iter::once(&self.focus_dependency))
+            .chain(std::iter::once(&self.focus_within_dependency))
+            .chain(std::iter::once(&self.target_dependency))
+            .chain(std::iter::once(&self.universal_dependency))
+            .any(LightmountDependencyQueryResult::has_relative_selector_dependency)
+            || self
+                .type_dependencies
+                .iter()
+                .map(|(_, result)| result)
+                .any(LightmountDependencyQueryResult::has_relative_selector_dependency)
     }
 
     /// Returns whether any known dependency can affect `::slotted(...)`
@@ -7230,8 +7845,14 @@ mod tests {
         }
 
         impl LightmountDependencyInvalidationContextRootsSink<u32> for Sink {
-            fn into_context_root_parts(self) -> (bool, Vec<u32>) {
-                (self.requires_source_fallback, self.roots)
+            fn drain_collected_context_roots_into(
+                self,
+                target: &mut impl LightmountDependencyInvalidationContextRootsPartsSink<u32>,
+            ) {
+                if self.requires_source_fallback {
+                    target.record_context_source_fallback();
+                }
+                target.extend_context_roots(self.roots);
             }
         }
 
@@ -7329,7 +7950,7 @@ mod tests {
                 DependencyInvalidationKind::FullSelector
             )),
             LightmountDependencyInvalidationAction::Fallback(
-                LightmountDependencyFallbackReason::FullSelector
+                LightmountSourceInvalidationFallbackReason::FullSelector
             )
         );
         assert_eq!(
@@ -7337,7 +7958,7 @@ mod tests {
                 DependencyInvalidationKind::Relative(RelativeDependencyInvalidationKind::Ancestors)
             )),
             LightmountDependencyInvalidationAction::Fallback(
-                LightmountDependencyFallbackReason::RelativeAnySelector
+                LightmountSourceInvalidationFallbackReason::RelativeAnySelector
             )
         );
         assert_eq!(
@@ -7412,7 +8033,7 @@ mod tests {
         let mut sink = Sink::default();
         LightmountDependencyInvalidationAction::ElementAndDescendants.drain_into(&mut sink);
         LightmountDependencyInvalidationAction::Fallback(
-            LightmountDependencyFallbackReason::FullSelector,
+            LightmountSourceInvalidationFallbackReason::FullSelector,
         )
         .drain_into(&mut sink);
         LightmountDependencyInvalidationAction::Scope(
@@ -7588,10 +8209,6 @@ mod tests {
             (
                 LightmountDependencyFallbackReason::UnsupportedStateDependency,
                 LightmountSourceInvalidationFallbackReason::UnsupportedStateDependency,
-            ),
-            (
-                LightmountDependencyFallbackReason::UnsupportedShadowDependency,
-                LightmountSourceInvalidationFallbackReason::UnsupportedShadowDependency,
             ),
             (
                 LightmountDependencyFallbackReason::UnsupportedDependency,
@@ -7995,30 +8612,6 @@ mod tests {
             &snapshot,
         );
 
-        let LightmountRetainedSourceStyleInvalidation::RetainedQueries {
-            fallback_kind,
-            cascade_data,
-            shadow_root,
-            queries: retained_queries,
-            reasoned_fallback_roots,
-            exact_safety_fallback_roots,
-            fallback_reasons: retained_fallback_reasons,
-            mutation_snapshot,
-        } = retained
-        else {
-            panic!("retained query kind should build retained query input");
-        };
-        assert_eq!(
-            fallback_kind,
-            Some(LightmountRetainedSourceStyleInvalidationKind::ContextFallback)
-        );
-        assert!(cascade_data.is_none());
-        assert_eq!(shadow_root, Some(4));
-        assert_eq!(retained_queries, &queries);
-        assert_eq!(reasoned_fallback_roots, &reasoned_roots);
-        assert_eq!(exact_safety_fallback_roots, &exact_safety_roots);
-        assert_eq!(retained_fallback_reasons, &fallback_reasons);
-        assert_eq!(*mutation_snapshot, snapshot);
         let mut sink = Sink::default();
         retained.drain_into(&mut sink);
         assert_eq!(
@@ -8048,20 +8641,6 @@ mod tests {
             &fallback_reasons,
             &snapshot,
         );
-        let LightmountRetainedSourceStyleInvalidation::Fallback {
-            kind,
-            fallback_roots,
-            fallback_reasons: fallback_input_reasons,
-        } = fallback
-        else {
-            panic!("fallback kind should build fallback input");
-        };
-        assert_eq!(
-            kind,
-            LightmountRetainedSourceStyleInvalidationKind::FallbackOnly
-        );
-        assert_eq!(fallback_roots, &reasoned_roots);
-        assert_eq!(fallback_input_reasons, &fallback_reasons);
         let mut sink = Sink::default();
         fallback.drain_into(&mut sink);
         assert_eq!(
@@ -8153,6 +8732,9 @@ mod tests {
         assert!(source_summary
             .query_result(query.as_stylo_query())
             .has_any_dependency());
+        assert!(source_summary
+            .query_class(&Atom::from("active"))
+            .has_any_dependency());
         assert!(source_summary.has_child_list_structural_dependency());
         assert!(source_summary.has_child_list_structural_dependency_for_requests(&[request]));
         assert!(!source_summary.has_relative_previous_sibling_dependency_for_requests(&[request]));
@@ -8188,8 +8770,7 @@ mod tests {
             &source_roots,
             &[],
         );
-        assert!(source
-            .dependency_summary()
+        assert!(source_summary
             .query_result(query.as_stylo_query())
             .has_any_dependency());
         assert_eq!(source.selected_fallback_roots(), &[2]);
@@ -8203,7 +8784,38 @@ mod tests {
     }
 
     #[test]
-    fn lightmount_child_list_retained_query_batch_exposes_typed_parts() {
+    fn lightmount_source_dependency_summary_exposes_aggregate_predicates() {
+        let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
+
+        let mut relative = LightmountDependencyQueryResult::default();
+        relative.add_fallback_reason(LightmountDependencyFallbackReason::RelativeAnySelector);
+        dependency_summary.note_class_dependency(Atom::from("anchor"), relative);
+
+        let mut sibling = LightmountDependencyQueryResult::default();
+        sibling.add_kind(LightmountDependencyKind::Siblings);
+        dependency_summary.note_id_dependency(Atom::from("target"), sibling);
+
+        let mut focus = LightmountDependencyQueryResult::default();
+        focus.add_kind(LightmountDependencyKind::Element);
+        dependency_summary
+            .note_state_dependency(ElementState::FOCUS | ElementState::FOCUS_WITHIN, focus);
+
+        let mut target = LightmountDependencyQueryResult::default();
+        target.add_kind(LightmountDependencyKind::Element);
+        dependency_summary.note_state_dependency(ElementState::URLTARGET, target);
+
+        let source_summary = LightmountSourceDependencySummary::new(dependency_summary, true);
+
+        assert!(source_summary.has_relative_selector_dependency());
+        assert!(source_summary.has_focus_dependency());
+        assert!(source_summary.has_focus_within_dependency());
+        assert!(source_summary.has_target_dependency());
+        assert!(source_summary.has_child_list_structural_dependency());
+        assert!(source_summary.has_sibling_dependency());
+    }
+
+    #[test]
+    fn lightmount_child_list_retained_query_batch_drains_typed_parts() {
         let requirement = LightmountSourceDependencyRequestRequirement::child_list_structural();
         let query = LightmountRetainedStyleInvalidationQuery::universal(1_u32);
         let row = LightmountRetainedStyleChildListInvalidationQuery::new(query, requirement);
@@ -8213,26 +8825,77 @@ mod tests {
             vec![2],
             vec![3],
         );
+        let mut sink = ChildListInvalidationBatchSinkForTest::default();
 
-        assert_eq!(batch.queries()[0].query().root(), 1);
-        assert_eq!(batch.queries()[0].requirement(), requirement);
-        assert_eq!(batch.base_roots(), &[1]);
-        assert_eq!(batch.empty_target_fallback_roots(), &[2]);
+        batch.drain_into(&mut sink);
 
-        let (rows, base_roots, empty_roots, relative_roots) = batch.into_parts();
-        let (query, requirement) = rows
-            .into_iter()
-            .next()
-            .unwrap()
-            .into_query_and_requirement();
-        assert_eq!(query.root(), 1);
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].0.root(), 1);
         assert_eq!(
-            requirement,
+            sink.rows[0].1,
             LightmountSourceDependencyRequestRequirement::child_list_structural()
         );
-        assert_eq!(base_roots, vec![1]);
-        assert_eq!(empty_roots, vec![2]);
-        assert_eq!(relative_roots, vec![3]);
+        assert_eq!(sink.base_roots, vec![1]);
+        assert_eq!(sink.empty_target_fallback_roots, vec![2]);
+        assert_eq!(sink.relative_previous_sibling_cleanup_roots, vec![3]);
+    }
+
+    #[derive(Default)]
+    struct ChildListInvalidationBatchSinkForTest {
+        rows: Vec<(
+            LightmountRetainedStyleInvalidationQuery<u32>,
+            LightmountSourceDependencyRequestRequirement,
+        )>,
+        base_roots: Vec<u32>,
+        empty_target_fallback_roots: Vec<u32>,
+        relative_previous_sibling_cleanup_roots: Vec<u32>,
+    }
+
+    impl LightmountRetainedStyleChildListInvalidationQueriesSink<u32>
+        for ChildListInvalidationBatchSinkForTest
+    {
+        fn record_child_list_retained_query(
+            &mut self,
+            query: LightmountRetainedStyleInvalidationQuery<u32>,
+            requirement: LightmountSourceDependencyRequestRequirement,
+        ) {
+            self.rows.push((query, requirement));
+        }
+
+        fn extend_child_list_base_roots(&mut self, roots: Vec<u32>) {
+            self.base_roots.extend(roots);
+        }
+
+        fn extend_child_list_empty_target_fallback_roots(&mut self, roots: Vec<u32>) {
+            self.empty_target_fallback_roots.extend(roots);
+        }
+
+        fn extend_child_list_relative_previous_sibling_cleanup_roots(&mut self, roots: Vec<u32>) {
+            self.relative_previous_sibling_cleanup_roots.extend(roots);
+        }
+    }
+
+    #[test]
+    fn lightmount_child_list_retained_query_batch_drains_into_sink() {
+        let requirement = LightmountSourceDependencyRequestRequirement::relative_previous_sibling();
+        let query = LightmountRetainedStyleInvalidationQuery::class(1_u32, "active".into());
+        let row = LightmountRetainedStyleChildListInvalidationQuery::new(query, requirement);
+        let batch = LightmountRetainedStyleChildListInvalidationQueries::new(
+            vec![row],
+            vec![1],
+            vec![2],
+            vec![3],
+        );
+        let mut sink = ChildListInvalidationBatchSinkForTest::default();
+
+        batch.drain_into(&mut sink);
+
+        assert_eq!(sink.rows.len(), 1);
+        assert_eq!(sink.rows[0].0.root(), 1);
+        assert_eq!(sink.rows[0].1, requirement);
+        assert_eq!(sink.base_roots, vec![1]);
+        assert_eq!(sink.empty_target_fallback_roots, vec![2]);
+        assert_eq!(sink.relative_previous_sibling_cleanup_roots, vec![3]);
     }
 
     #[test]
@@ -8257,20 +8920,20 @@ mod tests {
         let batch = builder
             .into_queries()
             .expect("builder should emit query rows");
-        assert_eq!(batch.queries().len(), 1);
+        let mut sink = ChildListInvalidationBatchSinkForTest::default();
+        batch.drain_into(&mut sink);
+        assert_eq!(sink.rows.len(), 1);
         assert_eq!(
-            batch.queries()[0].query().as_stylo_query(),
+            sink.rows[0].0.as_stylo_query(),
             LightmountStyleInvalidationQuery::Class("active")
         );
         assert_eq!(
-            batch.queries()[0].requirement(),
+            sink.rows[0].1,
             LightmountSourceDependencyRequestRequirement::exact()
         );
-        assert_eq!(batch.base_roots(), &[2]);
-        assert_eq!(batch.empty_target_fallback_roots(), &[3]);
-
-        let (_, _, _, relative_roots) = batch.into_parts();
-        assert_eq!(relative_roots, vec![4]);
+        assert_eq!(sink.base_roots, vec![2]);
+        assert_eq!(sink.empty_target_fallback_roots, vec![3]);
+        assert_eq!(sink.relative_previous_sibling_cleanup_roots, vec![4]);
         assert!(
             LightmountRetainedStyleChildListInvalidationQueryBuilder::<u32>::new()
                 .into_queries()
@@ -8366,10 +9029,11 @@ mod tests {
         let batch = builder
             .into_queries()
             .expect("query row keeps roots visible");
-        assert_eq!(batch.base_roots(), &[2, 3]);
-        assert_eq!(batch.empty_target_fallback_roots(), &[2, 3]);
-        let (_, _, _, relative_roots) = batch.into_parts();
-        assert_eq!(relative_roots, vec![2, 6]);
+        let mut sink = ChildListInvalidationBatchSinkForTest::default();
+        batch.drain_into(&mut sink);
+        assert_eq!(sink.base_roots, vec![2, 3]);
+        assert_eq!(sink.empty_target_fallback_roots, vec![2, 3]);
+        assert_eq!(sink.relative_previous_sibling_cleanup_roots, vec![2, 6]);
     }
 
     #[test]
@@ -8464,6 +9128,19 @@ mod tests {
         fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
     }
 
+    #[derive(Default)]
+    struct LightmountPlannedSourceDependencyPartsForTest {
+        source_index: Option<usize>,
+        structural_boundary_cleanup_roots: Vec<u32>,
+        target_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
+        fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
+        exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<u32>>,
+        reasoned_fallback_roots: Vec<u32>,
+        exact_safety_fallback_roots: Vec<u32>,
+        fallback_roots: Vec<u32>,
+        fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+    }
+
     impl LightmountPlannedFallbackRootInvalidationTargetPartsSink<u32>
         for LightmountPlannedFallbackRootTargetPartsForTest
     {
@@ -8479,17 +9156,123 @@ mod tests {
         }
     }
 
+    impl LightmountPlannedSourceDependencyInvalidationPartsSink<u32>
+        for LightmountPlannedSourceDependencyPartsForTest
+    {
+        fn set_planned_source_dependency_source_index(&mut self, source_index: usize) {
+            self.source_index = Some(source_index);
+        }
+
+        fn set_planned_source_dependency_structural_boundary_cleanup_roots(
+            &mut self,
+            structural_boundary_cleanup_roots: Vec<u32>,
+        ) {
+            self.structural_boundary_cleanup_roots = structural_boundary_cleanup_roots;
+        }
+    }
+
+    impl LightmountPlannedSourceDependencyInvalidationTargetPartsSink<u32>
+        for LightmountPlannedSourceDependencyPartsForTest
+    {
+        fn set_planned_retained_source_dependency_target_parts(
+            &mut self,
+            exact_queries: Vec<LightmountRetainedStyleInvalidationQuery<u32>>,
+            fallback_kind: Option<LightmountRetainedSourceStyleInvalidationKind>,
+            reasoned_fallback_roots: Vec<u32>,
+            exact_safety_fallback_roots: Vec<u32>,
+            fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+        ) {
+            self.target_kind = Some(LightmountRetainedSourceStyleInvalidationKind::RetainedQueries);
+            self.fallback_kind = fallback_kind;
+            self.exact_queries = exact_queries;
+            self.reasoned_fallback_roots = reasoned_fallback_roots;
+            self.exact_safety_fallback_roots = exact_safety_fallback_roots;
+            self.fallback_reasons = fallback_reasons;
+        }
+
+        fn set_planned_fallback_source_dependency_target_parts(
+            &mut self,
+            fallback_kind: LightmountRetainedSourceStyleInvalidationKind,
+            fallback_roots: Vec<u32>,
+            fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+        ) {
+            self.target_kind = Some(fallback_kind);
+            self.fallback_roots = fallback_roots;
+            self.fallback_reasons = fallback_reasons;
+        }
+
+        fn set_planned_missing_fallback_roots_source_dependency_target_parts(
+            &mut self,
+            fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+        ) {
+            self.target_kind =
+                Some(LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots);
+            self.fallback_reasons = fallback_reasons;
+        }
+    }
+
+    fn planned_source_dependency_parts_for_test(
+        planned: LightmountPlannedSourceDependencyInvalidation<u32>,
+    ) -> LightmountPlannedSourceDependencyPartsForTest {
+        let mut sink = LightmountPlannedSourceDependencyPartsForTest::default();
+        planned.drain_into(&mut sink);
+        sink
+    }
+
+    fn planned_source_dependency_target_parts_for_test(
+        target: LightmountPlannedSourceDependencyInvalidationTarget<u32>,
+    ) -> LightmountPlannedSourceDependencyPartsForTest {
+        let mut sink = LightmountPlannedSourceDependencyPartsForTest::default();
+        target.drain_into(&mut sink);
+        sink
+    }
+
+    #[derive(Default)]
+    struct LightmountSourceDependencyBatchPlanForTest {
+        work_sources: Vec<LightmountPlannedSourceDependencyInvalidation<u32>>,
+        work_boundary_fallback: Option<LightmountPlannedFallbackRootInvalidationTarget<u32>>,
+        requires_source_fallback: Option<LightmountPlannedSourceDependencyInvalidation<u32>>,
+    }
+
+    impl LightmountSourceDependencyInvalidationBatchPlanSink<u32>
+        for LightmountSourceDependencyBatchPlanForTest
+    {
+        fn set_source_dependency_batch_work(
+            &mut self,
+            sources: Vec<LightmountPlannedSourceDependencyInvalidation<u32>>,
+            boundary_fallback: Option<LightmountPlannedFallbackRootInvalidationTarget<u32>>,
+        ) {
+            self.work_sources = sources;
+            self.work_boundary_fallback = boundary_fallback;
+        }
+
+        fn set_source_dependency_batch_requires_source_fallback(
+            &mut self,
+            source: LightmountPlannedSourceDependencyInvalidation<u32>,
+        ) {
+            self.requires_source_fallback = Some(source);
+        }
+    }
+
+    fn source_dependency_batch_plan_for_test(
+        plan: LightmountSourceDependencyInvalidationBatchPlan<u32>,
+    ) -> LightmountSourceDependencyBatchPlanForTest {
+        let mut sink = LightmountSourceDependencyBatchPlanForTest::default();
+        plan.drain_into(&mut sink);
+        sink
+    }
+
     #[test]
-    fn lightmount_planned_source_dependency_artifacts_expose_typed_parts() {
+    fn lightmount_planned_source_dependency_artifacts_drain_into_typed_sinks() {
         let empty_target_roots = [10_u32];
         let relative_cleanup_roots = [20_u32];
         let boundary_roots = LightmountSourceDependencyBoundaryRoots::new(
             &empty_target_roots,
             &relative_cleanup_roots,
         );
-        assert_eq!(boundary_roots.empty_target_fallback_roots(), &[10]);
+        assert_eq!(boundary_roots.empty_target_fallback_roots, &[10]);
         assert_eq!(
-            boundary_roots.relative_previous_sibling_cleanup_roots(),
+            boundary_roots.relative_previous_sibling_cleanup_roots,
             &[20]
         );
 
@@ -8504,57 +9287,44 @@ mod tests {
                 [LightmountSourceInvalidationFallbackReason::FullSelector],
                 vec![6],
             );
-        let parts = planned.into_parts();
-        assert_eq!(parts.source_index(), 3);
-        let (target, structural_boundary_roots) =
-            parts.into_target_and_structural_boundary_cleanup_roots();
-        assert_eq!(structural_boundary_roots, vec![6]);
-
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::RetainedQueries {
-            exact_queries,
-            fallback_kind,
-            reasoned_fallback_roots,
-            exact_safety_fallback_roots,
-            fallback_reasons,
-        } = target.into_parts()
-        else {
-            panic!("retained planned target should expose retained-query parts");
-        };
-        assert_eq!(exact_queries[0].root(), 1);
+        let parts = planned_source_dependency_parts_for_test(planned);
+        assert_eq!(parts.source_index, Some(3));
+        assert_eq!(parts.structural_boundary_cleanup_roots, vec![6]);
         assert_eq!(
-            fallback_kind,
+            parts.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::RetainedQueries)
+        );
+        assert_eq!(parts.exact_queries[0].root(), 1);
+        assert_eq!(
+            parts.fallback_kind,
             Some(LightmountRetainedSourceStyleInvalidationKind::ContextFallback)
         );
-        assert_eq!(reasoned_fallback_roots, vec![4]);
-        assert_eq!(exact_safety_fallback_roots, vec![5]);
-        assert!(
-            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::FullSelector)
-        );
+        assert_eq!(parts.reasoned_fallback_roots, vec![4]);
+        assert_eq!(parts.exact_safety_fallback_roots, vec![5]);
+        assert!(parts
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::FullSelector));
 
-        let missing = LightmountPlannedSourceDependencyInvalidation::<u32>::missing_fallback_roots(
-            7,
-            [],
-            Vec::new(),
-        )
-        .into_parts()
-        .into_target_and_structural_boundary_cleanup_roots()
-        .0
-        .into_parts();
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::MissingFallbackRoots {
-            fallback_reasons,
-        } = missing
-        else {
-            panic!("missing fallback roots should expose missing-roots parts");
-        };
-        assert!(fallback_reasons
+        let missing = planned_source_dependency_parts_for_test(
+            LightmountPlannedSourceDependencyInvalidation::<u32>::missing_fallback_roots(
+                7,
+                [],
+                Vec::new(),
+            ),
+        );
+        assert_eq!(missing.source_index, Some(7));
+        assert_eq!(
+            missing.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots)
+        );
+        assert!(missing
+            .fallback_reasons
             .contains(&LightmountSourceInvalidationFallbackReason::MissingFallbackRoots));
 
         let boundary_fallback =
             LightmountPlannedFallbackRootInvalidationTarget::source_scope_fallback(vec![8], []);
         let mut fallback_parts = LightmountPlannedFallbackRootTargetPartsForTest::default();
-        boundary_fallback
-            .into_parts()
-            .drain_into(&mut fallback_parts);
+        boundary_fallback.drain_into(&mut fallback_parts);
         assert_eq!(
             fallback_parts.fallback_kind,
             Some(LightmountRetainedSourceStyleInvalidationKind::SourceScopeFallback)
@@ -8572,40 +9342,34 @@ mod tests {
                 vec![9],
                 [],
             )
-            .expect("orphan exact-safety roots should become a fallback target")
-            .into_parts();
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::FallbackWithRoots {
-            fallback_kind,
-            fallback_roots,
-            fallback_reasons,
-        } = promoted_safety_target
-        else {
-            panic!("orphan exact-safety roots should expose fallback roots");
-        };
+            .expect("orphan exact-safety roots should become a fallback target");
+        let promoted_safety_target =
+            planned_source_dependency_target_parts_for_test(promoted_safety_target);
         assert_eq!(
-            fallback_kind,
-            LightmountRetainedSourceStyleInvalidationKind::FallbackOnly
+            promoted_safety_target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::FallbackOnly)
         );
-        assert_eq!(fallback_roots, vec![9]);
-        assert!(fallback_reasons
+        assert_eq!(promoted_safety_target.fallback_roots, vec![9]);
+        assert!(promoted_safety_target
+            .fallback_reasons
             .contains(&LightmountSourceInvalidationFallbackReason::InexactEmptyResult));
 
         let missing_selected_roots =
             LightmountPlannedSourceDependencyInvalidationTarget::<u32>::source_dependency_fallback(
                 Vec::new(),
                 [LightmountSourceInvalidationFallbackReason::FullSelector],
-            )
-            .into_parts();
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::MissingFallbackRoots {
-            fallback_reasons,
-        } = missing_selected_roots
-        else {
-            panic!("source dependency fallback without roots should expose missing roots");
-        };
-        assert!(
-            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::FullSelector)
+            );
+        let missing_selected_roots =
+            planned_source_dependency_target_parts_for_test(missing_selected_roots);
+        assert_eq!(
+            missing_selected_roots.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots)
         );
-        assert!(fallback_reasons
+        assert!(missing_selected_roots
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::FullSelector));
+        assert!(missing_selected_roots
+            .fallback_reasons
             .contains(&LightmountSourceInvalidationFallbackReason::MissingFallbackRoots));
 
         let source_plan = LightmountSourceDependencyInvalidationSourcePlan::work(Some(
@@ -8631,36 +9395,44 @@ mod tests {
         else {
             panic!("source-local fallback plan should expose fallback target");
         };
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::MissingFallbackRoots {
-            fallback_reasons,
-        } = target.into_parts()
-        else {
-            panic!("source-local fallback plan should preserve missing-roots target");
-        };
-        assert!(
-            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::FullSelector)
+        let target = planned_source_dependency_target_parts_for_test(target);
+        assert_eq!(
+            target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots)
         );
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::FullSelector));
 
-        let batch_plan = LightmountSourceDependencyInvalidationBatchPlan::Work {
-            sources: vec![
-                LightmountPlannedSourceDependencyInvalidation::fallback_only(
-                    1,
-                    vec![2],
-                    [],
+        let batch_plan_sink = source_dependency_batch_plan_for_test(
+            LightmountSourceDependencyInvalidationBatchPlan::work(
+                vec![
+                    LightmountPlannedSourceDependencyInvalidation::fallback_only(
+                        1,
+                        vec![2],
+                        [],
+                        Vec::new(),
+                    ),
+                ],
+                None,
+            ),
+        );
+        assert_eq!(batch_plan_sink.work_sources.len(), 1);
+        assert!(batch_plan_sink.work_boundary_fallback.is_none());
+        assert!(batch_plan_sink.requires_source_fallback.is_none());
+
+        let batch_plan_sink = source_dependency_batch_plan_for_test(
+            LightmountSourceDependencyInvalidationBatchPlan::requires_source_fallback(
+                LightmountPlannedSourceDependencyInvalidation::missing_fallback_roots(
+                    4,
+                    [LightmountSourceInvalidationFallbackReason::FullSelector],
                     Vec::new(),
                 ),
-            ],
-            boundary_fallback: None,
-        };
-        let LightmountSourceDependencyInvalidationBatchPlan::Work {
-            sources,
-            boundary_fallback,
-        } = batch_plan
-        else {
-            panic!("planned batch should expose work variant");
-        };
-        assert_eq!(sources.len(), 1);
-        assert!(boundary_fallback.is_none());
+            ),
+        );
+        assert!(batch_plan_sink.work_sources.is_empty());
+        assert!(batch_plan_sink.work_boundary_fallback.is_none());
+        assert!(batch_plan_sink.requires_source_fallback.is_some());
     }
 
     #[test]
@@ -8805,14 +9577,11 @@ mod tests {
             fn context_roots_for_source_dependency(
                 &mut self,
                 root: u32,
-                query: &LightmountDependencyQueryResult,
-                allow_direct_previous_following_sibling_fallback: bool,
+                _plan: LightmountDependencyContextRootPlan,
                 context: LightmountDependencyInvalidationFallbackContext<u32>,
             ) -> LightmountDependencyInvalidationContextRoots<u32> {
                 self.calls += 1;
                 assert_eq!(root, 1);
-                assert!(query.requires_fallback());
-                assert!(!allow_direct_previous_following_sibling_fallback);
                 assert_eq!(context.parent(), Some(2));
                 assert_eq!(context.previous_sibling(), Some(3));
                 assert_eq!(context.next_sibling(), Some(4));
@@ -8852,38 +9621,95 @@ mod tests {
         );
 
         assert_eq!(provider.calls, 1);
-        let LightmountSourceDependencyInvalidationBatchPlan::Work {
-            mut sources,
-            boundary_fallback,
-        } = plan
-        else {
-            panic!("context-root fallback should produce source work");
-        };
-        assert!(boundary_fallback.is_none());
+        let mut plan = source_dependency_batch_plan_for_test(plan);
+        assert!(plan.work_boundary_fallback.is_none());
+        assert!(plan.requires_source_fallback.is_none());
+        let sources = &mut plan.work_sources;
         assert_eq!(sources.len(), 1);
-        let target = sources
-            .pop()
-            .expect("source work should exist")
-            .into_parts()
-            .into_target_and_structural_boundary_cleanup_roots()
-            .0
-            .into_parts();
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::FallbackWithRoots {
-            fallback_kind,
-            fallback_roots,
-            fallback_reasons,
-        } = target
-        else {
-            panic!("context roots should become a fallback-root target");
-        };
+        let target = planned_source_dependency_parts_for_test(
+            sources.pop().expect("source work should exist"),
+        );
         assert_eq!(
-            fallback_kind,
-            LightmountRetainedSourceStyleInvalidationKind::ContextFallback
+            target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::ContextFallback)
         );
-        assert_eq!(fallback_roots, vec![10]);
-        assert!(
-            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency)
+        assert_eq!(target.fallback_roots, vec![10]);
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency));
+    }
+
+    #[test]
+    fn lightmount_source_dependency_batch_plan_accumulates_missing_fallback_root_reasons() {
+        struct ContextRootsProviderForTest;
+
+        impl LightmountSourceDependencyInvalidationContextRootsProvider<u32>
+            for ContextRootsProviderForTest
+        {
+            fn context_roots_for_source_dependency(
+                &mut self,
+                _root: u32,
+                _plan: LightmountDependencyContextRootPlan,
+                _context: LightmountDependencyInvalidationFallbackContext<u32>,
+            ) -> LightmountDependencyInvalidationContextRoots<u32> {
+                panic!("missing-root source fallback should not need context roots")
+            }
+        }
+
+        let mut nth_dependency = LightmountDependencyQueryResult::default();
+        nth_dependency.add_fallback_reason(LightmountDependencyFallbackReason::NthOfDependency);
+        let mut full_dependency = LightmountDependencyQueryResult::default();
+        full_dependency.add_fallback_reason(LightmountDependencyFallbackReason::FullSelector);
+        let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
+        dependency_summary.note_class_dependency(Atom::from("nth"), nth_dependency);
+        dependency_summary.note_class_dependency(Atom::from("full"), full_dependency);
+        let source_summary = LightmountSourceDependencySummary::new(dependency_summary, false);
+        let source =
+            LightmountSourceDependencyInvalidationBatchSource::new(&source_summary, &[], &[]);
+        let nth_query = LightmountRetainedStyleInvalidationQuery::class(1_u32, "nth".into());
+        let full_query = LightmountRetainedStyleInvalidationQuery::class(1_u32, "full".into());
+        let requests = [
+            LightmountSourceDependencyInvalidationRequest::new(
+                &nth_query,
+                None,
+                LightmountSourceDependencyRequestRequirement::exact(),
+            ),
+            LightmountSourceDependencyInvalidationRequest::new(
+                &full_query,
+                None,
+                LightmountSourceDependencyRequestRequirement::exact(),
+            ),
+        ];
+        let mut provider = ContextRootsProviderForTest;
+
+        let plan = lightmount_source_dependency_invalidation_batch_plan(
+            &[source],
+            &requests,
+            LightmountSourceDependencyBoundaryRoots::default(),
+            &mut provider,
         );
+
+        let mut plan = source_dependency_batch_plan_for_test(plan);
+        assert!(plan.work_sources.is_empty());
+        assert!(plan.work_boundary_fallback.is_none());
+        let target = planned_source_dependency_parts_for_test(
+            plan.requires_source_fallback
+                .take()
+                .expect("missing fallback roots should force source fallback"),
+        );
+        assert_eq!(
+            target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::MissingFallbackRoots)
+        );
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency));
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::FullSelector));
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::MissingFallbackRoots));
     }
 
     #[test]
@@ -8899,15 +9725,11 @@ mod tests {
             fn context_roots_for_source_dependency(
                 &mut self,
                 root: u32,
-                query: &LightmountDependencyQueryResult,
-                allow_direct_previous_following_sibling_fallback: bool,
+                _plan: LightmountDependencyContextRootPlan,
                 context: LightmountDependencyInvalidationFallbackContext<u32>,
             ) -> LightmountDependencyInvalidationContextRoots<u32> {
                 self.calls += 1;
                 assert_eq!(root, 1);
-                assert!(query.has_sibling_dependency());
-                assert!(!query.requires_fallback());
-                assert!(!allow_direct_previous_following_sibling_fallback);
                 assert_eq!(context.parent(), Some(2));
                 assert_eq!(context.previous_sibling(), None);
                 assert_eq!(context.next_sibling(), Some(3));
@@ -8948,38 +9770,97 @@ mod tests {
         );
 
         assert_eq!(provider.calls, 1);
-        let LightmountSourceDependencyInvalidationBatchPlan::Work {
-            mut sources,
-            boundary_fallback,
-        } = plan
-        else {
-            panic!("custom-state nth-of dependencies should produce source work");
-        };
-        assert!(boundary_fallback.is_none());
+        let mut plan = source_dependency_batch_plan_for_test(plan);
+        assert!(plan.work_boundary_fallback.is_none());
+        assert!(plan.requires_source_fallback.is_none());
+        let sources = &mut plan.work_sources;
         assert_eq!(sources.len(), 1);
-        let target = sources
-            .pop()
-            .expect("source work should exist")
-            .into_parts()
-            .into_target_and_structural_boundary_cleanup_roots()
-            .0
-            .into_parts();
-        let LightmountPlannedSourceDependencyInvalidationTargetParts::FallbackWithRoots {
-            fallback_kind,
-            fallback_roots,
-            fallback_reasons,
-        } = target
-        else {
-            panic!("custom-state nth-of context roots should become a fallback-root target");
-        };
+        let target = planned_source_dependency_parts_for_test(
+            sources.pop().expect("source work should exist"),
+        );
         assert_eq!(
-            fallback_kind,
-            LightmountRetainedSourceStyleInvalidationKind::ContextFallback
+            target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::ContextFallback)
         );
-        assert_eq!(fallback_roots, vec![3, 4]);
-        assert!(
-            fallback_reasons.contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency)
+        assert_eq!(target.fallback_roots, vec![3, 4]);
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::NthOfDependency));
+    }
+
+    #[test]
+    fn lightmount_source_dependency_batch_plan_keeps_scope_on_source_fallback() {
+        #[derive(Default)]
+        struct ContextRootsProviderForTest {
+            calls: usize,
+        }
+
+        impl LightmountSourceDependencyInvalidationContextRootsProvider<u32>
+            for ContextRootsProviderForTest
+        {
+            fn context_roots_for_source_dependency(
+                &mut self,
+                root: u32,
+                _plan: LightmountDependencyContextRootPlan,
+                context: LightmountDependencyInvalidationFallbackContext<u32>,
+            ) -> LightmountDependencyInvalidationContextRoots<u32> {
+                self.calls += 1;
+                assert_eq!(root, 1);
+                assert_eq!(context.parent(), Some(2));
+                assert_eq!(context.previous_sibling(), Some(3));
+                assert_eq!(context.next_sibling(), Some(4));
+                LightmountDependencyInvalidationContextRoots::new(true, vec![10])
+            }
+        }
+
+        let mut dependency = LightmountDependencyQueryResult::default();
+        dependency.add_kind(LightmountDependencyKind::Scope);
+        let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
+        dependency_summary.note_class_dependency(Atom::from("scoped"), dependency);
+        let source_summary = LightmountSourceDependencySummary::new(dependency_summary, false);
+        let source_roots = [99_u32];
+        let source = LightmountSourceDependencyInvalidationBatchSource::new(
+            &source_summary,
+            &source_roots,
+            &[],
         );
+        let query = LightmountRetainedStyleInvalidationQuery::class(1_u32, "scoped".into());
+        let context = LightmountDependencyInvalidationFallbackContext::from_mutation_relation(
+            Some(2),
+            Some(3),
+            Some(4),
+        );
+        let request = LightmountSourceDependencyInvalidationRequest::new(
+            &query,
+            Some(context),
+            LightmountSourceDependencyRequestRequirement::exact(),
+        );
+        let mut provider = ContextRootsProviderForTest::default();
+
+        let plan = lightmount_source_dependency_invalidation_batch_plan(
+            &[source],
+            &[request],
+            LightmountSourceDependencyBoundaryRoots::default(),
+            &mut provider,
+        );
+
+        assert_eq!(provider.calls, 1);
+        let mut plan = source_dependency_batch_plan_for_test(plan);
+        assert!(plan.work_boundary_fallback.is_none());
+        assert!(plan.requires_source_fallback.is_none());
+        let sources = &mut plan.work_sources;
+        assert_eq!(sources.len(), 1);
+        let target = planned_source_dependency_parts_for_test(
+            sources.pop().expect("source work should exist"),
+        );
+        assert_eq!(
+            target.target_kind,
+            Some(LightmountRetainedSourceStyleInvalidationKind::FallbackOnly)
+        );
+        assert_eq!(target.fallback_roots, vec![99]);
+        assert!(target
+            .fallback_reasons
+            .contains(&LightmountSourceInvalidationFallbackReason::ScopeDependency));
     }
 
     #[derive(Default)]
@@ -9048,6 +9929,56 @@ mod tests {
         assert_eq!(summary.missing_fallback_roots_target_count, 1);
     }
 
+    #[derive(Default)]
+    struct LightmountSourceStyleInvalidationResultPartsForTest {
+        affected_roots: Vec<u32>,
+        fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+        fallback_kind: Option<LightmountSourceStyleInvalidationSourceResultKind>,
+        fallback_root_availability: Option<LightmountSourceFallbackRootAvailability>,
+        empty_result_is_exact: bool,
+        matched_dependency_count: usize,
+    }
+
+    impl LightmountSourceStyleInvalidationResultSink<u32>
+        for LightmountSourceStyleInvalidationResultPartsForTest
+    {
+        fn set_source_style_invalidation_result(
+            &mut self,
+            parts: LightmountSourceStyleInvalidationResultParts<u32>,
+        ) {
+            parts.drain_into(self);
+        }
+    }
+
+    impl LightmountSourceStyleInvalidationResultPartsSink<u32>
+        for LightmountSourceStyleInvalidationResultPartsForTest
+    {
+        fn set_source_style_invalidation_result_parts(
+            &mut self,
+            affected_roots: Vec<u32>,
+            fallback_reasons: IndexSet<LightmountSourceInvalidationFallbackReason>,
+            fallback_kind: Option<LightmountSourceStyleInvalidationSourceResultKind>,
+            fallback_root_availability: Option<LightmountSourceFallbackRootAvailability>,
+            empty_result_is_exact: bool,
+            matched_dependency_count: usize,
+        ) {
+            self.affected_roots = affected_roots;
+            self.fallback_reasons = fallback_reasons;
+            self.fallback_kind = fallback_kind;
+            self.fallback_root_availability = fallback_root_availability;
+            self.empty_result_is_exact = empty_result_is_exact;
+            self.matched_dependency_count = matched_dependency_count;
+        }
+    }
+
+    fn source_style_invalidation_result_parts_for_test(
+        result: LightmountSourceStyleInvalidationResult<u32>,
+    ) -> LightmountSourceStyleInvalidationResultPartsForTest {
+        let mut sink = LightmountSourceStyleInvalidationResultPartsForTest::default();
+        result.drain_into(&mut sink);
+        sink
+    }
+
     #[test]
     fn lightmount_source_result_accumulator_reports_missing_fallback_roots() {
         let mut accumulated = LightmountSourceStyleInvalidationResultAccumulator::new();
@@ -9058,29 +9989,23 @@ mod tests {
             IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector]),
         );
 
-        let result = accumulated.into_source_result(&IndexSet::new());
-        let (
-            affected_roots,
-            fallback_reasons,
-            fallback_kind,
-            fallback_root_availability,
-            empty_result_is_exact,
-            matched_dependency_count,
-        ) = result.into_parts();
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::new()),
+        );
 
-        assert!(affected_roots.is_empty());
+        assert!(result.affected_roots.is_empty());
         assert_eq!(
-            fallback_kind,
+            result.fallback_kind,
             Some(LightmountSourceStyleInvalidationSourceResultKind::MissingFallbackRoots)
         );
         assert_eq!(
-            fallback_root_availability,
+            result.fallback_root_availability,
             Some(LightmountSourceFallbackRootAvailability::Missing)
         );
-        assert!(empty_result_is_exact);
-        assert_eq!(matched_dependency_count, 1);
+        assert!(result.empty_result_is_exact);
+        assert_eq!(result.matched_dependency_count, 1);
         assert_eq!(
-            fallback_reasons,
+            result.fallback_reasons,
             IndexSet::from([
                 LightmountSourceInvalidationFallbackReason::FullSelector,
                 LightmountSourceInvalidationFallbackReason::MissingFallbackRoots,
@@ -9106,14 +10031,20 @@ mod tests {
             ],
         );
 
-        let merged = first.merged_with(second);
+        let merged = lightmount_merge_source_style_invalidation_query_results(first, second);
+        let LightmountSourceStyleInvalidationQueryResult {
+            affected_roots,
+            empty_result_is_exact,
+            matched_dependency_count,
+            fallback_reasons,
+        } = merged;
 
-        assert_eq!(merged.affected_roots(), &[1, 2, 3]);
-        assert!(!merged.empty_result_is_exact());
-        assert_eq!(merged.matched_dependency_count(), 3);
+        assert_eq!(affected_roots, vec![1, 2, 3]);
+        assert!(!empty_result_is_exact);
+        assert_eq!(matched_dependency_count, 3);
         assert_eq!(
-            merged.fallback_reasons(),
-            &IndexSet::from([
+            fallback_reasons,
+            IndexSet::from([
                 LightmountSourceInvalidationFallbackReason::FullSelector,
                 LightmountSourceInvalidationFallbackReason::RelativeAnySelector,
             ])
@@ -9132,13 +10063,19 @@ mod tests {
         builder.note_fallback_reason(LightmountSourceInvalidationFallbackReason::FullSelector);
 
         let result = builder.into_query_result(3);
+        let LightmountSourceStyleInvalidationQueryResult {
+            affected_roots,
+            empty_result_is_exact,
+            matched_dependency_count,
+            fallback_reasons,
+        } = result;
 
-        assert_eq!(result.affected_roots(), &[1, 2]);
-        assert!(!result.empty_result_is_exact());
-        assert_eq!(result.matched_dependency_count(), 3);
+        assert_eq!(affected_roots, vec![1, 2]);
+        assert!(!empty_result_is_exact);
+        assert_eq!(matched_dependency_count, 3);
         assert_eq!(
-            result.fallback_reasons(),
-            &IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector])
+            fallback_reasons,
+            IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector])
         );
     }
 
@@ -9169,7 +10106,6 @@ mod tests {
 
         let rooted = LightmountSnapshotRelativeDependencyRoots::new(vec![1], 0);
         assert_eq!(rooted.roots(), &[1]);
-        assert_eq!(rooted.verified_dependency_count(), 0);
         assert!(rooted.empty_result_is_exact(1, 2, true));
     }
 
@@ -9254,20 +10190,26 @@ mod tests {
 
         let result =
             lightmount_relative_style_invalidation_query_result(vec![1, 2], &snapshot_roots, 2, 1);
+        let LightmountSourceStyleInvalidationQueryResult {
+            affected_roots,
+            empty_result_is_exact,
+            matched_dependency_count,
+            fallback_reasons,
+        } = result;
 
-        assert_eq!(result.affected_roots(), &[1, 2, 3]);
-        assert!(result.empty_result_is_exact());
-        assert_eq!(result.matched_dependency_count(), 2);
-        assert!(result.fallback_reasons().is_empty());
+        assert_eq!(affected_roots, vec![1, 2, 3]);
+        assert!(empty_result_is_exact);
+        assert_eq!(matched_dependency_count, 2);
+        assert!(fallback_reasons.is_empty());
 
         let no_snapshot_roots = LightmountSnapshotRelativeDependencyRoots::<u32>::default();
         let unsupported_empty =
             lightmount_relative_style_invalidation_query_result([], &no_snapshot_roots, 2, 1);
-        assert!(!unsupported_empty.empty_result_is_exact());
+        assert!(!unsupported_empty.empty_result_is_exact);
 
         let no_dependencies =
             lightmount_relative_style_invalidation_query_result([], &no_snapshot_roots, 0, 0);
-        assert!(no_dependencies.empty_result_is_exact());
+        assert!(no_dependencies.empty_result_is_exact);
     }
 
     #[test]
@@ -9282,29 +10224,23 @@ mod tests {
             ),
         );
 
-        let result = accumulated.into_source_result(&IndexSet::from([2]));
-        let (
-            affected_roots,
-            fallback_reasons,
-            fallback_kind,
-            fallback_root_availability,
-            empty_result_is_exact,
-            matched_dependency_count,
-        ) = result.into_parts();
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::from([2])),
+        );
 
-        assert_eq!(affected_roots, vec![2]);
+        assert_eq!(result.affected_roots, vec![2]);
         assert_eq!(
-            fallback_kind,
+            result.fallback_kind,
             Some(LightmountSourceStyleInvalidationSourceResultKind::Fallback)
         );
         assert_eq!(
-            fallback_root_availability,
+            result.fallback_root_availability,
             Some(LightmountSourceFallbackRootAvailability::Available { root_count: 1 })
         );
-        assert!(empty_result_is_exact);
-        assert_eq!(matched_dependency_count, 1);
+        assert!(result.empty_result_is_exact);
+        assert_eq!(result.matched_dependency_count, 1);
         assert_eq!(
-            fallback_reasons,
+            result.fallback_reasons,
             IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector])
         );
     }
@@ -9319,27 +10255,21 @@ mod tests {
             IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector]),
         );
 
-        let result = accumulated.into_source_result(&IndexSet::from([2]));
-        let (
-            affected_roots,
-            fallback_reasons,
-            fallback_kind,
-            fallback_root_availability,
-            _empty_result_is_exact,
-            _matched_dependency_count,
-        ) = result.into_parts();
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::from([2])),
+        );
 
-        assert_eq!(affected_roots, vec![2]);
+        assert_eq!(result.affected_roots, vec![2]);
         assert_eq!(
-            fallback_kind,
+            result.fallback_kind,
             Some(LightmountSourceStyleInvalidationSourceResultKind::Fallback)
         );
         assert_eq!(
-            fallback_root_availability,
+            result.fallback_root_availability,
             Some(LightmountSourceFallbackRootAvailability::Available { root_count: 1 })
         );
         assert_eq!(
-            fallback_reasons,
+            result.fallback_reasons,
             IndexSet::from([LightmountSourceInvalidationFallbackReason::FullSelector])
         );
     }
@@ -9349,23 +10279,17 @@ mod tests {
         let mut accumulated = LightmountSourceStyleInvalidationResultAccumulator::new();
         accumulated.merge_query_result(Vec::<u32>::new(), true, 0, IndexSet::new());
 
-        let result = accumulated.into_source_result(&IndexSet::from([1]));
-        let (
-            affected_roots,
-            fallback_reasons,
-            fallback_kind,
-            _fallback_root_availability,
-            _empty_result_is_exact,
-            _matched_dependency_count,
-        ) = result.into_parts();
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::from([1])),
+        );
 
-        assert_eq!(affected_roots, vec![1]);
+        assert_eq!(result.affected_roots, vec![1]);
         assert_eq!(
-            fallback_kind,
+            result.fallback_kind,
             Some(LightmountSourceStyleInvalidationSourceResultKind::Fallback)
         );
         assert_eq!(
-            fallback_reasons,
+            result.fallback_reasons,
             IndexSet::from([LightmountSourceInvalidationFallbackReason::InexactEmptyResult])
         );
     }
@@ -9399,6 +10323,17 @@ mod tests {
     impl LightmountSourceStyleInvalidationSourceResultSink<u32> for LightmountSourceResultDrainForTest {
         fn record_source_style_invalidation_source_result(
             &mut self,
+            parts: LightmountSourceStyleInvalidationSourceResultParts<u32>,
+        ) {
+            parts.drain_into(self);
+        }
+    }
+
+    impl LightmountSourceStyleInvalidationSourceResultPartsSink<u32>
+        for LightmountSourceResultDrainForTest
+    {
+        fn record_source_style_invalidation_source_result_parts(
+            &mut self,
             source_index: usize,
             affected_roots: LightmountSourceAffectedRootsCleanup<u32>,
             target_result_record: LightmountSourceStyleInvalidationTargetResultRecord,
@@ -9426,6 +10361,17 @@ mod tests {
     {
         fn set_source_style_invalidation_target_result_cleanup_facts(
             &mut self,
+            facts: LightmountSourceStyleInvalidationTargetResultCleanupFacts,
+        ) {
+            facts.drain_parts_into(self);
+        }
+    }
+
+    impl LightmountSourceStyleInvalidationTargetResultCleanupFactsPartsSink
+        for LightmountSourceResultDrainForTest
+    {
+        fn set_source_style_invalidation_target_result_cleanup_fact_parts(
+            &mut self,
             _fallback_context_reasons: Vec<LightmountSourceInvalidationFallbackReason>,
             clear_all_cleanup_reasons: Vec<LightmountSourceInvalidationFallbackReason>,
             include_fallback_context_for_clear_all: bool,
@@ -9441,6 +10387,17 @@ mod tests {
         for LightmountSourceResultDrainForTest
     {
         fn set_source_style_invalidation_target_result_diagnostic_facts(
+            &mut self,
+            facts: LightmountSourceStyleInvalidationTargetResultDiagnosticFacts,
+        ) {
+            facts.drain_parts_into(self);
+        }
+    }
+
+    impl LightmountSourceStyleInvalidationTargetResultDiagnosticFactsPartsSink
+        for LightmountSourceResultDrainForTest
+    {
+        fn set_source_style_invalidation_target_result_diagnostic_fact_parts(
             &mut self,
             kind: LightmountSourceStyleInvalidationSourceResultKind,
             _exact: bool,
