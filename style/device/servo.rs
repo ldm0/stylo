@@ -84,6 +84,8 @@ pub(super) struct ExtraDeviceData {
     media_type: MediaType,
     /// The current viewport size, in CSS pixels.
     viewport_size: Size2D<f32, CSSPixel>,
+    /// The current screen size, in CSS pixels.
+    screen_size: Size2D<f32, CSSPixel>,
     /// The current device pixel ratio, from CSS pixels to device pixels.
     device_pixel_ratio: Scale<f32, CSSPixel, DevicePixel>,
     /// The current quirks mode.
@@ -134,6 +136,31 @@ impl Device {
         prefers_color_scheme: PrefersColorScheme,
         media_feature_preferences: ServoMediaFeaturePreferences,
     ) -> Device {
+        Self::new_with_media_feature_preferences_and_screen_size(
+            media_type,
+            quirks_mode,
+            viewport_size,
+            viewport_size,
+            device_pixel_ratio,
+            font_metrics_provider,
+            default_values,
+            prefers_color_scheme,
+            media_feature_preferences,
+        )
+    }
+
+    /// Construct a new `Device` with explicit media feature preferences and screen size.
+    pub fn new_with_media_feature_preferences_and_screen_size(
+        media_type: MediaType,
+        quirks_mode: QuirksMode,
+        viewport_size: Size2D<f32, CSSPixel>,
+        screen_size: Size2D<f32, CSSPixel>,
+        device_pixel_ratio: Scale<f32, CSSPixel, DevicePixel>,
+        font_metrics_provider: Box<dyn FontMetricsProvider>,
+        default_values: Arc<ComputedValues>,
+        prefers_color_scheme: PrefersColorScheme,
+        media_feature_preferences: ServoMediaFeaturePreferences,
+    ) -> Device {
         let root_style = RwLock::new(Arc::clone(&default_values));
         Device {
             root_style,
@@ -155,6 +182,7 @@ impl Device {
             extra: ExtraDeviceData {
                 media_type,
                 viewport_size,
+                screen_size,
                 device_pixel_ratio,
                 quirks_mode,
                 prefers_color_scheme,
@@ -214,6 +242,20 @@ impl Device {
         self.extra.viewport_size = viewport_size;
     }
 
+    /// Get the screen size on this [`Device`].
+    pub fn screen_size(&self) -> Size2D<f32, CSSPixel> {
+        self.extra.screen_size
+    }
+
+    /// Set the screen size on this [`Device`].
+    ///
+    /// Note that this does not update any associated `Stylist`. For this you must call
+    /// `Stylist::media_features_change_changed_style` and
+    /// `Stylist::force_stylesheet_origins_dirty`.
+    pub fn set_screen_size(&mut self, screen_size: Size2D<f32, CSSPixel>) {
+        self.extra.screen_size = screen_size;
+    }
+
     /// Returns the viewport size of the current device in app units, needed,
     /// among other things, to resolve viewport units.
     #[inline]
@@ -221,6 +263,15 @@ impl Device {
         Size2D::new(
             Au::from_f32_px(self.extra.viewport_size.width),
             Au::from_f32_px(self.extra.viewport_size.height),
+        )
+    }
+
+    /// Returns the screen size of the current device in app units.
+    #[inline]
+    pub fn au_screen_size(&self) -> UntypedSize2D<Au> {
+        Size2D::new(
+            Au::from_f32_px(self.extra.screen_size.width),
+            Au::from_f32_px(self.extra.screen_size.height),
         )
     }
 

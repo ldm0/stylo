@@ -19,9 +19,7 @@ fn eval_width(context: &Context) -> CSSPixelLength {
 
 /// https://drafts.csswg.org/mediaqueries-4/#device-width
 fn eval_device_width(context: &Context) -> CSSPixelLength {
-    // Servo's generic Device has no separate screen-size concept. Use the
-    // viewport as the closest available device-size signal.
-    eval_width(context)
+    CSSPixelLength::new(context.device().au_screen_size().width.to_f32_px())
 }
 
 /// https://drafts.csswg.org/mediaqueries-4/#height
@@ -31,7 +29,7 @@ fn eval_height(context: &Context) -> CSSPixelLength {
 
 /// https://drafts.csswg.org/mediaqueries-4/#device-height
 fn eval_device_height(context: &Context) -> CSSPixelLength {
-    eval_height(context)
+    CSSPixelLength::new(context.device().au_screen_size().height.to_f32_px())
 }
 
 /// https://drafts.csswg.org/mediaqueries-4/#aspect-ratio
@@ -42,7 +40,8 @@ fn eval_aspect_ratio(context: &Context) -> Ratio {
 
 /// https://drafts.csswg.org/mediaqueries-4/#device-aspect-ratio
 fn eval_device_aspect_ratio(context: &Context) -> Ratio {
-    eval_aspect_ratio(context)
+    let size = context.device().au_screen_size();
+    Ratio::new(size.width.0 as f32, size.height.0 as f32)
 }
 
 /// https://drafts.csswg.org/mediaqueries-4/#orientation
