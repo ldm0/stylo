@@ -86,6 +86,10 @@ pub mod font_metrics;
 pub mod gecko_bindings;
 pub mod global_style_data;
 pub mod invalidation;
+/// Lightmount-facing CSS declaration block hooks.
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub mod lightmount_declaration_block;
 /// Lightmount-facing `@font-face` parser hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
