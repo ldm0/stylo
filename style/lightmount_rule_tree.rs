@@ -6,6 +6,7 @@ use crate::{
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
+        keyframes_rule::Keyframe,
         AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, Origin, RulesMutateError,
         Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
     },
@@ -166,6 +167,45 @@ pub fn delete_nested_rule(
     Ok(css_rules_mutation_result(&rules, &parsed.shared_lock))
 }
 
+pub fn insert_keyframe_rule(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+    rule_text: &str,
+    index: usize,
+) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let parsed =
+        parse_keyframe_rules_for_mutation(parent_stylesheet_rule_texts, existing_rule_texts)?;
+    if index > parsed.keyframes.len() {
+        return Err(CssRuleInsertError::IndexSize);
+    }
+    let rule = Keyframe::parse(rule_text, &parsed.contents, &parsed.shared_lock)
+        .map_err(|_| CssRuleInsertError::Syntax)?;
+    let mut keyframes = parsed.keyframes;
+    keyframes.insert(index, rule);
+    Ok(keyframe_rules_mutation_result(
+        &keyframes,
+        &parsed.shared_lock,
+    ))
+}
+
+pub fn delete_keyframe_rule(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+    index: usize,
+) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let parsed =
+        parse_keyframe_rules_for_mutation(parent_stylesheet_rule_texts, existing_rule_texts)?;
+    if index >= parsed.keyframes.len() {
+        return Err(CssRuleInsertError::IndexSize);
+    }
+    let mut keyframes = parsed.keyframes;
+    keyframes.remove(index);
+    Ok(keyframe_rules_mutation_result(
+        &keyframes,
+        &parsed.shared_lock,
+    ))
+}
+
 struct ParsedStylesheetForMutation {
     contents: Arc<StylesheetContents>,
     shared_lock: SharedRwLock,
@@ -184,6 +224,12 @@ struct ParsedNestedRulesForMutation {
     rules: CssRules,
     containing_rule_types: CssRuleTypes,
     parse_relative_rule_type: Option<CssRuleType>,
+}
+
+struct ParsedKeyframeRulesForMutation {
+    contents: Arc<StylesheetContents>,
+    shared_lock: SharedRwLock,
+    keyframes: Vec<Arc<crate::shared_lock::Locked<Keyframe>>>,
 }
 
 impl ParsedNestedRulesForMutation {
@@ -341,6 +387,40 @@ fn parse_nested_rules_for_mutation(
     })
 }
 
+fn parse_keyframe_rules_for_mutation(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+) -> Result<ParsedKeyframeRulesForMutation, CssRuleInsertError> {
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let shared_lock = SharedRwLock::new();
+    let import_loader = LightmountImportLoader;
+    let parent_css = parent_stylesheet_rule_texts.join(" ");
+    let contents = StylesheetContents::from_str(
+        &parent_css,
+        url_data,
+        Origin::Author,
+        &shared_lock,
+        Some(&import_loader as &dyn StylesheetLoader),
+        None,
+        QuirksMode::NoQuirks,
+        AllowImportRules::Yes,
+        None,
+    );
+    let mut keyframes = Vec::new();
+    for rule_text in existing_rule_texts {
+        let rule = Keyframe::parse(rule_text, &contents, &shared_lock)
+            .map_err(|_| CssRuleInsertError::Syntax)?;
+        keyframes.push(rule);
+    }
+    Ok(ParsedKeyframeRulesForMutation {
+        contents,
+        shared_lock,
+        keyframes,
+    })
+}
+
 fn stylesheet_mutation_result(
     contents: &StylesheetContents,
     shared_lock: &SharedRwLock,
@@ -359,6 +439,30 @@ fn css_rules_mutation_result(
         .0
         .iter()
         .map(|rule| stylesheet_rule_view(rule, &guard))
+        .collect::<Vec<_>>();
+    let css_text = rules
+        .iter()
+        .map(|rule| rule.css_text.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    CssStylesheetMutationResult { css_text, rules }
+}
+
+fn keyframe_rules_mutation_result(
+    keyframes: &[Arc<crate::shared_lock::Locked<Keyframe>>],
+    shared_lock: &SharedRwLock,
+) -> CssStylesheetMutationResult {
+    let guard = shared_lock.read();
+    let rules = keyframes
+        .iter()
+        .map(|rule| {
+            let rule = rule.read_with(&guard);
+            CssStylesheetRuleView {
+                rule_type: CssRuleType::Keyframe,
+                css_text: rule.to_css_string(&guard),
+                child_rules: Vec::new(),
+            }
+        })
         .collect::<Vec<_>>();
     let css_text = rules
         .iter()
@@ -501,10 +605,10 @@ impl StylesheetLoader for LightmountImportLoader {
 #[cfg(test)]
 mod tests {
     use super::{
-        delete_nested_rule, delete_stylesheet_rule, insert_nested_rule, insert_stylesheet_rule,
-        parse_constructed_stylesheet_rule_texts, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, parse_stylesheet_rule_views, serialize_stylesheet,
-        CssRuleInsertError,
+        delete_keyframe_rule, delete_nested_rule, delete_stylesheet_rule, insert_keyframe_rule,
+        insert_nested_rule, insert_stylesheet_rule, parse_constructed_stylesheet_rule_texts,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_views,
+        serialize_stylesheet, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
 
@@ -745,5 +849,56 @@ mod tests {
             CssRuleType::NestedDeclarations
         );
         assert_eq!(declarations.rules[0].css_text, "margin: 0px; padding: 1px;");
+    }
+
+    #[test]
+    fn keyframe_rule_mutation_returns_keyframe_views() {
+        let existing = vec![String::from("0% { opacity: 0; }")];
+        let inserted = insert_keyframe_rule(
+            &[],
+            &existing,
+            "to { opacity: 1; transform: translateX(10px); }",
+            1,
+        )
+        .expect("keyframe rule should insert into keyframes rule");
+
+        assert_eq!(inserted.rules.len(), 2);
+        assert_eq!(
+            inserted.css_text,
+            "0% { opacity: 0; } 100% { opacity: 1; transform: translateX(10px); }"
+        );
+        assert_eq!(inserted.rules[1].rule_type, CssRuleType::Keyframe);
+        assert_eq!(
+            inserted.rules[1].css_text,
+            "100% { opacity: 1; transform: translateX(10px); }"
+        );
+
+        let deleted = delete_keyframe_rule(
+            &[],
+            &inserted
+                .rules
+                .iter()
+                .map(|rule| rule.css_text.clone())
+                .collect::<Vec<_>>(),
+            0,
+        )
+        .expect("keyframe rule should delete");
+        assert_eq!(deleted.rules.len(), 1);
+        assert_eq!(
+            deleted.css_text,
+            "100% { opacity: 1; transform: translateX(10px); }"
+        );
+    }
+
+    #[test]
+    fn keyframe_rule_mutation_rejects_invalid_keyframe_rules() {
+        assert_eq!(
+            insert_keyframe_rule(&[], &[], ".not-a-keyframe { opacity: 1; }", 0),
+            Err(CssRuleInsertError::Syntax)
+        );
+        assert_eq!(
+            delete_keyframe_rule(&[], &[], 0),
+            Err(CssRuleInsertError::IndexSize)
+        );
     }
 }
