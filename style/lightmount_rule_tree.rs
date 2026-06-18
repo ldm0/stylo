@@ -21,6 +21,13 @@ pub struct CssStylesheetRuleText {
     pub css_text: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssStylesheetRuleView {
+    pub rule_type: CssRuleType,
+    pub css_text: String,
+    pub child_rules: Vec<CssStylesheetRuleView>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CssRuleInsertError {
     Syntax,
@@ -35,6 +42,14 @@ pub fn parse_stylesheet_rule_texts(css_text: &str) -> Vec<CssStylesheetRuleText>
 
 pub fn parse_constructed_stylesheet_rule_texts(css_text: &str) -> Vec<CssStylesheetRuleText> {
     parse_stylesheet_rule_texts_with_import_policy(css_text, AllowImportRules::No)
+}
+
+pub fn parse_stylesheet_rule_views(css_text: &str) -> Vec<CssStylesheetRuleView> {
+    parse_stylesheet_rule_views_with_import_policy(css_text, AllowImportRules::Yes)
+}
+
+pub fn parse_constructed_stylesheet_rule_views(css_text: &str) -> Vec<CssStylesheetRuleView> {
+    parse_stylesheet_rule_views_with_import_policy(css_text, AllowImportRules::No)
 }
 
 pub fn serialize_stylesheet(css_text: &str) -> String {
@@ -115,6 +130,19 @@ fn parse_stylesheet_rule_texts_with_import_policy(
     css_text: &str,
     allow_import_rules: AllowImportRules,
 ) -> Vec<CssStylesheetRuleText> {
+    parse_stylesheet_rule_views_with_import_policy(css_text, allow_import_rules)
+        .into_iter()
+        .map(|rule| CssStylesheetRuleText {
+            rule_type: rule.rule_type,
+            css_text: rule.css_text,
+        })
+        .collect()
+}
+
+fn parse_stylesheet_rule_views_with_import_policy(
+    css_text: &str,
+    allow_import_rules: AllowImportRules,
+) -> Vec<CssStylesheetRuleView> {
     let Some(url_data) = about_blank_url_data() else {
         return Vec::new();
     };
@@ -139,11 +167,23 @@ fn parse_stylesheet_rule_texts_with_import_policy(
     contents
         .rules(&guard)
         .iter()
-        .map(|rule| CssStylesheetRuleText {
-            rule_type: rule.rule_type(),
-            css_text: rule.to_css_string(&guard),
-        })
+        .map(|rule| stylesheet_rule_view(rule, &guard))
         .collect()
+}
+
+fn stylesheet_rule_view(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssStylesheetRuleView {
+    CssStylesheetRuleView {
+        rule_type: rule.rule_type(),
+        css_text: rule.to_css_string(guard),
+        child_rules: rule
+            .children(guard)
+            .iter()
+            .map(|rule| stylesheet_rule_view(rule, guard))
+            .collect(),
+    }
 }
 
 fn about_blank_url_data() -> Option<UrlExtraData> {
@@ -220,7 +260,8 @@ impl StylesheetLoader for LightmountImportLoader {
 mod tests {
     use super::{
         parse_constructed_stylesheet_rule_texts, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, serialize_stylesheet, CssRuleInsertError,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_views, serialize_stylesheet,
+        CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
 
@@ -239,6 +280,31 @@ mod tests {
         assert_eq!(
             rules[2].css_text,
             "@media screen {\n  .two { margin: 0px; }\n}"
+        );
+    }
+
+    #[test]
+    fn stylesheet_rule_views_include_stylo_nested_children() {
+        let rules = parse_stylesheet_rule_views(
+            ".one { color: red; } @media screen { .two { margin: 0; } @supports (display: grid) { .three { display: grid; } } }",
+        );
+
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].rule_type, CssRuleType::Style);
+        assert!(rules[0].child_rules.is_empty());
+        assert_eq!(rules[1].rule_type, CssRuleType::Media);
+        assert_eq!(
+            rules[1].css_text,
+            "@media screen {\n  .two { margin: 0px; }\n  @supports (display: grid) {\n  .three { display: grid; }\n}\n}"
+        );
+        assert_eq!(rules[1].child_rules.len(), 2);
+        assert_eq!(rules[1].child_rules[0].rule_type, CssRuleType::Style);
+        assert_eq!(rules[1].child_rules[0].css_text, ".two { margin: 0px; }");
+        assert_eq!(rules[1].child_rules[1].rule_type, CssRuleType::Supports);
+        assert_eq!(rules[1].child_rules[1].child_rules.len(), 1);
+        assert_eq!(
+            rules[1].child_rules[1].child_rules[0].css_text,
+            ".three { display: grid; }"
         );
     }
 
