@@ -135,8 +135,19 @@ enum PrefersReducedMotion {
 }
 
 /// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-motion
-fn eval_prefers_reduced_motion(_: &Context, query_value: Option<PrefersReducedMotion>) -> bool {
-    matches!(query_value, Some(PrefersReducedMotion::NoPreference))
+fn eval_prefers_reduced_motion(
+    context: &Context,
+    query_value: Option<PrefersReducedMotion>,
+) -> bool {
+    let prefers_reduced = context
+        .device()
+        .media_feature_preferences()
+        .prefers_reduced_motion;
+    match query_value {
+        None => prefers_reduced,
+        Some(PrefersReducedMotion::NoPreference) => !prefers_reduced,
+        Some(PrefersReducedMotion::Reduce) => prefers_reduced,
+    }
 }
 
 #[derive(Clone, Copy, Debug, FromPrimitive, Parse, ToCss)]
@@ -147,8 +158,16 @@ enum PrefersReducedData {
 }
 
 /// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-data
-fn eval_prefers_reduced_data(_: &Context, query_value: Option<PrefersReducedData>) -> bool {
-    matches!(query_value, Some(PrefersReducedData::NoPreference))
+fn eval_prefers_reduced_data(context: &Context, query_value: Option<PrefersReducedData>) -> bool {
+    let prefers_reduced = context
+        .device()
+        .media_feature_preferences()
+        .prefers_reduced_data;
+    match query_value {
+        None => prefers_reduced,
+        Some(PrefersReducedData::NoPreference) => !prefers_reduced,
+        Some(PrefersReducedData::Reduce) => prefers_reduced,
+    }
 }
 
 #[derive(Clone, Copy, Debug, FromPrimitive, Parse, ToCss)]
@@ -160,10 +179,18 @@ enum PrefersReducedTransparency {
 
 /// https://drafts.csswg.org/mediaqueries-5/#prefers-reduced-transparency
 fn eval_prefers_reduced_transparency(
-    _: &Context,
+    context: &Context,
     query_value: Option<PrefersReducedTransparency>,
 ) -> bool {
-    matches!(query_value, Some(PrefersReducedTransparency::NoPreference))
+    let prefers_reduced = context
+        .device()
+        .media_feature_preferences()
+        .prefers_reduced_transparency;
+    match query_value {
+        None => prefers_reduced,
+        Some(PrefersReducedTransparency::NoPreference) => !prefers_reduced,
+        Some(PrefersReducedTransparency::Reduce) => prefers_reduced,
+    }
 }
 
 /// Possible values for prefers-contrast media query.
@@ -181,8 +208,15 @@ pub enum PrefersContrast {
 }
 
 /// https://drafts.csswg.org/mediaqueries-5/#prefers-contrast
-fn eval_prefers_contrast(_: &Context, query_value: Option<PrefersContrast>) -> bool {
-    matches!(query_value, Some(PrefersContrast::NoPreference))
+fn eval_prefers_contrast(context: &Context, query_value: Option<PrefersContrast>) -> bool {
+    let prefers_contrast = context
+        .device()
+        .media_feature_preferences()
+        .prefers_contrast;
+    match query_value {
+        Some(value) => value == prefers_contrast,
+        None => prefers_contrast != PrefersContrast::NoPreference,
+    }
 }
 
 /// https://drafts.csswg.org/mediaqueries-5/#forced-colors

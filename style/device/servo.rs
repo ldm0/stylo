@@ -13,6 +13,7 @@ use crate::media_queries::MediaType;
 use crate::properties::style_structs::Font;
 use crate::properties::ComputedValues;
 use crate::queries::values::PrefersColorScheme;
+use crate::servo::media_features::PrefersContrast;
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::{CSSPixelLength, Length, LineHeight, NonNegativeLength};
 use crate::values::specified::color::{ColorSchemeFlags, ForcedColors, SystemColor};
@@ -50,6 +51,33 @@ pub trait FontMetricsProvider: Debug + Sync {
     fn base_size_for_generic(&self, generic: GenericFontFamily) -> Length;
 }
 
+/// Servo media feature values supplied by the embedding runtime.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ServoMediaFeaturePreferences {
+    /// Whether the user prefers reduced motion.
+    pub prefers_reduced_motion: bool,
+    /// Whether the user prefers reduced data usage.
+    pub prefers_reduced_data: bool,
+    /// Whether the user prefers reduced transparency.
+    pub prefers_reduced_transparency: bool,
+    /// The user's contrast preference.
+    pub prefers_contrast: PrefersContrast,
+    /// The current forced colors state.
+    pub forced_colors: ForcedColors,
+}
+
+impl Default for ServoMediaFeaturePreferences {
+    fn default() -> Self {
+        Self {
+            prefers_reduced_motion: false,
+            prefers_reduced_data: false,
+            prefers_reduced_transparency: false,
+            prefers_contrast: PrefersContrast::NoPreference,
+            forced_colors: ForcedColors::None,
+        }
+    }
+}
+
 #[derive(Debug, MallocSizeOf)]
 pub(super) struct ExtraDeviceData {
     /// The current media type used by de device.
@@ -64,6 +92,9 @@ pub(super) struct ExtraDeviceData {
     /// Whether the user prefers light mode or dark mode
     #[ignore_malloc_size_of = "Pure stack type"]
     prefers_color_scheme: PrefersColorScheme,
+    /// Additional user and emulation media feature preferences.
+    #[ignore_malloc_size_of = "Pure stack type"]
+    media_feature_preferences: ServoMediaFeaturePreferences,
     /// An implementation of a trait which implements support for querying font metrics.
     #[ignore_malloc_size_of = "Owned by embedder"]
     font_metrics_provider: Box<dyn FontMetricsProvider>,
@@ -79,6 +110,29 @@ impl Device {
         font_metrics_provider: Box<dyn FontMetricsProvider>,
         default_values: Arc<ComputedValues>,
         prefers_color_scheme: PrefersColorScheme,
+    ) -> Device {
+        Self::new_with_media_feature_preferences(
+            media_type,
+            quirks_mode,
+            viewport_size,
+            device_pixel_ratio,
+            font_metrics_provider,
+            default_values,
+            prefers_color_scheme,
+            ServoMediaFeaturePreferences::default(),
+        )
+    }
+
+    /// Construct a new `Device` with explicit media feature preferences.
+    pub fn new_with_media_feature_preferences(
+        media_type: MediaType,
+        quirks_mode: QuirksMode,
+        viewport_size: Size2D<f32, CSSPixel>,
+        device_pixel_ratio: Scale<f32, CSSPixel, DevicePixel>,
+        font_metrics_provider: Box<dyn FontMetricsProvider>,
+        default_values: Arc<ComputedValues>,
+        prefers_color_scheme: PrefersColorScheme,
+        media_feature_preferences: ServoMediaFeaturePreferences,
     ) -> Device {
         let root_style = RwLock::new(Arc::clone(&default_values));
         Device {
@@ -104,6 +158,7 @@ impl Device {
                 device_pixel_ratio,
                 quirks_mode,
                 prefers_color_scheme,
+                media_feature_preferences,
                 font_metrics_provider,
             },
         }
@@ -237,7 +292,7 @@ impl Device {
 
     /// Returns whether document colors are enabled.
     pub fn forced_colors(&self) -> ForcedColors {
-        ForcedColors::None
+        self.extra.media_feature_preferences.forced_colors
     }
 
     /// Returns the default background color.
@@ -262,6 +317,20 @@ impl Device {
     /// Returns the color scheme of this [`Device`].
     pub fn color_scheme(&self) -> PrefersColorScheme {
         self.extra.prefers_color_scheme
+    }
+
+    /// Returns the current media feature preferences.
+    pub fn media_feature_preferences(&self) -> ServoMediaFeaturePreferences {
+        self.extra.media_feature_preferences
+    }
+
+    /// Set the current media feature preferences.
+    ///
+    /// Note that this does not update any associated `Stylist`. For this you must call
+    /// `Stylist::media_features_change_changed_style` and
+    /// `Stylist::force_stylesheet_origins_dirty`.
+    pub fn set_media_feature_preferences(&mut self, preferences: ServoMediaFeaturePreferences) {
+        self.extra.media_feature_preferences = preferences;
     }
 
     pub(crate) fn is_dark_color_scheme(&self, _: ColorSchemeFlags) -> bool {
