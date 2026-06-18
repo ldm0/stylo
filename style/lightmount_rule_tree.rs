@@ -6,8 +6,8 @@ use crate::{
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
-        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, Origin, RulesMutateError, Stylesheet,
-        StylesheetContents, StylesheetLoader, UrlExtraData,
+        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, Origin, RulesMutateError,
+        Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
 };
@@ -125,6 +125,47 @@ pub fn delete_stylesheet_rule(
     ))
 }
 
+pub fn insert_nested_rule(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+    rule_text: &str,
+    index: usize,
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let parsed = parse_nested_rules_for_mutation(
+        parent_stylesheet_rule_texts,
+        existing_rule_texts,
+        containing_rule_type_bits,
+        parse_relative_rule_type,
+    )?;
+    if index > parsed.rules.0.len() {
+        return Err(CssRuleInsertError::IndexSize);
+    }
+    let rule = parsed.parse_rule_for_insert(rule_text, index)?;
+    let mut rules = parsed.rules;
+    rules.0.insert(index, rule);
+    Ok(css_rules_mutation_result(&rules, &parsed.shared_lock))
+}
+
+pub fn delete_nested_rule(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+    index: usize,
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let parsed = parse_nested_rules_for_mutation(
+        parent_stylesheet_rule_texts,
+        existing_rule_texts,
+        containing_rule_type_bits,
+        parse_relative_rule_type,
+    )?;
+    let mut rules = parsed.rules;
+    rules.remove_rule(index).map_err(CssRuleInsertError::from)?;
+    Ok(css_rules_mutation_result(&rules, &parsed.shared_lock))
+}
+
 struct ParsedStylesheetForMutation {
     contents: Arc<StylesheetContents>,
     shared_lock: SharedRwLock,
@@ -135,6 +176,35 @@ struct ParsedRuleForInsert {
     contents: Arc<StylesheetContents>,
     shared_lock: SharedRwLock,
     rule: CssRule,
+}
+
+struct ParsedNestedRulesForMutation {
+    contents: Arc<StylesheetContents>,
+    shared_lock: SharedRwLock,
+    rules: CssRules,
+    containing_rule_types: CssRuleTypes,
+    parse_relative_rule_type: Option<CssRuleType>,
+}
+
+impl ParsedNestedRulesForMutation {
+    fn parse_rule_for_insert(
+        &self,
+        rule_text: &str,
+        index: usize,
+    ) -> Result<CssRule, CssRuleInsertError> {
+        self.rules
+            .parse_rule_for_insert(
+                &self.shared_lock,
+                rule_text,
+                &self.contents,
+                index,
+                self.containing_rule_types,
+                self.parse_relative_rule_type,
+                None,
+                AllowImportRules::No,
+            )
+            .map_err(CssRuleInsertError::from)
+    }
 }
 
 fn parse_stylesheet_rule_for_insert_rule(
@@ -222,12 +292,69 @@ fn parse_stylesheet_for_mutation(
     })
 }
 
+fn parse_nested_rules_for_mutation(
+    parent_stylesheet_rule_texts: &[String],
+    existing_rule_texts: &[String],
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+) -> Result<ParsedNestedRulesForMutation, CssRuleInsertError> {
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let shared_lock = SharedRwLock::new();
+    let import_loader = LightmountImportLoader;
+    let parent_css = parent_stylesheet_rule_texts.join(" ");
+    let contents = StylesheetContents::from_str(
+        &parent_css,
+        url_data,
+        Origin::Author,
+        &shared_lock,
+        Some(&import_loader as &dyn StylesheetLoader),
+        None,
+        QuirksMode::NoQuirks,
+        AllowImportRules::Yes,
+        None,
+    );
+    let containing_rule_types = CssRuleTypes::from_bits(containing_rule_type_bits);
+    let mut rules = CssRules(Vec::new());
+    for rule_text in existing_rule_texts {
+        let rule = rules
+            .parse_rule_for_insert(
+                &shared_lock,
+                rule_text,
+                &contents,
+                rules.0.len(),
+                containing_rule_types,
+                parse_relative_rule_type,
+                None,
+                AllowImportRules::No,
+            )
+            .map_err(CssRuleInsertError::from)?;
+        rules.0.push(rule);
+    }
+    Ok(ParsedNestedRulesForMutation {
+        contents,
+        shared_lock,
+        rules,
+        containing_rule_types,
+        parse_relative_rule_type,
+    })
+}
+
 fn stylesheet_mutation_result(
     contents: &StylesheetContents,
     shared_lock: &SharedRwLock,
 ) -> CssStylesheetMutationResult {
     let guard = shared_lock.read();
     let rules = contents.rules.read_with(&guard);
+    css_rules_mutation_result(rules, shared_lock)
+}
+
+fn css_rules_mutation_result(
+    rules: &CssRules,
+    shared_lock: &SharedRwLock,
+) -> CssStylesheetMutationResult {
+    let guard = shared_lock.read();
     let rules = rules
         .0
         .iter()
@@ -374,9 +501,10 @@ impl StylesheetLoader for LightmountImportLoader {
 #[cfg(test)]
 mod tests {
     use super::{
-        delete_stylesheet_rule, insert_stylesheet_rule, parse_constructed_stylesheet_rule_texts,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_views,
-        serialize_stylesheet, CssRuleInsertError,
+        delete_nested_rule, delete_stylesheet_rule, insert_nested_rule, insert_stylesheet_rule,
+        parse_constructed_stylesheet_rule_texts, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_views, serialize_stylesheet,
+        CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
 
@@ -530,5 +658,92 @@ mod tests {
             mutation.css_text,
             "@namespace svg url(\"http://www.w3.org/2000/svg\"); .two { color: blue; }"
         );
+    }
+
+    #[test]
+    fn nested_rule_mutation_returns_media_rule_tree_views() {
+        let existing = vec![String::from(".one { color: red; }")];
+        let inserted = insert_nested_rule(
+            &[],
+            &existing,
+            "@supports (display: grid) { .two { display: grid; } }",
+            1,
+            CssRuleType::Media.bit(),
+            None,
+        )
+        .expect("supports rule should insert into media rule");
+
+        assert_eq!(inserted.rules.len(), 2);
+        assert_eq!(
+            inserted.css_text,
+            ".one { color: red; } @supports (display: grid) {\n  .two { display: grid; }\n}"
+        );
+        assert_eq!(inserted.rules[1].rule_type, CssRuleType::Supports);
+        assert_eq!(inserted.rules[1].child_rules.len(), 1);
+        assert_eq!(
+            inserted.rules[1].child_rules[0].css_text,
+            ".two { display: grid; }"
+        );
+
+        let deleted = delete_nested_rule(
+            &[],
+            &inserted
+                .rules
+                .iter()
+                .map(|rule| rule.css_text.clone())
+                .collect::<Vec<_>>(),
+            0,
+            CssRuleType::Media.bit(),
+            None,
+        )
+        .expect("nested style rule should delete");
+        assert_eq!(deleted.rules.len(), 1);
+        assert_eq!(
+            deleted.css_text,
+            "@supports (display: grid) {\n  .two { display: grid; }\n}"
+        );
+    }
+
+    #[test]
+    fn nested_style_rule_mutation_parses_relative_selectors_and_declarations() {
+        let parent_context = vec![String::from(
+            "@namespace svg url(\"http://www.w3.org/2000/svg\");",
+        )];
+        let existing = vec![String::from("& .one { color: red; }")];
+
+        let inserted = insert_nested_rule(
+            &parent_context,
+            &existing,
+            "> svg|path { color: blue; }",
+            1,
+            CssRuleType::Style.bit(),
+            Some(CssRuleType::Style),
+        )
+        .expect("relative style rule should insert into style rule");
+
+        assert_eq!(inserted.rules.len(), 2);
+        assert_eq!(inserted.rules[0].css_text, "& .one { color: red; }");
+        assert_eq!(inserted.rules[1].css_text, "& > svg|path { color: blue; }");
+
+        let declarations = insert_nested_rule(
+            &parent_context,
+            &inserted
+                .rules
+                .iter()
+                .map(|rule| rule.css_text.clone())
+                .collect::<Vec<_>>(),
+            "margin: 0; padding: 1px;",
+            0,
+            CssRuleType::Style.bit(),
+            Some(CssRuleType::Style),
+        )
+        .expect("declarations should insert as nested declarations");
+
+        assert_eq!(declarations.rules.len(), 3);
+        assert_eq!(
+            declarations.rules[0].rule_type,
+            CssRuleType::NestedDeclarations
+        );
+        assert_eq!(declarations.rules[0].css_text, "margin: 0px; padding: 1px;");
     }
 }
