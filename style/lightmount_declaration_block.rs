@@ -82,8 +82,42 @@ impl CssDeclarationBlock {
         self.block.property_priority(&property) == Importance::Important
     }
 
+    pub fn set_property(
+        &mut self,
+        name: &str,
+        value: &str,
+        priority: bool,
+    ) -> Option<Vec<CssDeclarationEntry>> {
+        let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
+        let priority_suffix = if priority { " !important" } else { "" };
+        let parsed = parse_declaration_block(&format!("{name}: {value}{priority_suffix};"));
+        let entries = parsed.entries();
+        if entries.is_empty() || entries.iter().any(|entry| entry.priority != priority) {
+            return None;
+        }
+
+        self.remove_property_by_id(&property);
+        for (declaration, importance) in parsed.block.declaration_importance_iter() {
+            self.block.push(declaration.clone(), importance);
+        }
+        Some(entries)
+    }
+
+    pub fn remove_property(&mut self, name: &str) -> Option<bool> {
+        let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
+        Some(self.remove_property_by_id(&property))
+    }
+
     pub fn into_inner(self) -> PropertyDeclarationBlock {
         self.block
+    }
+
+    fn remove_property_by_id(&mut self, property: &PropertyId) -> bool {
+        let Some(first_declaration) = self.block.first_declaration_to_remove(property) else {
+            return false;
+        };
+        self.block.remove_property(property, first_declaration);
+        true
     }
 }
 
@@ -145,5 +179,48 @@ mod tests {
         assert_eq!(entries[1].value, "2px");
         assert_eq!(entries[4].name, "background-color");
         assert_eq!(entries[4].value, "transparent");
+    }
+
+    #[test]
+    fn declaration_block_set_property_updates_through_pdb() {
+        let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
+
+        let entries = block
+            .set_property("color", "blue", false)
+            .expect("color should parse");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "color");
+        assert_eq!(entries[0].value, "blue");
+        assert_eq!(entries[0].priority, false);
+        assert_eq!(block.property_value("color").as_deref(), Some("blue"));
+        assert!(!block.property_priority("color"));
+
+        let entries = block
+            .set_property("margin", "0 2px", true)
+            .expect("margin shorthand should parse");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            ["margin-top", "margin-right", "margin-bottom", "margin-left"]
+        );
+        assert_eq!(block.property_value("margin").as_deref(), Some("0px 2px"));
+        assert!(block.property_priority("margin"));
+    }
+
+    #[test]
+    fn declaration_block_remove_property_uses_cssom_shorthand_semantics() {
+        let mut block = parse_declaration_block("padding: 1px 2px; color: red;");
+
+        assert_eq!(block.remove_property("padding-left"), Some(true));
+        assert_eq!(block.property_value("padding").as_deref(), Some(""));
+        assert_eq!(block.property_value("padding-left").as_deref(), Some(""));
+        assert_eq!(block.property_value("padding-top").as_deref(), Some("1px"));
+
+        assert_eq!(block.remove_property("padding"), Some(true));
+        assert_eq!(block.property_value("padding-top").as_deref(), Some(""));
+        assert_eq!(block.property_value("padding-right").as_deref(), Some(""));
+        assert_eq!(block.remove_property("does-not-exist"), None);
     }
 }
