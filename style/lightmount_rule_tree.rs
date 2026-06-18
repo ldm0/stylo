@@ -6,8 +6,8 @@ use crate::{
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
-        AllowImportRules, CssRuleType, Origin, Stylesheet, StylesheetContents, StylesheetLoader,
-        UrlExtraData,
+        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, Origin, RulesMutateError, Stylesheet,
+        StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
 };
@@ -19,6 +19,14 @@ use std::sync::atomic::AtomicBool;
 pub struct CssStylesheetRuleText {
     pub rule_type: CssRuleType,
     pub css_text: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CssRuleInsertError {
+    Syntax,
+    IndexSize,
+    HierarchyRequest,
+    InvalidState,
 }
 
 pub fn parse_stylesheet_rule_texts(css_text: &str) -> Vec<CssStylesheetRuleText> {
@@ -35,6 +43,72 @@ pub fn serialize_stylesheet(css_text: &str) -> String {
         .map(|rule| rule.css_text)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+pub fn parse_stylesheet_rule_for_insert(
+    existing_rule_texts: &[String],
+    rule_text: &str,
+    index: usize,
+    constructed: bool,
+) -> Result<CssStylesheetRuleText, CssRuleInsertError> {
+    let allow_import_rules = if constructed {
+        AllowImportRules::No
+    } else {
+        AllowImportRules::Yes
+    };
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let shared_lock = SharedRwLock::new();
+    let import_loader = LightmountImportLoader;
+    let stylesheet_loader = match allow_import_rules {
+        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
+        AllowImportRules::No => None,
+    };
+    let existing_css = existing_rule_texts.join(" ");
+    let contents = StylesheetContents::from_str(
+        &existing_css,
+        url_data,
+        Origin::Author,
+        &shared_lock,
+        stylesheet_loader,
+        None,
+        QuirksMode::NoQuirks,
+        allow_import_rules,
+        None,
+    );
+    let guard = shared_lock.read();
+    let rules = contents.rules.read_with(&guard);
+    let parsed_rule = rules.parse_rule_for_insert(
+        &shared_lock,
+        rule_text,
+        &contents,
+        index,
+        CssRuleTypes::default(),
+        None,
+        stylesheet_loader,
+        allow_import_rules,
+    );
+    let rule = match parsed_rule {
+        Ok(rule) => rule,
+        Err(error) => {
+            let error = CssRuleInsertError::from(error);
+            if error == CssRuleInsertError::HierarchyRequest
+                && rule_text_is_namespace_rule(rule_text)
+                && rules
+                    .0
+                    .iter()
+                    .any(|rule| !matches!(rule, CssRule::Import(..) | CssRule::Namespace(..)))
+            {
+                return Err(CssRuleInsertError::InvalidState);
+            }
+            return Err(error);
+        },
+    };
+    Ok(CssStylesheetRuleText {
+        rule_type: rule.rule_type(),
+        css_text: rule.to_css_string(&guard),
+    })
 }
 
 fn parse_stylesheet_rule_texts_with_import_policy(
@@ -74,6 +148,33 @@ fn parse_stylesheet_rule_texts_with_import_policy(
 
 fn about_blank_url_data() -> Option<UrlExtraData> {
     Some(UrlExtraData::from(url::Url::parse("about:blank").ok()?))
+}
+
+fn rule_text_is_namespace_rule(rule_text: &str) -> bool {
+    parse_stylesheet_rule_texts_with_import_policy(rule_text, AllowImportRules::Yes)
+        .as_slice()
+        .is_single_rule_type(CssRuleType::Namespace)
+}
+
+trait SingleRuleType {
+    fn is_single_rule_type(&self, rule_type: CssRuleType) -> bool;
+}
+
+impl SingleRuleType for [CssStylesheetRuleText] {
+    fn is_single_rule_type(&self, rule_type: CssRuleType) -> bool {
+        matches!(self, [rule] if rule.rule_type == rule_type)
+    }
+}
+
+impl From<RulesMutateError> for CssRuleInsertError {
+    fn from(value: RulesMutateError) -> Self {
+        match value {
+            RulesMutateError::Syntax => Self::Syntax,
+            RulesMutateError::IndexSize => Self::IndexSize,
+            RulesMutateError::HierarchyRequest => Self::HierarchyRequest,
+            RulesMutateError::InvalidState => Self::InvalidState,
+        }
+    }
 }
 
 struct LightmountImportLoader;
@@ -118,7 +219,8 @@ impl StylesheetLoader for LightmountImportLoader {
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_constructed_stylesheet_rule_texts, parse_stylesheet_rule_texts, serialize_stylesheet,
+        parse_constructed_stylesheet_rule_texts, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, serialize_stylesheet, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
 
@@ -156,6 +258,46 @@ mod tests {
         assert_eq!(
             serialize_stylesheet(".one { padding: 0 1px; } .two { display: block; }"),
             ".one { padding: 0px 1px; } .two { display: block; }"
+        );
+    }
+
+    #[test]
+    fn insert_rule_parser_uses_stylo_ordering_and_serialization() {
+        let existing = vec![
+            String::from("@import url(\"a.css\");"),
+            String::from("@namespace svg url(\"http://www.w3.org/2000/svg\");"),
+            String::from(".one { color: red; }"),
+        ];
+
+        let inserted = parse_stylesheet_rule_for_insert(&existing, ".two { margin: 0; }", 3, false)
+            .expect("style rule should insert");
+        assert_eq!(inserted.rule_type, CssRuleType::Style);
+        assert_eq!(inserted.css_text, ".two { margin: 0px; }");
+
+        assert_eq!(
+            parse_stylesheet_rule_for_insert(&existing, "@import url(\"late.css\");", 3, false),
+            Err(CssRuleInsertError::HierarchyRequest)
+        );
+        assert_eq!(
+            parse_stylesheet_rule_for_insert(
+                &existing,
+                "@namespace html url(\"http://www.w3.org/1999/xhtml\");",
+                3,
+                false,
+            ),
+            Err(CssRuleInsertError::InvalidState)
+        );
+        assert_eq!(
+            parse_stylesheet_rule_for_insert(&existing, ".too-far {}", 4, false),
+            Err(CssRuleInsertError::IndexSize)
+        );
+    }
+
+    #[test]
+    fn constructed_insert_rule_parser_rejects_import_rules() {
+        assert_eq!(
+            parse_stylesheet_rule_for_insert(&[], "@import url(\"ignored.css\");", 0, true),
+            Err(CssRuleInsertError::Syntax)
         );
     }
 }
