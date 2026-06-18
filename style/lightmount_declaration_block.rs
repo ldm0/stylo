@@ -207,6 +207,34 @@ mod tests {
         );
         assert_eq!(block.property_value("margin").as_deref(), Some("0px 2px"));
         assert!(block.property_priority("margin"));
+        assert_eq!(
+            block.css_text(),
+            "padding: 1px 2px; color: blue; margin: 0px 2px !important;"
+        );
+
+        let mut longhand_block = parse_declaration_block("");
+        for name in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
+            longhand_block
+                .set_property(name, "0", true)
+                .expect("margin longhand should parse");
+        }
+        assert_eq!(
+            longhand_block.property_value("margin").as_deref(),
+            Some("0px")
+        );
+        assert!(longhand_block.property_priority("margin"));
+        assert_eq!(longhand_block.css_text(), "margin: 0px !important;");
+
+        let mut single_longhand_block = parse_declaration_block("");
+        single_longhand_block
+            .set_property("opacity", "0.5", true)
+            .expect("opacity should parse");
+        assert_eq!(
+            single_longhand_block.property_value("opacity").as_deref(),
+            Some("0.5")
+        );
+        assert!(single_longhand_block.property_priority("opacity"));
+        assert_eq!(single_longhand_block.css_text(), "opacity: 0.5 !important;");
     }
 
     #[test]
