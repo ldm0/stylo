@@ -88,6 +88,10 @@ pub mod global_style_data;
 pub mod invalidation;
 /// Lightmount-facing selector invalidation summary hooks.
 pub mod lightmount_invalidation;
+/// Lightmount-facing numeric value parser and used-value resolver hooks.
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub mod lightmount_numeric;
 #[allow(missing_docs)] // TODO.
 pub mod logical_geometry;
 pub mod matching;
