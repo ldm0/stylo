@@ -455,14 +455,7 @@ fn keyframe_rules_mutation_result(
     let guard = shared_lock.read();
     let rules = keyframes
         .iter()
-        .map(|rule| {
-            let rule = rule.read_with(&guard);
-            CssStylesheetRuleView {
-                rule_type: CssRuleType::Keyframe,
-                css_text: rule.to_css_string(&guard),
-                child_rules: Vec::new(),
-            }
-        })
+        .map(|rule| keyframe_rule_view(rule, &guard))
         .collect::<Vec<_>>();
     let css_text = rules
         .iter()
@@ -524,11 +517,38 @@ fn stylesheet_rule_view(
     CssStylesheetRuleView {
         rule_type: rule.rule_type(),
         css_text: rule.to_css_string(guard),
-        child_rules: rule
+        child_rules: stylesheet_rule_child_views(rule, guard),
+    }
+}
+
+fn stylesheet_rule_child_views(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Vec<CssStylesheetRuleView> {
+    match rule {
+        CssRule::Keyframes(rule) => rule
+            .read_with(guard)
+            .keyframes
+            .iter()
+            .map(|rule| keyframe_rule_view(rule, guard))
+            .collect(),
+        _ => rule
             .children(guard)
             .iter()
             .map(|rule| stylesheet_rule_view(rule, guard))
             .collect(),
+    }
+}
+
+fn keyframe_rule_view(
+    rule: &Arc<crate::shared_lock::Locked<Keyframe>>,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssStylesheetRuleView {
+    let rule = rule.read_with(guard);
+    CssStylesheetRuleView {
+        rule_type: CssRuleType::Keyframe,
+        css_text: rule.to_css_string(guard),
+        child_rules: Vec::new(),
     }
 }
 
@@ -653,6 +673,20 @@ mod tests {
             rules[1].child_rules[1].child_rules[0].css_text,
             ".three { display: grid; }"
         );
+    }
+
+    #[test]
+    fn stylesheet_rule_views_include_keyframes_children() {
+        let rules = parse_stylesheet_rule_views(
+            "@keyframes slide { from { opacity: 0; } to { opacity: 1; } }",
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_type, CssRuleType::Keyframes);
+        assert_eq!(rules[0].child_rules.len(), 2);
+        assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Keyframe);
+        assert_eq!(rules[0].child_rules[0].css_text, "0% { opacity: 0; }");
+        assert_eq!(rules[0].child_rules[1].css_text, "100% { opacity: 1; }");
     }
 
     #[test]
