@@ -6,15 +6,16 @@ use crate::{
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
-        keyframes_rule::Keyframe,
+        keyframes_rule::{Keyframe, KeyframeSelectors},
         AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, Origin, RulesMutateError,
         Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
 };
-use cssparser::SourceLocation;
+use cssparser::{Parser, ParserInput, SourceLocation};
 use servo_arc::Arc;
 use std::sync::atomic::AtomicBool;
+use style_traits::ToCss;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssStylesheetRuleText {
@@ -204,6 +205,20 @@ pub fn delete_keyframe_rule(
         &keyframes,
         &parsed.shared_lock,
     ))
+}
+
+pub fn normalize_keyframe_selector_text(selector_text: &str) -> Option<String> {
+    parse_keyframe_selectors(selector_text).map(|selectors| selectors.to_css_string())
+}
+
+pub fn keyframe_selector_texts_match(existing_selector_text: &str, selector_text: &str) -> bool {
+    let Some(existing) = parse_keyframe_selectors(existing_selector_text) else {
+        return false;
+    };
+    let Some(selector) = parse_keyframe_selectors(selector_text) else {
+        return false;
+    };
+    existing == selector
 }
 
 struct ParsedStylesheetForMutation {
@@ -421,6 +436,12 @@ fn parse_keyframe_rules_for_mutation(
     })
 }
 
+fn parse_keyframe_selectors(selector_text: &str) -> Option<KeyframeSelectors> {
+    let mut input = ParserInput::new(selector_text);
+    let mut input = Parser::new(&mut input);
+    input.parse_entirely(KeyframeSelectors::parse).ok()
+}
+
 fn stylesheet_mutation_result(
     contents: &StylesheetContents,
     shared_lock: &SharedRwLock,
@@ -626,7 +647,8 @@ impl StylesheetLoader for LightmountImportLoader {
 mod tests {
     use super::{
         delete_keyframe_rule, delete_nested_rule, delete_stylesheet_rule, insert_keyframe_rule,
-        insert_nested_rule, insert_stylesheet_rule, parse_constructed_stylesheet_rule_texts,
+        insert_nested_rule, insert_stylesheet_rule, keyframe_selector_texts_match,
+        normalize_keyframe_selector_text, parse_constructed_stylesheet_rule_texts,
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_views,
         serialize_stylesheet, CssRuleInsertError,
     };
@@ -934,5 +956,21 @@ mod tests {
             delete_keyframe_rule(&[], &[], 0),
             Err(CssRuleInsertError::IndexSize)
         );
+    }
+
+    #[test]
+    fn keyframe_selector_helpers_use_stylo_parser_and_serialization() {
+        assert_eq!(normalize_keyframe_selector_text("from"), Some("0%".into()));
+        assert_eq!(
+            normalize_keyframe_selector_text("50%, to"),
+            Some("50%, 100%".into())
+        );
+        assert_eq!(normalize_keyframe_selector_text("body"), None);
+        assert_eq!(normalize_keyframe_selector_text("-1%"), None);
+
+        assert!(keyframe_selector_texts_match("from", "0%"));
+        assert!(keyframe_selector_texts_match("50%, to", "50%, 100%"));
+        assert!(!keyframe_selector_texts_match("50%, to", "50%"));
+        assert!(!keyframe_selector_texts_match("body", "body"));
     }
 }
