@@ -1228,6 +1228,10 @@ impl CalcNode {
                         left: &mut CalcNode,
                         right: &CalcNode,
                     ) -> InPlaceDivisionResult {
+                        match right.unit() {
+                            Ok(unit) if unit.is_empty() => {},
+                            _ => return InPlaceDivisionResult::Invalid,
+                        }
                         if let Ok(resolved) = right.resolve() {
                             if let Some(number) = resolved.as_number() {
                                 if number != 1.0 && left.is_product_distributive() {
@@ -1236,22 +1240,14 @@ impl CalcNode {
                                     }
                                     return InPlaceDivisionResult::Merged;
                                 }
-                            } else {
-                                // Color components are valid denominators, but they can't resolve
-                                // at parse time.
-                                return if resolved.unit().contains(CalcUnits::COLOR_COMPONENT) {
-                                    InPlaceDivisionResult::Unchanged
-                                } else {
-                                    InPlaceDivisionResult::Unchanged
-                                };
                             }
                         }
                         InPlaceDivisionResult::Unchanged
                     }
 
                     // If the right hand side is already a number, merge it with the last node on
-                    // the product list. Non-number denominators are kept as inverted nodes so
-                    // basic unit algebra can cancel them during unit validation and resolution.
+                    // the product list. Otherwise keep unresolved number-like denominators as
+                    // inverted nodes so tree-counting math can resolve them later.
                     // We can unwrap here, becuase we start the function by adding a node to
                     // the list.
                     match try_division_in_place(&mut product.last_mut().unwrap(), &rhs) {
@@ -1554,5 +1550,45 @@ impl CalcNode {
         )?
         .to_resolution()
         .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::QuirksMode;
+    use crate::custom_properties::AttrTaint;
+    use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use crate::values::specified::LengthPercentage;
+    use cssparser::{Parser, ParserInput};
+    use style_traits::ParsingMode;
+
+    fn length_percentage_parses(value: &str) -> bool {
+        let url_data = UrlExtraData::from(url::Url::parse("about:blank").unwrap());
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+            AttrTaint::default(),
+        );
+        let mut input = ParserInput::new(value);
+        let mut parser = Parser::new(&mut input);
+        parser
+            .parse_entirely(|input| LengthPercentage::parse(&context, input))
+            .is_ok()
+    }
+
+    #[test]
+    fn web_exposed_calc_division_requires_number_denominator() {
+        assert!(length_percentage_parses("calc(5px / 2)"));
+        assert!(length_percentage_parses("calc((10% + 1em) * 0.5)"));
+        assert!(!length_percentage_parses("calc(5px / 1px)"));
+        assert!(!length_percentage_parses("calc(5px * 10lh / 1px)"));
+        assert!(!length_percentage_parses("calc(1em / 1rem * 1px)"));
     }
 }
