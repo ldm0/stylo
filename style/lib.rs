@@ -92,6 +92,10 @@ pub mod lightmount_invalidation;
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
 pub mod lightmount_numeric;
+/// Lightmount-facing transform parser hooks.
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub mod lightmount_transform;
 #[allow(missing_docs)] // TODO.
 pub mod logical_geometry;
 pub mod matching;
