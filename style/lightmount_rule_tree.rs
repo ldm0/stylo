@@ -1934,6 +1934,7 @@ mod tests {
         assert_eq!(anonymous.layer_name.as_deref(), Some(""));
         assert_eq!(anonymous.condition_prefix, "layer");
         assert_eq!(anonymous.media_text, "");
+        assert!(parse_import_rule_view(r#"@import url("theme.css") supports();"#).is_none());
         assert!(parse_import_rule_view(".not-import { color: red; }").is_none());
     }
 

@@ -10,13 +10,14 @@ use crate::media_queries::MediaList;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard};
 use crate::stylesheets::{
-    layer_rule::LayerName, supports_rule::SupportsCondition, CssRule, CssRuleType,
-    StylesheetInDocument,
+    layer_rule::LayerName,
+    supports_rule::{parse_condition_or_declaration, SupportsCondition},
+    CssRule, CssRuleType, StylesheetInDocument,
 };
 use crate::values::CssUrl;
 use cssparser::{Parser, SourceLocation};
 use std::fmt::{self, Write};
-use style_traits::{CssStringWriter, CssWriter, ToCss};
+use style_traits::{CssStringWriter, CssWriter, ParseError, ToCss};
 use to_shmem::{SharedMemoryBuilder, ToShmem};
 
 #[cfg(feature = "gecko")]
@@ -180,7 +181,7 @@ impl ImportRule {
     pub fn parse_layer_and_supports<'i, 't>(
         input: &mut Parser<'i, 't>,
         context: &mut ParserContext,
-    ) -> (ImportLayer, Option<ImportSupportsCondition>) {
+    ) -> Result<(ImportLayer, Option<ImportSupportsCondition>), ParseError<'i>> {
         let layer = if input
             .try_parse(|input| input.expect_ident_matching("layer"))
             .is_ok()
@@ -198,16 +199,19 @@ impl ImportRule {
                 .unwrap_or(ImportLayer::None)
         };
 
-        let supports = input
-            .try_parse(SupportsCondition::parse_for_import)
-            .map(|condition| {
-                let enabled =
-                    context.nest_for_rule(CssRuleType::Style, |context| condition.eval(context));
-                ImportSupportsCondition { condition, enabled }
-            })
-            .ok();
+        let supports = if input
+            .try_parse(|input| input.expect_function_matching("supports"))
+            .is_ok()
+        {
+            let condition = input.parse_nested_block(parse_condition_or_declaration)?;
+            let enabled =
+                context.nest_for_rule(CssRuleType::Style, |context| condition.eval(context));
+            Some(ImportSupportsCondition { condition, enabled })
+        } else {
+            None
+        };
 
-        (layer, supports)
+        Ok((layer, supports))
     }
 }
 
