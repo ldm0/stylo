@@ -7,7 +7,7 @@ use std::{
 
 use cssparser::{Parser, ParserInput, SourceLocation};
 use servo_arc::Arc;
-use style_traits::{CssStringWriter, ParsingMode, ToCss};
+use style_traits::{CssStringWriter, CssWriter, ParsingMode, ToCss};
 
 use crate::{
     context::QuirksMode,
@@ -75,6 +75,12 @@ pub struct CssMarginRuleView {
     pub css_text: String,
     pub name: String,
     pub style_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssPageDescriptorEntryView {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,6 +226,27 @@ pub fn parse_page_margin_rule_view(css_text: &str) -> Option<CssMarginRuleView> 
         return None;
     };
     Some(view.clone())
+}
+
+pub fn parse_page_descriptor_entries(
+    name: &str,
+    value: &str,
+) -> Option<Vec<CssPageDescriptorEntryView>> {
+    let name = canonical_page_descriptor_name(name)?;
+    if !page_descriptor_value_is_safe_for_rule_template(value) {
+        return None;
+    }
+    let css_text = format!("@page {{ {name}: {value}; }}");
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(&css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Page(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let rule = rule.read_with(&guard);
+    let block = rule.block.read_with(&guard);
+    let entries = page_descriptor_entries_from_block(block);
+    (!entries.is_empty() && page_descriptor_entries_match_name(name, &entries)).then_some(entries)
 }
 
 pub fn parse_keyframes_rule_view(css_text: &str) -> Option<CssKeyframesRuleView> {
@@ -1570,6 +1597,63 @@ fn margin_rule_view(
     }
 }
 
+fn canonical_page_descriptor_name(name: &str) -> Option<&'static str> {
+    match name {
+        "size" => Some("size"),
+        "page-orientation" => Some("page-orientation"),
+        "margin" => Some("margin"),
+        "margin-top" => Some("margin-top"),
+        "margin-right" => Some("margin-right"),
+        "margin-bottom" => Some("margin-bottom"),
+        "margin-left" => Some("margin-left"),
+        _ => None,
+    }
+}
+
+fn page_descriptor_value_is_safe_for_rule_template(value: &str) -> bool {
+    !value.trim().is_empty()
+        && !value.contains(';')
+        && !value.to_ascii_lowercase().contains("!important")
+}
+
+fn page_descriptor_entries_from_block(
+    block: &PropertyDeclarationBlock,
+) -> Vec<CssPageDescriptorEntryView> {
+    block
+        .declaration_importance_iter()
+        .filter_map(|(declaration, _importance)| {
+            let mut name = String::new();
+            declaration
+                .id()
+                .to_css(&mut CssWriter::new(&mut name))
+                .ok()?;
+            let mut value = CssStringWriter::new();
+            declaration.to_css(&mut value).ok()?;
+            Some(CssPageDescriptorEntryView { name, value })
+        })
+        .collect()
+}
+
+fn page_descriptor_entries_match_name(name: &str, entries: &[CssPageDescriptorEntryView]) -> bool {
+    match name {
+        "margin" => entries
+            .iter()
+            .all(|entry| page_margin_longhand_name(&entry.name)),
+        "margin-top" | "margin-right" | "margin-bottom" | "margin-left" => {
+            entries.len() == 1 && entries[0].name == name
+        },
+        "size" | "page-orientation" => entries.len() == 1 && entries[0].name == name,
+        _ => false,
+    }
+}
+
+fn page_margin_longhand_name(name: &str) -> bool {
+    matches!(
+        name,
+        "margin-top" | "margin-right" | "margin-bottom" | "margin-left"
+    )
+}
+
 fn declaration_block_css_text(block: &PropertyDeclarationBlock) -> String {
     let mut css_text = CssStringWriter::new();
     block
@@ -1672,12 +1756,12 @@ mod tests {
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_counter_style_rule_view, parse_font_face_rule_view,
         parse_font_feature_values_rule_view, parse_keyframes_rule_view,
-        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
-        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_font_feature_values_rule_entry,
-        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_page_descriptor_entries, parse_page_margin_rule_view, parse_page_rule_view,
+        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
+        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
+        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_font_feature_values_rule_entry, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1960,6 +2044,31 @@ mod tests {
             view.child_rules[0].css_text,
             "@top-left { content: \"x\"; color: red; }"
         );
+    }
+
+    #[test]
+    fn page_descriptor_entries_use_page_rule_declaration_block() {
+        let entries = parse_page_descriptor_entries("margin", "1px 2px 3px 4px")
+            .expect("margin shorthand should parse in page context");
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("margin-top", "1px"),
+                ("margin-right", "2px"),
+                ("margin-bottom", "3px"),
+                ("margin-left", "4px"),
+            ]
+        );
+
+        assert!(parse_page_descriptor_entries("margin-top", "5px").is_some());
+        assert!(parse_page_descriptor_entries("size", "portrait").is_none());
+        assert!(parse_page_descriptor_entries("page-orientation", "rotate-left").is_none());
+        assert!(parse_page_descriptor_entries("marks", "crop").is_none());
+        assert!(parse_page_descriptor_entries("margin-top", "1px; margin-bottom: 2px").is_none());
+        assert!(parse_page_descriptor_entries("margin-top", "1px !important").is_none());
     }
 
     #[test]
