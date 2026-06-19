@@ -45,6 +45,12 @@ pub struct CssCounterStyleRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssKeyframesRuleView {
+    pub css_text: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssStylesheetMutationResult {
     pub css_text: String,
     pub rules: Vec<CssStylesheetRuleView>,
@@ -99,6 +105,20 @@ pub fn parse_counter_style_rule_view(css_text: &str) -> Option<CssCounterStyleRu
     Some(CssCounterStyleRuleView {
         css_text: rule.to_css_string(&guard),
         name: rule.name().to_css_string(),
+    })
+}
+
+pub fn parse_keyframes_rule_view(css_text: &str) -> Option<CssKeyframesRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Keyframes(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let rule = rule.read_with(&guard);
+    Some(CssKeyframesRuleView {
+        css_text: rule.to_css_string(&guard),
+        name: rule.name.as_atom().to_string(),
     })
 }
 
@@ -1351,7 +1371,7 @@ mod tests {
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_stylesheet_rule_for_insert,
+        parse_counter_style_rule_view, parse_keyframes_rule_view, parse_stylesheet_rule_for_insert,
         parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
@@ -1419,6 +1439,20 @@ mod tests {
         assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Keyframe);
         assert_eq!(rules[0].child_rules[0].css_text, "0% { opacity: 0; }");
         assert_eq!(rules[0].child_rules[1].css_text, "100% { opacity: 1; }");
+
+        let view = parse_keyframes_rule_view(
+            r#"@keyframes "slide show" { from { opacity: 0; } to { opacity: 1; } }"#,
+        )
+        .expect("valid @keyframes should produce a CSSOM view");
+        assert_eq!(view.name, "slide show");
+        assert_eq!(
+            view.css_text,
+            "@keyframes slide\\ show {\n0% { opacity: 0; }\n100% { opacity: 1; }\n}"
+        );
+        assert!(
+            parse_keyframes_rule_view("@keyframes none { from { opacity: 0; } }").is_none(),
+            "Stylo rejects invalid keyframes names"
+        );
     }
 
     #[test]
