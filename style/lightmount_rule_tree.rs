@@ -14,7 +14,7 @@ use crate::{
 };
 use cssparser::{Parser, ParserInput, SourceLocation};
 use servo_arc::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::{atomic::AtomicBool, Once};
 use style_traits::ToCss;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -320,6 +320,7 @@ fn parse_stylesheet_for_mutation(
     existing_rule_texts: &[String],
     constructed: bool,
 ) -> Result<ParsedStylesheetForMutation, CssRuleInsertError> {
+    ensure_lightmount_rule_tree_prefs();
     let allow_import_rules = if constructed {
         AllowImportRules::No
     } else {
@@ -359,6 +360,7 @@ fn parse_nested_rules_for_mutation(
     containing_rule_type_bits: u32,
     parse_relative_rule_type: Option<CssRuleType>,
 ) -> Result<ParsedNestedRulesForMutation, CssRuleInsertError> {
+    ensure_lightmount_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Err(CssRuleInsertError::Syntax);
     };
@@ -406,6 +408,7 @@ fn parse_keyframe_rules_for_mutation(
     parent_stylesheet_rule_texts: &[String],
     existing_rule_texts: &[String],
 ) -> Result<ParsedKeyframeRulesForMutation, CssRuleInsertError> {
+    ensure_lightmount_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Err(CssRuleInsertError::Syntax);
     };
@@ -503,6 +506,7 @@ fn parse_stylesheet_rule_views_with_import_policy(
     css_text: &str,
     allow_import_rules: AllowImportRules,
 ) -> Vec<CssStylesheetRuleView> {
+    ensure_lightmount_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Vec::new();
     };
@@ -529,6 +533,13 @@ fn parse_stylesheet_rule_views_with_import_policy(
         .iter()
         .map(|rule| stylesheet_rule_view(rule, &guard))
         .collect()
+}
+
+fn ensure_lightmount_rule_tree_prefs() {
+    static ENABLE: Once = Once::new();
+    ENABLE.call_once(|| {
+        static_prefs::set_pref!("layout.css.margin-rules.enabled", true);
+    });
 }
 
 fn stylesheet_rule_view(
@@ -739,6 +750,26 @@ mod tests {
             "@font-feature-values test_family {\n@annotation {\nthe_first: 6;\n}\n@styleset {\nyo: 7;\ndi: 10 9 4 5;\n}\n}"
         );
         assert!(rules[0].child_rules.is_empty());
+    }
+
+    #[test]
+    fn stylesheet_rule_views_include_page_rules() {
+        let rules = parse_stylesheet_rule_views(
+            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_type, CssRuleType::Page);
+        assert_eq!(
+            rules[0].css_text,
+            "@page :first {\n  margin-top: 1px;\n  @top-left { content: \"x\"; color: red; }\n}"
+        );
+        assert_eq!(rules[0].child_rules.len(), 1);
+        assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Margin);
+        assert_eq!(
+            rules[0].child_rules[0].css_text,
+            "@top-left { content: \"x\"; color: red; }"
+        );
     }
 
     #[test]

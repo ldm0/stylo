@@ -758,7 +758,7 @@ impl<'a, 'i> AtRuleParser<'i> for NestedRuleParser<'a, 'i> {
                 let name = KeyframesName::parse(&self.context, input)?;
                 AtRulePrelude::Keyframes(name, prefix)
             },
-            "page" if cfg!(feature = "gecko") => {
+            "page" => {
                 AtRulePrelude::Page(
                     input.try_parse(|i| PageSelectors::parse(&self.context, i)).unwrap_or_default()
                 )

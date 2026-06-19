@@ -414,6 +414,7 @@ impl NonCustomPropertyId {
     pub fn allowed_in_rule(self, rule_types: CssRuleTypes) -> bool {
         debug_assert!(
             rule_types.contains(CssRuleType::Keyframe) ||
+            rule_types.contains(CssRuleType::Margin) ||
             rule_types.contains(CssRuleType::Page) ||
             rule_types.contains(CssRuleType::Style) ||
             rule_types.contains(CssRuleType::Scope) ||
