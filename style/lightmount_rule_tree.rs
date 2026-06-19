@@ -14,6 +14,7 @@ use crate::{
     custom_properties::AttrTaint,
     media_queries::MediaList,
     parser::ParserContext,
+    properties::{parse_property_declaration_list, PropertyDeclarationBlock},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
@@ -445,6 +446,53 @@ pub fn set_media_rule_media_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, rule_path)
 }
 
+pub fn set_style_rule_declarations_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    declaration_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let block = mutable_style_rule_declaration_block_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Style)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *block.write_with(&mut guard) = parsed;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+pub fn set_nested_declarations_rule_declarations_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    declaration_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let block = mutable_nested_declarations_rule_block_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Style)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *block.write_with(&mut guard) = parsed;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+pub fn set_keyframe_rule_declarations_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    parent_path: &[usize],
+    index: usize,
+    declaration_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let block =
+        mutable_keyframe_rule_declaration_block_for_rule_path(rule_tree, parent_path, index)
+            .ok_or(CssRuleInsertError::IndexSize)?;
+    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Keyframe)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *block.write_with(&mut guard) = parsed;
+    }
+    nested_rule_tree_mutation_result(rule_tree, parent_path)
+}
+
 pub fn normalize_keyframe_selector_text(selector_text: &str) -> Option<String> {
     parse_keyframe_selectors(selector_text).map(|selectors| selectors.to_css_string())
 }
@@ -676,6 +724,44 @@ fn mutable_media_rule_media_for_rule_path(
     }
 }
 
+fn mutable_style_rule_declaration_block_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Style(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(rule.read_with(&guard).block.clone())
+        },
+        _ => None,
+    }
+}
+
+fn mutable_nested_declarations_rule_block_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::NestedDeclarations(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(rule.read_with(&guard).block.clone())
+        },
+        _ => None,
+    }
+}
+
+fn mutable_keyframe_rule_declaration_block_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    parent_path: &[usize],
+    index: usize,
+) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    let keyframes_rule = mutable_keyframes_rule_for_rule_path(rule_tree, parent_path)?;
+    let guard = rule_tree.shared_lock.read();
+    let keyframes_rule = keyframes_rule.read_with(&guard);
+    let keyframe = keyframes_rule.keyframes.get(index)?;
+    Some(keyframe.read_with(&guard).block.clone())
+}
+
 fn parse_media_list_for_rule(media_text: &str) -> Result<MediaList, CssRuleInsertError> {
     let Some(url_data) = about_blank_url_data() else {
         return Err(CssRuleInsertError::Syntax);
@@ -694,6 +780,29 @@ fn parse_media_list_for_rule(media_text: &str) -> Result<MediaList, CssRuleInser
     let mut input = ParserInput::new(media_text);
     let mut input = Parser::new(&mut input);
     Ok(MediaList::parse(&context, &mut input))
+}
+
+fn parse_declaration_block_for_rule(
+    declaration_text: &str,
+    rule_type: CssRuleType,
+) -> Result<PropertyDeclarationBlock, CssRuleInsertError> {
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(rule_type),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
+    let mut input = ParserInput::new(declaration_text);
+    let mut input = Parser::new(&mut input);
+    Ok(parse_property_declaration_list(&context, &mut input, &[]))
 }
 
 fn rule_at_path(rule_tree: &CssStylesheetRuleTree, path: &[usize]) -> Option<CssRule> {
@@ -1080,7 +1189,10 @@ mod tests {
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
         parse_stylesheet_rule_views, serialize_stylesheet,
-        set_media_rule_media_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
+        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        set_media_rule_media_in_stylesheet_rule_tree,
+        set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
+        set_style_rule_declarations_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
         stylesheet_rule_tree_rule_views, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
@@ -1607,6 +1719,85 @@ mod tests {
         assert_eq!(
             stylesheet_rule_tree_css_text(&rule_tree),
             "@media print and (min-width: 10px) {\n  @supports (display: grid) {\n  .one { display: grid; }\n}\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_mutates_style_rule_declarations() {
+        let mut rule_tree =
+            parse_stylesheet_rule_tree(".host { color: red; & > .child { color: blue; } }");
+
+        let mutation = set_style_rule_declarations_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0],
+            "margin: 1px 2px; color: green;",
+        )
+        .expect("style rule declarations should update in persistent tree");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Style);
+        assert_eq!(mutation.parent_rule.child_rules.len(), 1);
+        assert_eq!(
+            mutation.parent_rule.child_rules[0].css_text,
+            "& > .child { color: blue; }"
+        );
+        assert_eq!(
+            mutation.parent_rule.css_text,
+            ".host {\n  margin: 1px 2px; color: green;\n  & > .child { color: blue; }\n}"
+        );
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            ".host {\n  margin: 1px 2px; color: green;\n  & > .child { color: blue; }\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_mutates_nested_declarations() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            ".host { & .child { color: blue; } color: red; margin: 0; }",
+        );
+
+        let mutation = set_nested_declarations_rule_declarations_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0, 1],
+            "padding: 1px 2px;",
+        )
+        .expect("nested declarations should update in persistent tree");
+
+        assert_eq!(
+            mutation.parent_rule.rule_type,
+            CssRuleType::NestedDeclarations
+        );
+        assert_eq!(mutation.parent_rule.css_text, "padding: 1px 2px;");
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            ".host {\n  & .child { color: blue; }\n  padding: 1px 2px;\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_mutates_keyframe_declarations() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
+        );
+
+        let mutation = set_keyframe_rule_declarations_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0],
+            1,
+            "opacity: .5; transform: translateX(10px);",
+        )
+        .expect("keyframe declarations should update in persistent tree");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Keyframes);
+        assert_eq!(mutation.rules.len(), 2);
+        assert_eq!(mutation.rules[0].css_text, "0% { opacity: 0; }");
+        assert_eq!(
+            mutation.rules[1].css_text,
+            "100% { opacity: 0.5; transform: translateX(10px); }"
+        );
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            "@keyframes fade {\n0% { opacity: 0; }\n100% { opacity: 0.5; transform: translateX(10px); }\n}"
         );
     }
 
