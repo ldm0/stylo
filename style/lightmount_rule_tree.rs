@@ -39,6 +39,12 @@ pub struct CssStylesheetRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssCounterStyleRuleView {
+    pub css_text: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssStylesheetMutationResult {
     pub css_text: String,
     pub rules: Vec<CssStylesheetRuleView>,
@@ -80,6 +86,20 @@ pub fn parse_stylesheet_rule_views(css_text: &str) -> Vec<CssStylesheetRuleView>
 
 pub fn parse_constructed_stylesheet_rule_views(css_text: &str) -> Vec<CssStylesheetRuleView> {
     parse_stylesheet_rule_views_with_import_policy(css_text, AllowImportRules::No)
+}
+
+pub fn parse_counter_style_rule_view(css_text: &str) -> Option<CssCounterStyleRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::CounterStyle(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let rule = rule.read_with(&guard);
+    Some(CssCounterStyleRuleView {
+        css_text: rule.to_css_string(&guard),
+        name: rule.name().to_css_string(),
+    })
 }
 
 pub fn parse_stylesheet_rule_tree(css_text: &str) -> CssStylesheetRuleTree {
@@ -1331,10 +1351,11 @@ mod tests {
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
-        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_counter_style_rule_view, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
+        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1413,6 +1434,20 @@ mod tests {
             r#"@counter-style thumbs { system: cyclic; suffix: " "; symbols: "*"; }"#
         );
         assert!(rules[0].child_rules.is_empty());
+
+        let view = parse_counter_style_rule_view(
+            r#"@counter-style thumbs { system: cyclic; symbols: "*"; suffix: " "; }"#,
+        )
+        .expect("valid @counter-style should produce a CSSOM view");
+        assert_eq!(view.name, "thumbs");
+        assert_eq!(view.css_text, rules[0].css_text);
+        assert!(
+            parse_counter_style_rule_view(
+                r#"@counter-style thumbs { system: cyclic; suffix: " "; }"#
+            )
+            .is_none(),
+            "Stylo rejects counter styles whose system requires symbols"
+        );
     }
 
     #[test]
