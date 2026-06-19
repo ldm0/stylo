@@ -493,6 +493,22 @@ pub fn set_keyframe_rule_declarations_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, parent_path)
 }
 
+pub fn set_keyframe_rule_selector_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    parent_path: &[usize],
+    index: usize,
+    selector_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let keyframe = mutable_keyframe_for_rule_path(rule_tree, parent_path, index)
+        .ok_or(CssRuleInsertError::IndexSize)?;
+    let selector = parse_keyframe_selectors(selector_text).ok_or(CssRuleInsertError::Syntax)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        keyframe.write_with(&mut guard).selector = selector;
+    }
+    nested_rule_tree_mutation_result(rule_tree, parent_path)
+}
+
 pub fn normalize_keyframe_selector_text(selector_text: &str) -> Option<String> {
     parse_keyframe_selectors(selector_text).map(|selectors| selectors.to_css_string())
 }
@@ -755,11 +771,20 @@ fn mutable_keyframe_rule_declaration_block_for_rule_path(
     parent_path: &[usize],
     index: usize,
 ) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    let keyframe = mutable_keyframe_for_rule_path(rule_tree, parent_path, index)?;
+    let guard = rule_tree.shared_lock.read();
+    Some(keyframe.read_with(&guard).block.clone())
+}
+
+fn mutable_keyframe_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    parent_path: &[usize],
+    index: usize,
+) -> Option<Arc<crate::shared_lock::Locked<Keyframe>>> {
     let keyframes_rule = mutable_keyframes_rule_for_rule_path(rule_tree, parent_path)?;
     let guard = rule_tree.shared_lock.read();
     let keyframes_rule = keyframes_rule.read_with(&guard);
-    let keyframe = keyframes_rule.keyframes.get(index)?;
-    Some(keyframe.read_with(&guard).block.clone())
+    keyframes_rule.keyframes.get(index).cloned()
 }
 
 fn parse_media_list_for_rule(media_text: &str) -> Result<MediaList, CssRuleInsertError> {
@@ -1190,6 +1215,7 @@ mod tests {
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
         parse_stylesheet_rule_views, serialize_stylesheet,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
         set_style_rule_declarations_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
@@ -1798,6 +1824,34 @@ mod tests {
         assert_eq!(
             stylesheet_rule_tree_css_text(&rule_tree),
             "@keyframes fade {\n0% { opacity: 0; }\n100% { opacity: 0.5; transform: translateX(10px); }\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_mutates_keyframe_selectors() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
+        );
+
+        let mutation =
+            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 1, "75%, to")
+                .expect("keyframe selector should update in persistent tree");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Keyframes);
+        assert_eq!(mutation.rules.len(), 2);
+        assert_eq!(mutation.rules[0].css_text, "0% { opacity: 0; }");
+        assert_eq!(mutation.rules[1].css_text, "75%, 100% { opacity: 1; }");
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            "@keyframes fade {\n0% { opacity: 0; }\n75%, 100% { opacity: 1; }\n}"
+        );
+        assert_eq!(
+            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 9, "50%"),
+            Err(CssRuleInsertError::IndexSize)
+        );
+        assert_eq!(
+            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 0, "body"),
+            Err(CssRuleInsertError::Syntax)
         );
     }
 
