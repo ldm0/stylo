@@ -124,6 +124,7 @@ pub fn insert_rule_into_stylesheet_rule_tree(
         },
     };
     drop(guard);
+    let refresh_namespaces = matches!(&rule, CssRule::Namespace(..));
     {
         let mut guard = rule_tree.shared_lock.write();
         rule_tree
@@ -133,16 +134,31 @@ pub fn insert_rule_into_stylesheet_rule_tree(
             .0
             .insert(index, rule);
     }
-    Ok(stylesheet_mutation_result(
-        &rule_tree.contents,
-        &rule_tree.shared_lock,
-    ))
+    let result = stylesheet_mutation_result(&rule_tree.contents, &rule_tree.shared_lock);
+    if refresh_namespaces {
+        refresh_stylesheet_rule_tree_from_css_text(rule_tree, &result.css_text);
+        return Ok(stylesheet_mutation_result(
+            &rule_tree.contents,
+            &rule_tree.shared_lock,
+        ));
+    }
+    Ok(result)
 }
 
 pub fn delete_rule_from_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     index: usize,
 ) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let refresh_namespaces = {
+        let guard = rule_tree.shared_lock.read();
+        rule_tree
+            .contents
+            .rules
+            .read_with(&guard)
+            .0
+            .get(index)
+            .is_some_and(|rule| matches!(rule, CssRule::Namespace(..)))
+    };
     {
         let mut guard = rule_tree.shared_lock.write();
         rule_tree
@@ -152,10 +168,15 @@ pub fn delete_rule_from_stylesheet_rule_tree(
             .remove_rule(index)
             .map_err(CssRuleInsertError::from)?;
     }
-    Ok(stylesheet_mutation_result(
-        &rule_tree.contents,
-        &rule_tree.shared_lock,
-    ))
+    let result = stylesheet_mutation_result(&rule_tree.contents, &rule_tree.shared_lock);
+    if refresh_namespaces {
+        refresh_stylesheet_rule_tree_from_css_text(rule_tree, &result.css_text);
+        return Ok(stylesheet_mutation_result(
+            &rule_tree.contents,
+            &rule_tree.shared_lock,
+        ));
+    }
+    Ok(result)
 }
 
 pub fn serialize_stylesheet(css_text: &str) -> String {
@@ -479,6 +500,14 @@ fn parse_stylesheet_rule_tree_with_import_policy(
         shared_lock,
         allow_import_rules,
     }
+}
+
+fn refresh_stylesheet_rule_tree_from_css_text(
+    rule_tree: &mut CssStylesheetRuleTree,
+    css_text: &str,
+) {
+    let allow_import_rules = rule_tree.allow_import_rules;
+    *rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, allow_import_rules);
 }
 
 fn parse_nested_rules_for_mutation(
@@ -1053,6 +1082,46 @@ mod tests {
         assert_eq!(
             stylesheet_rule_tree_css_text(&rule_tree),
             "@namespace svg url(\"http://www.w3.org/2000/svg\"); @media screen {\n  svg|path { color: blue; }\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_refreshes_namespaces_after_insert() {
+        let mut rule_tree = parse_stylesheet_rule_tree("");
+
+        insert_rule_into_stylesheet_rule_tree(
+            &mut rule_tree,
+            "@namespace svg url(\"http://www.w3.org/2000/svg\");",
+            0,
+        )
+        .expect("namespace rule should insert");
+        let inserted =
+            insert_rule_into_stylesheet_rule_tree(&mut rule_tree, "svg|a { color: white; }", 1)
+                .expect("style rule should see namespace inserted into persistent tree");
+
+        assert_eq!(inserted.rules.len(), 2);
+        assert_eq!(inserted.rules[1].css_text, "svg|a { color: white; }");
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            "@namespace svg url(\"http://www.w3.org/2000/svg\"); svg|a { color: white; }"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_refreshes_namespaces_after_delete() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            "@namespace svg url(\"http://www.w3.org/2000/svg\"); svg|a { color: white; }",
+        );
+
+        delete_rule_from_stylesheet_rule_tree(&mut rule_tree, 1)
+            .expect("style rule should delete before namespace");
+        delete_rule_from_stylesheet_rule_tree(&mut rule_tree, 0)
+            .expect("namespace rule should delete once no style rules remain");
+
+        assert_eq!(stylesheet_rule_tree_css_text(&rule_tree), "");
+        assert_eq!(
+            insert_rule_into_stylesheet_rule_tree(&mut rule_tree, "svg|a { color: blue; }", 0),
+            Err(CssRuleInsertError::Syntax)
         );
     }
 
