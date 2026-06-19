@@ -727,6 +727,21 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_rule_views_include_font_feature_values_rules() {
+        let rules = parse_stylesheet_rule_views(
+            "@font-feature-values test_family { @annotation { the_first: 6; } @styleset { yo: 7; di: 10 9 4 5; } }",
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_type, CssRuleType::FontFeatureValues);
+        assert_eq!(
+            rules[0].css_text,
+            "@font-feature-values test_family {\n@annotation {\nthe_first: 6;\n}\n@styleset {\nyo: 7;\ndi: 10 9 4 5;\n}\n}"
+        );
+        assert!(rules[0].child_rules.is_empty());
+    }
+
+    #[test]
     fn constructed_stylesheet_rule_texts_drop_import_rules() {
         let rules = parse_constructed_stylesheet_rule_texts(
             "@import url(\"ignored.css\"); .target { color: blue; }",
