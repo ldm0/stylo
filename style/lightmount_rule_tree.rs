@@ -17,6 +17,7 @@ use crate::{
     properties::{parse_property_declaration_list, PropertyDeclarationBlock},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
+        font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
         keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
         AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, Namespaces, Origin,
@@ -48,6 +49,24 @@ pub struct CssCounterStyleRuleView {
 pub struct CssKeyframesRuleView {
     pub css_text: String,
     pub name: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssFontFeatureValueEntryView {
+    pub name: String,
+    pub values: Vec<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssFontFeatureValuesRuleView {
+    pub css_text: String,
+    pub font_family: String,
+    pub annotation: Vec<CssFontFeatureValueEntryView>,
+    pub ornaments: Vec<CssFontFeatureValueEntryView>,
+    pub stylistic: Vec<CssFontFeatureValueEntryView>,
+    pub styleset: Vec<CssFontFeatureValueEntryView>,
+    pub character_variant: Vec<CssFontFeatureValueEntryView>,
+    pub swash: Vec<CssFontFeatureValueEntryView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -120,6 +139,68 @@ pub fn parse_keyframes_rule_view(css_text: &str) -> Option<CssKeyframesRuleView>
         css_text: rule.to_css_string(&guard),
         name: rule.name.as_atom().to_string(),
     })
+}
+
+pub fn parse_font_feature_values_rule_view(css_text: &str) -> Option<CssFontFeatureValuesRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::FontFeatureValues(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let rule = rule.as_ref();
+    Some(CssFontFeatureValuesRuleView {
+        css_text: rule.to_css_string(&guard),
+        font_family: rule.family_names.to_css_string(),
+        annotation: single_font_feature_entries(&rule.annotation),
+        ornaments: single_font_feature_entries(&rule.ornaments),
+        stylistic: single_font_feature_entries(&rule.stylistic),
+        styleset: vector_font_feature_entries(&rule.styleset),
+        character_variant: pair_font_feature_entries(&rule.character_variant),
+        swash: single_font_feature_entries(&rule.swash),
+    })
+}
+
+fn single_font_feature_entries(
+    entries: &[FFVDeclaration<SingleValue>],
+) -> Vec<CssFontFeatureValueEntryView> {
+    entries
+        .iter()
+        .map(|entry| CssFontFeatureValueEntryView {
+            name: entry.name.to_string(),
+            values: vec![entry.value.0],
+        })
+        .collect()
+}
+
+fn pair_font_feature_entries(
+    entries: &[FFVDeclaration<PairValues>],
+) -> Vec<CssFontFeatureValueEntryView> {
+    entries
+        .iter()
+        .map(|entry| {
+            let mut values = vec![entry.value.0];
+            if let Some(second) = entry.value.1 {
+                values.push(second);
+            }
+            CssFontFeatureValueEntryView {
+                name: entry.name.to_string(),
+                values,
+            }
+        })
+        .collect()
+}
+
+fn vector_font_feature_entries(
+    entries: &[FFVDeclaration<VectorValues>],
+) -> Vec<CssFontFeatureValueEntryView> {
+    entries
+        .iter()
+        .map(|entry| CssFontFeatureValueEntryView {
+            name: entry.name.to_string(),
+            values: entry.value.0.clone(),
+        })
+        .collect()
 }
 
 pub fn parse_stylesheet_rule_tree(css_text: &str) -> CssStylesheetRuleTree {
@@ -1371,8 +1452,9 @@ mod tests {
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_keyframes_rule_view, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        parse_counter_style_rule_view, parse_font_feature_values_rule_view,
+        parse_keyframes_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
+        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
@@ -1497,6 +1579,34 @@ mod tests {
             "@font-feature-values test_family {\n@annotation {\nthe_first: 6;\n}\n@styleset {\nyo: 7;\ndi: 10 9 4 5;\n}\n}"
         );
         assert!(rules[0].child_rules.is_empty());
+
+        let view = parse_font_feature_values_rule_view(
+            "@font-feature-values test_family { @annotation { the_first: 6; } @character-variant { cv: 2 3; } @styleset { yo: 7; di: 10 9 4 5; } }",
+        )
+        .expect("valid @font-feature-values should produce a CSSOM view");
+        assert_eq!(view.font_family, "test_family");
+        assert_eq!(
+            view.css_text,
+            "@font-feature-values test_family {\n@annotation {\nthe_first: 6;\n}\n@character-variant {\ncv: 2 3;\n}\n@styleset {\nyo: 7;\ndi: 10 9 4 5;\n}\n}"
+        );
+        assert_eq!(view.annotation.len(), 1);
+        assert_eq!(view.annotation[0].name, "the_first");
+        assert_eq!(view.annotation[0].values, vec![6]);
+        assert_eq!(view.character_variant.len(), 1);
+        assert_eq!(view.character_variant[0].name, "cv");
+        assert_eq!(view.character_variant[0].values, vec![2, 3]);
+        assert_eq!(view.styleset.len(), 2);
+        assert_eq!(view.styleset[0].name, "yo");
+        assert_eq!(view.styleset[0].values, vec![7]);
+        assert_eq!(view.styleset[1].name, "di");
+        assert_eq!(view.styleset[1].values, vec![10, 9, 4, 5]);
+        assert!(
+            parse_font_feature_values_rule_view(
+                "@font-feature-values serif { @annotation { the_first: 6; } }"
+            )
+            .is_none(),
+            "Stylo rejects generic family names"
+        );
     }
 
     #[test]
