@@ -81,6 +81,25 @@ pub struct CssNamespaceRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssConditionRuleView {
+    pub rule_type: CssRuleType,
+    pub css_text: String,
+    pub condition_text: String,
+    pub container_name: Option<String>,
+    pub container_query: Option<String>,
+    pub scope_start: Option<String>,
+    pub scope_end: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssLayerRuleView {
+    pub rule_type: CssRuleType,
+    pub css_text: String,
+    pub name: Option<String>,
+    pub names: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssPageRuleView {
     pub css_text: String,
     pub selector_text: String,
@@ -246,6 +265,26 @@ pub fn parse_namespace_rule_view(css_text: &str) -> Option<CssNamespaceRuleView>
         return None;
     };
     Some(namespace_rule_view(rule.as_ref(), &guard))
+}
+
+pub fn parse_condition_rule_view(css_text: &str) -> Option<CssConditionRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [rule] = rules.0.as_slice() else {
+        return None;
+    };
+    condition_rule_view(rule, &guard)
+}
+
+pub fn parse_layer_rule_view(css_text: &str) -> Option<CssLayerRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [rule] = rules.0.as_slice() else {
+        return None;
+    };
+    layer_rule_view(rule, &guard)
 }
 
 pub fn parse_page_rule_view(css_text: &str) -> Option<CssPageRuleView> {
@@ -1594,6 +1633,7 @@ fn ensure_lightmount_rule_tree_prefs() {
     static ENABLE: Once = Once::new();
     ENABLE.call_once(|| {
         static_prefs::set_pref!("layout.css.margin-rules.enabled", true);
+        static_prefs::set_pref!("layout.css.at-scope.enabled", true);
     });
 }
 
@@ -1704,6 +1744,115 @@ fn namespace_rule_view(
             .map(|prefix| prefix.0.to_string())
             .unwrap_or_default(),
         namespace_uri: rule.url.to_string(),
+    }
+}
+
+fn condition_rule_view(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<CssConditionRuleView> {
+    match rule {
+        CssRule::Media(rule) => Some(CssConditionRuleView {
+            rule_type: CssRuleType::Media,
+            css_text: rule.to_css_string(guard),
+            condition_text: rule.media_queries.read_with(guard).to_css_string(),
+            container_name: None,
+            container_query: None,
+            scope_start: None,
+            scope_end: None,
+        }),
+        CssRule::Supports(rule) => Some(CssConditionRuleView {
+            rule_type: CssRuleType::Supports,
+            css_text: rule.to_css_string(guard),
+            condition_text: rule.condition.to_css_string(),
+            container_name: None,
+            container_query: None,
+            scope_start: None,
+            scope_end: None,
+        }),
+        CssRule::Container(rule) => {
+            let (container_name, container_query) =
+                container_rule_cssom_name_and_query(&rule.conditions);
+            Some(CssConditionRuleView {
+                rule_type: CssRuleType::Container,
+                css_text: rule.to_css_string(guard),
+                condition_text: rule.conditions.to_css_string(),
+                container_name,
+                container_query,
+                scope_start: None,
+                scope_end: None,
+            })
+        },
+        CssRule::Scope(rule) => Some(CssConditionRuleView {
+            rule_type: CssRuleType::Scope,
+            css_text: rule.to_css_string(guard),
+            condition_text: scope_rule_condition_text(rule),
+            container_name: None,
+            container_query: None,
+            scope_start: rule
+                .bounds
+                .start
+                .as_ref()
+                .map(cssparser::ToCss::to_css_string),
+            scope_end: rule
+                .bounds
+                .end
+                .as_ref()
+                .map(cssparser::ToCss::to_css_string),
+        }),
+        _ => None,
+    }
+}
+
+fn container_rule_cssom_name_and_query(
+    conditions: &crate::stylesheets::container_rule::ContainerConditions,
+) -> (Option<String>, Option<String>) {
+    let Some(first) = conditions.0.iter().next() else {
+        return (None, None);
+    };
+    let name = (!first.name().is_none()).then(|| first.name().to_css_string());
+    let mut query_parts = Vec::new();
+    if name.is_some() {
+        if let Some(condition) = first.query_condition() {
+            query_parts.push(condition.to_css_string());
+        }
+    } else {
+        query_parts.push(first.to_css_string());
+    }
+    query_parts.extend(conditions.0.iter().skip(1).map(ToCss::to_css_string));
+    let query = (!query_parts.is_empty()).then(|| query_parts.join(", "));
+    (name, query)
+}
+
+fn scope_rule_condition_text(rule: &crate::stylesheets::ScopeRule) -> String {
+    let mut components = Vec::new();
+    if let Some(start) = rule.bounds.start.as_ref() {
+        components.push(format!("({})", cssparser::ToCss::to_css_string(start)));
+    }
+    if let Some(end) = rule.bounds.end.as_ref() {
+        components.push(format!("to ({})", cssparser::ToCss::to_css_string(end)));
+    }
+    components.join(" ")
+}
+
+fn layer_rule_view(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<CssLayerRuleView> {
+    match rule {
+        CssRule::LayerBlock(rule) => Some(CssLayerRuleView {
+            rule_type: CssRuleType::LayerBlock,
+            css_text: rule.to_css_string(guard),
+            name: rule.name.as_ref().map(ToCss::to_css_string),
+            names: Vec::new(),
+        }),
+        CssRule::LayerStatement(rule) => Some(CssLayerRuleView {
+            rule_type: CssRuleType::LayerStatement,
+            css_text: rule.to_css_string(guard),
+            name: None,
+            names: rule.names.iter().map(ToCss::to_css_string).collect(),
+        }),
+        _ => None,
     }
 }
 
@@ -1898,10 +2047,11 @@ mod tests {
         insert_keyframe_rule_into_stylesheet_rule_tree, insert_nested_rule,
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
-        normalize_page_selector_text, parse_constructed_stylesheet_rule_texts,
-        parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
-        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
-        parse_keyframes_rule_view, parse_namespace_rule_view, parse_page_descriptor_entries,
+        normalize_page_selector_text, parse_condition_rule_view,
+        parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
+        parse_counter_style_rule_view, parse_font_face_rule_view,
+        parse_font_feature_values_rule_view, parse_import_rule_view, parse_keyframes_rule_view,
+        parse_layer_rule_view, parse_namespace_rule_view, parse_page_descriptor_entries,
         parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
         parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
@@ -1990,6 +2140,66 @@ mod tests {
         );
         assert!(parse_namespace_rule_view("@namespace svg;").is_none());
         assert!(parse_namespace_rule_view(".not-namespace { color: red; }").is_none());
+    }
+
+    #[test]
+    fn parse_condition_rule_view_exposes_cssom_fields() {
+        let media = parse_condition_rule_view("@media SCREEN and (WiDtH) {}")
+            .expect("media rule should parse");
+        assert_eq!(media.rule_type, CssRuleType::Media);
+        assert_eq!(media.condition_text, "screen and (width)");
+        assert_eq!(media.css_text, "@media screen and (width) {\n}");
+
+        let supports = parse_condition_rule_view("@supports ((display: grid) or (foo: bar)) {}")
+            .expect("supports rule should parse");
+        assert_eq!(supports.rule_type, CssRuleType::Supports);
+        assert_eq!(supports.condition_text, "((display: grid) or (foo: bar))");
+
+        let container = parse_condition_rule_view("@container card (inline-size > 10px) {}")
+            .expect("container rule should parse");
+        assert_eq!(container.rule_type, CssRuleType::Container);
+        assert_eq!(container.condition_text, "card (inline-size > 10px)");
+        assert_eq!(container.container_name.as_deref(), Some("card"));
+        assert_eq!(
+            container.container_query.as_deref(),
+            Some("(inline-size > 10px)")
+        );
+
+        let anonymous_container = parse_condition_rule_view("@container (width > 10px) {}")
+            .expect("anonymous container rule should parse");
+        assert_eq!(anonymous_container.container_name, None);
+        assert_eq!(
+            anonymous_container.container_query.as_deref(),
+            Some("(width > 10px)")
+        );
+
+        let scope =
+            parse_condition_rule_view("@scope (.a) to (> .b) {}").expect("scope rule should parse");
+        assert_eq!(scope.rule_type, CssRuleType::Scope);
+        assert_eq!(scope.condition_text, "(.a) to (> .b)");
+        assert_eq!(scope.scope_start.as_deref(), Some(".a"));
+        assert_eq!(scope.scope_end.as_deref(), Some("> .b"));
+
+        assert!(parse_condition_rule_view("@layer a {}").is_none());
+    }
+
+    #[test]
+    fn parse_layer_rule_view_exposes_cssom_fields() {
+        let block =
+            parse_layer_rule_view(r"@layer abc\;oops\! {}").expect("layer block should parse");
+        assert_eq!(block.rule_type, CssRuleType::LayerBlock);
+        assert_eq!(block.name.as_deref(), Some(r"abc\;oops\!"));
+        assert!(block.names.is_empty());
+        assert_eq!(block.css_text, "@layer abc\\;oops\\! {\n}");
+
+        let statement =
+            parse_layer_rule_view("@layer A, B.C.D;").expect("layer statement should parse");
+        assert_eq!(statement.rule_type, CssRuleType::LayerStatement);
+        assert_eq!(statement.name, None);
+        assert_eq!(statement.names, vec!["A", "B.C.D"]);
+        assert_eq!(statement.css_text, "@layer A, B.C.D;");
+
+        assert!(parse_layer_rule_view("@media screen {}").is_none());
     }
 
     #[test]
