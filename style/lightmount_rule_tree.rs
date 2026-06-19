@@ -25,6 +25,7 @@ use crate::{
         UrlExtraData,
     },
     values::CssUrl,
+    Atom,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +254,86 @@ pub fn parse_font_feature_values_rule_view(css_text: &str) -> Option<CssFontFeat
         character_variant: pair_font_feature_entries(&rule.character_variant),
         swash: single_font_feature_entries(&rule.swash),
     })
+}
+
+pub fn set_font_feature_values_rule_entry(
+    css_text: &str,
+    group: &str,
+    name: &str,
+    values: &[u32],
+) -> Option<String> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::FontFeatureValues(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let mut rule = rule.as_ref().clone();
+    let name = Atom::from(name);
+    match group {
+        "annotation" => update_font_feature_values_entry(
+            &mut rule.annotation,
+            name,
+            single_font_feature_value(values)?,
+        ),
+        "ornaments" => update_font_feature_values_entry(
+            &mut rule.ornaments,
+            name,
+            single_font_feature_value(values)?,
+        ),
+        "stylistic" => update_font_feature_values_entry(
+            &mut rule.stylistic,
+            name,
+            single_font_feature_value(values)?,
+        ),
+        "swash" => update_font_feature_values_entry(
+            &mut rule.swash,
+            name,
+            single_font_feature_value(values)?,
+        ),
+        "character-variant" => update_font_feature_values_entry(
+            &mut rule.character_variant,
+            name,
+            pair_font_feature_value(values)?,
+        ),
+        "styleset" => update_font_feature_values_entry(
+            &mut rule.styleset,
+            name,
+            vector_font_feature_value(values)?,
+        ),
+        _ => return None,
+    }
+    Some(rule.to_css_string(&guard))
+}
+
+fn update_font_feature_values_entry<T>(entries: &mut Vec<FFVDeclaration<T>>, name: Atom, value: T) {
+    if let Some(index) = entries.iter().position(|entry| entry.name == name) {
+        entries[index].value = value;
+    } else {
+        entries.push(FFVDeclaration { name, value });
+    }
+}
+
+fn single_font_feature_value(values: &[u32]) -> Option<SingleValue> {
+    let [value] = values else {
+        return None;
+    };
+    Some(SingleValue(*value))
+}
+
+fn pair_font_feature_value(values: &[u32]) -> Option<PairValues> {
+    match values {
+        [first] => Some(PairValues(*first, None)),
+        [first, second] => Some(PairValues(*first, Some(*second))),
+        _ => None,
+    }
+}
+
+fn vector_font_feature_value(values: &[u32]) -> Option<VectorValues> {
+    if values.is_empty() {
+        return None;
+    }
+    Some(VectorValues(values.to_vec()))
 }
 
 fn single_font_feature_entries(
@@ -1595,7 +1676,8 @@ mod tests {
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
         parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
         replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_font_feature_values_rule_entry,
+        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1794,6 +1876,44 @@ mod tests {
             )
             .is_none(),
             "Stylo rejects generic family names"
+        );
+    }
+
+    #[test]
+    fn font_feature_values_rule_entry_mutation_uses_stylo_rule_storage() {
+        let css_text =
+            "@font-feature-values test_family { @annotation { the_first: 6; } @styleset { yo: 7; } }";
+
+        let css_text =
+            set_font_feature_values_rule_entry(css_text, "annotation", "the_first", &[9])
+                .expect("annotation entry update should serialize");
+        let view = parse_font_feature_values_rule_view(&css_text)
+            .expect("updated font-feature-values rule should parse");
+        assert_eq!(css_text, view.css_text);
+        assert_eq!(view.annotation[0].name, "the_first");
+        assert_eq!(view.annotation[0].values, vec![9]);
+        assert_eq!(view.styleset[0].name, "yo");
+        assert_eq!(view.styleset[0].values, vec![7]);
+
+        let css_text = set_font_feature_values_rule_entry(&css_text, "styleset", "wide", &[1, 2])
+            .expect("styleset entry append should serialize");
+        let view = parse_font_feature_values_rule_view(&css_text)
+            .expect("appended font-feature-values rule should parse");
+        assert_eq!(
+            view.styleset
+                .iter()
+                .find(|entry| entry.name == "wide")
+                .map(|entry| entry.values.as_slice()),
+            Some(&[1, 2][..])
+        );
+
+        assert!(
+            set_font_feature_values_rule_entry(&css_text, "annotation", "bad", &[1, 2]).is_none(),
+            "single-value groups reject multiple values"
+        );
+        assert!(
+            set_font_feature_values_rule_entry(&css_text, "styleset", "empty", &[]).is_none(),
+            "vector groups reject empty values"
         );
     }
 
