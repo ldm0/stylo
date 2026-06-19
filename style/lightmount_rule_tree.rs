@@ -7,7 +7,7 @@ use std::{
 
 use cssparser::{Parser, ParserInput, SourceLocation};
 use servo_arc::Arc;
-use style_traits::{ParsingMode, ToCss};
+use style_traits::{CssStringWriter, ParsingMode, ToCss};
 
 use crate::{
     context::QuirksMode,
@@ -20,8 +20,9 @@ use crate::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
         keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
-        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, Namespaces, Origin,
-        RulesMutateError, Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
+        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, MarginRule, Namespaces,
+        Origin, PageRule, RulesMutateError, Stylesheet, StylesheetContents, StylesheetLoader,
+        UrlExtraData,
     },
     values::CssUrl,
 };
@@ -48,6 +49,21 @@ pub struct CssCounterStyleRuleView {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssFontFaceRuleView {
     pub css_text: String,
+    pub style_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssPageRuleView {
+    pub css_text: String,
+    pub selector_text: String,
+    pub style_text: String,
+    pub child_rules: Vec<CssMarginRuleView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssMarginRuleView {
+    pub css_text: String,
+    pub name: String,
     pub style_text: String,
 }
 
@@ -145,6 +161,24 @@ pub fn parse_font_face_rule_view(css_text: &str) -> Option<CssFontFaceRuleView> 
         css_text: rule.to_css_string(&guard),
         style_text: rule.descriptors.to_css_string().trim_end().to_owned(),
     })
+}
+
+pub fn parse_page_rule_view(css_text: &str) -> Option<CssPageRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Page(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    Some(page_rule_view(&rule.read_with(&guard), &guard))
+}
+
+pub fn parse_page_margin_rule_view(css_text: &str) -> Option<CssMarginRuleView> {
+    let page_view = parse_page_rule_view(&format!("@page {{ {css_text} }}"))?;
+    let [view] = page_view.child_rules.as_slice() else {
+        return None;
+    };
+    Some(view.clone())
 }
 
 pub fn parse_keyframes_rule_view(css_text: &str) -> Option<CssKeyframesRuleView> {
@@ -1380,6 +1414,49 @@ fn stylesheet_rule_child_views(
     }
 }
 
+fn page_rule_view(
+    rule: &PageRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssPageRuleView {
+    let child_rules = rule
+        .rules
+        .read_with(guard)
+        .0
+        .iter()
+        .filter_map(|rule| {
+            let CssRule::Margin(rule) = rule else {
+                return None;
+            };
+            Some(margin_rule_view(rule, guard))
+        })
+        .collect();
+    CssPageRuleView {
+        css_text: rule.to_css_string(guard),
+        selector_text: rule.selectors.to_css_string(),
+        style_text: declaration_block_css_text(rule.block.read_with(guard)),
+        child_rules,
+    }
+}
+
+fn margin_rule_view(
+    rule: &MarginRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssMarginRuleView {
+    CssMarginRuleView {
+        css_text: rule.to_css_string(guard),
+        name: rule.name().to_owned(),
+        style_text: declaration_block_css_text(rule.block.read_with(guard)),
+    }
+}
+
+fn declaration_block_css_text(block: &PropertyDeclarationBlock) -> String {
+    let mut css_text = CssStringWriter::new();
+    block
+        .to_css(&mut css_text)
+        .expect("serializing a declaration block to string should not fail");
+    css_text.trim_end().to_owned()
+}
+
 fn keyframe_rule_view(
     rule: &Arc<crate::shared_lock::Locked<Keyframe>>,
     guard: &crate::shared_lock::SharedRwLockReadGuard,
@@ -1474,10 +1551,11 @@ mod tests {
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_counter_style_rule_view, parse_font_face_rule_view,
         parse_font_feature_values_rule_view, parse_keyframes_rule_view,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
-        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_page_margin_rule_view, parse_page_rule_view, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
+        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1673,6 +1751,42 @@ mod tests {
             rules[0].child_rules[0].css_text,
             "@top-left { content: \"x\"; color: red; }"
         );
+    }
+
+    #[test]
+    fn parse_page_rule_view_exposes_descriptors_and_margin_children() {
+        let view = parse_page_rule_view(
+            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
+        )
+        .expect("page rule should parse");
+
+        assert_eq!(
+            view.css_text,
+            "@page :first {\n  margin-top: 1px;\n  @top-left { content: \"x\"; color: red; }\n}"
+        );
+        assert_eq!(view.selector_text, ":first");
+        assert_eq!(view.style_text, "margin-top: 1px;");
+        assert_eq!(view.child_rules.len(), 1);
+        assert_eq!(view.child_rules[0].name, "top-left");
+        assert_eq!(
+            view.child_rules[0].style_text,
+            "content: \"x\"; color: red;"
+        );
+        assert_eq!(
+            view.child_rules[0].css_text,
+            "@top-left { content: \"x\"; color: red; }"
+        );
+    }
+
+    #[test]
+    fn parse_page_margin_rule_view_uses_page_context() {
+        let view = parse_page_margin_rule_view(r#"@top-left { content: "x"; color: red; }"#)
+            .expect("margin rule should parse in page context");
+
+        assert_eq!(view.name, "top-left");
+        assert_eq!(view.style_text, "content: \"x\"; color: red;");
+        assert_eq!(view.css_text, "@top-left { content: \"x\"; color: red; }");
+        assert!(parse_page_margin_rule_view("@media screen { }").is_none());
     }
 
     #[test]
