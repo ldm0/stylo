@@ -712,6 +712,21 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_rule_views_include_counter_style_rules() {
+        let rules = parse_stylesheet_rule_views(
+            r#"@counter-style thumbs { system: cyclic; symbols: "*"; suffix: " "; }"#,
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_type, CssRuleType::CounterStyle);
+        assert_eq!(
+            rules[0].css_text,
+            r#"@counter-style thumbs { system: cyclic; suffix: " "; symbols: "*"; }"#
+        );
+        assert!(rules[0].child_rules.is_empty());
+    }
+
+    #[test]
     fn constructed_stylesheet_rule_texts_drop_import_rules() {
         let rules = parse_constructed_stylesheet_rule_texts(
             "@import url(\"ignored.css\"); .target { color: blue; }",
