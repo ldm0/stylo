@@ -13,7 +13,7 @@ use crate::{
     context::QuirksMode,
     custom_properties::AttrTaint,
     media_queries::MediaList,
-    parser::ParserContext,
+    parser::{Parse, ParserContext},
     properties::{parse_property_declaration_list, PropertyDeclarationBlock},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
@@ -21,8 +21,8 @@ use crate::{
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
         keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
         AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, MarginRule, Namespaces,
-        Origin, PageRule, RulesMutateError, Stylesheet, StylesheetContents, StylesheetLoader,
-        UrlExtraData,
+        Origin, PageRule, PageSelectors, RulesMutateError, Stylesheet, StylesheetContents,
+        StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
     Atom,
@@ -955,6 +955,33 @@ pub fn normalize_keyframe_selector_text(selector_text: &str) -> Option<String> {
     parse_keyframe_selectors(selector_text).map(|selectors| selectors.to_css_string())
 }
 
+pub fn normalize_page_selector_text(selector_text: &str) -> Option<String> {
+    let selector_text = selector_text.trim();
+    if selector_text.is_empty() {
+        return Some(String::new());
+    }
+    let Some(url_data) = about_blank_url_data() else {
+        return None;
+    };
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(CssRuleType::Page),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
+    let mut input = ParserInput::new(selector_text);
+    let mut input = Parser::new(&mut input);
+    let selectors = input
+        .parse_entirely(|input| PageSelectors::parse(&context, input))
+        .ok()?;
+    (!selectors.is_empty()).then(|| selectors.to_css_string())
+}
+
 pub fn keyframe_selector_texts_match(existing_selector_text: &str, selector_text: &str) -> bool {
     let Some(existing) = parse_keyframe_selectors(existing_selector_text) else {
         return false;
@@ -1753,9 +1780,9 @@ mod tests {
         insert_keyframe_rule_into_stylesheet_rule_tree, insert_nested_rule,
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
-        parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_font_face_rule_view,
-        parse_font_feature_values_rule_view, parse_keyframes_rule_view,
+        normalize_page_selector_text, parse_constructed_stylesheet_rule_texts,
+        parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
+        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_keyframes_rule_view,
         parse_page_descriptor_entries, parse_page_margin_rule_view, parse_page_rule_view,
         parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
         parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
@@ -2825,5 +2852,24 @@ mod tests {
         assert!(keyframe_selector_texts_match("50%, to", "50%, 100%"));
         assert!(!keyframe_selector_texts_match("50%, to", "50%"));
         assert!(!keyframe_selector_texts_match("body", "body"));
+    }
+
+    #[test]
+    fn page_selector_helper_uses_stylo_page_selectors() {
+        assert_eq!(normalize_page_selector_text(""), Some(String::new()));
+        assert_eq!(
+            normalize_page_selector_text("named:First:left"),
+            Some("named:first:left".to_owned())
+        );
+        assert_eq!(
+            normalize_page_selector_text(":RIGHT"),
+            Some(":right".to_owned())
+        );
+        assert_eq!(
+            normalize_page_selector_text(":first, named:left"),
+            Some(":first, named:left".to_owned())
+        );
+        assert_eq!(normalize_page_selector_text(":notapagepseudo"), None);
+        assert_eq!(normalize_page_selector_text("named @bad"), None);
     }
 }
