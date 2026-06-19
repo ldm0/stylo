@@ -2064,8 +2064,22 @@ mod tests {
         );
 
         assert!(parse_page_descriptor_entries("margin-top", "5px").is_some());
-        assert!(parse_page_descriptor_entries("size", "portrait").is_none());
-        assert!(parse_page_descriptor_entries("page-orientation", "rotate-left").is_none());
+        assert_eq!(
+            parse_page_descriptor_entries("size", "portrait")
+                .expect("size descriptor should parse in page context")
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("size", "portrait")]
+        );
+        assert_eq!(
+            parse_page_descriptor_entries("page-orientation", "rotate-left")
+                .expect("page-orientation descriptor should parse in page context")
+                .iter()
+                .map(|entry| (entry.name.as_str(), entry.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("page-orientation", "rotate-left")]
+        );
         assert!(parse_page_descriptor_entries("marks", "crop").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px; margin-bottom: 2px").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px !important").is_none());
