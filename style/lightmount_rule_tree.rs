@@ -47,6 +47,15 @@ pub struct CssCounterStyleRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssPropertyRuleView {
+    pub css_text: String,
+    pub name: String,
+    pub syntax: String,
+    pub inherits: bool,
+    pub initial_value: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssFontFaceRuleView {
     pub css_text: String,
     pub style_text: String,
@@ -146,6 +155,37 @@ pub fn parse_counter_style_rule_view(css_text: &str) -> Option<CssCounterStyleRu
     Some(CssCounterStyleRuleView {
         css_text: rule.to_css_string(&guard),
         name: rule.name().to_css_string(),
+    })
+}
+
+pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Property(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let syntax = rule
+        .descriptors
+        .syntax
+        .as_ref()
+        .map(|syntax| {
+            syntax
+                .specified_string()
+                .map(ToOwned::to_owned)
+                .unwrap_or_else(|| syntax.to_css_string())
+        })
+        .filter(|syntax| !syntax.is_empty())?;
+    Some(CssPropertyRuleView {
+        css_text: rule.to_css_string(&guard),
+        name: rule.name.to_css_string(),
+        syntax,
+        inherits: rule.descriptors.inherits(),
+        initial_value: rule
+            .descriptors
+            .initial_value
+            .as_ref()
+            .map(|value| value.css_text().trim().to_owned()),
     })
 }
 
@@ -1551,11 +1591,11 @@ mod tests {
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_counter_style_rule_view, parse_font_face_rule_view,
         parse_font_feature_values_rule_view, parse_keyframes_rule_view,
-        parse_page_margin_rule_view, parse_page_rule_view, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
-        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
-        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
+        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1661,6 +1701,30 @@ mod tests {
             )
             .is_none(),
             "Stylo rejects counter styles whose system requires symbols"
+        );
+    }
+
+    #[test]
+    fn parse_property_rule_view_exposes_property_registration() {
+        let view = parse_property_rule_view(
+            r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: red; }"#,
+        )
+        .expect("property rule should parse");
+
+        assert_eq!(
+            view.css_text,
+            r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: red; }"#
+        );
+        assert_eq!(view.name, "--accent");
+        assert_eq!(view.syntax, "<color>");
+        assert!(!view.inherits);
+        assert_eq!(view.initial_value.as_deref(), Some("red"));
+        assert!(
+            parse_property_rule_view(
+                r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: 10px; }"#
+            )
+            .is_none(),
+            "Stylo rejects initial values that do not match the syntax descriptor"
         );
     }
 
