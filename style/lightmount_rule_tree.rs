@@ -46,6 +46,12 @@ pub struct CssCounterStyleRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssFontFaceRuleView {
+    pub css_text: String,
+    pub style_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssKeyframesRuleView {
     pub css_text: String,
     pub name: String,
@@ -124,6 +130,20 @@ pub fn parse_counter_style_rule_view(css_text: &str) -> Option<CssCounterStyleRu
     Some(CssCounterStyleRuleView {
         css_text: rule.to_css_string(&guard),
         name: rule.name().to_css_string(),
+    })
+}
+
+pub fn parse_font_face_rule_view(css_text: &str) -> Option<CssFontFaceRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::FontFace(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    let rule = rule.read_with(&guard);
+    Some(CssFontFaceRuleView {
+        css_text: rule.to_css_string(&guard),
+        style_text: rule.descriptors.to_css_string().trim_end().to_owned(),
     })
 }
 
@@ -1452,12 +1472,12 @@ mod tests {
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_font_feature_values_rule_view,
-        parse_keyframes_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
-        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
-        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
-        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_counter_style_rule_view, parse_font_face_rule_view,
+        parse_font_feature_values_rule_view, parse_keyframes_rule_view,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
+        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1564,6 +1584,32 @@ mod tests {
             .is_none(),
             "Stylo rejects counter styles whose system requires symbols"
         );
+    }
+
+    #[test]
+    fn stylesheet_rule_views_include_font_face_rules() {
+        let rules = parse_stylesheet_rule_views(
+            r#"@font-face { src: url(http://foo/bar/font.ttf); font-family: Foo; font-weight: bold; }"#,
+        );
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].rule_type, CssRuleType::FontFace);
+        assert_eq!(
+            rules[0].css_text,
+            r#"@font-face { font-family: Foo; src: url("http://foo/bar/font.ttf"); font-weight: bold; }"#
+        );
+        assert!(rules[0].child_rules.is_empty());
+
+        let view = parse_font_face_rule_view(
+            r#"@font-face { src: url(http://foo/bar/font.ttf); font-family: Foo; font-weight: bold; }"#,
+        )
+        .expect("valid @font-face should produce a CSSOM view");
+        assert_eq!(view.css_text, rules[0].css_text);
+        assert_eq!(
+            view.style_text,
+            r#"font-family: Foo; src: url("http://foo/bar/font.ttf"); font-weight: bold;"#
+        );
+        assert!(parse_font_face_rule_view(".not-a-font-face { font-family: Foo; }").is_none());
     }
 
     #[test]
