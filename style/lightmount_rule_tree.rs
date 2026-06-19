@@ -74,6 +74,13 @@ pub struct CssImportRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssNamespaceRuleView {
+    pub css_text: String,
+    pub prefix: String,
+    pub namespace_uri: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssPageRuleView {
     pub css_text: String,
     pub selector_text: String,
@@ -229,6 +236,16 @@ pub fn parse_import_rule_view(css_text: &str) -> Option<CssImportRuleView> {
         return None;
     };
     Some(import_rule_view(&rule.read_with(&guard), &guard)?)
+}
+
+pub fn parse_namespace_rule_view(css_text: &str) -> Option<CssNamespaceRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Namespace(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    Some(namespace_rule_view(rule.as_ref(), &guard))
 }
 
 pub fn parse_page_rule_view(css_text: &str) -> Option<CssPageRuleView> {
@@ -1675,6 +1692,21 @@ fn import_rule_media_text(
         .unwrap_or_default()
 }
 
+fn namespace_rule_view(
+    rule: &crate::stylesheets::NamespaceRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssNamespaceRuleView {
+    CssNamespaceRuleView {
+        css_text: rule.to_css_string(guard),
+        prefix: rule
+            .prefix
+            .as_ref()
+            .map(|prefix| prefix.0.to_string())
+            .unwrap_or_default(),
+        namespace_uri: rule.url.to_string(),
+    }
+}
+
 fn page_rule_view(
     rule: &PageRule,
     guard: &crate::shared_lock::SharedRwLockReadGuard,
@@ -1869,12 +1901,13 @@ mod tests {
         normalize_page_selector_text, parse_constructed_stylesheet_rule_texts,
         parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
         parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
-        parse_keyframes_rule_view, parse_page_descriptor_entries, parse_page_margin_rule_view,
-        parse_page_rule_view, parse_property_rule_view, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
-        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
-        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_font_feature_values_rule_entry, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
+        parse_keyframes_rule_view, parse_namespace_rule_view, parse_page_descriptor_entries,
+        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
+        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_font_feature_values_rule_entry,
+        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
@@ -1936,6 +1969,27 @@ mod tests {
         assert_eq!(anonymous.media_text, "");
         assert!(parse_import_rule_view(r#"@import url("theme.css") supports();"#).is_none());
         assert!(parse_import_rule_view(".not-import { color: red; }").is_none());
+    }
+
+    #[test]
+    fn parse_namespace_rule_view_exposes_cssom_fields() {
+        let view = parse_namespace_rule_view(r#"@namespace svg url(http://servo);"#)
+            .expect("valid @namespace should produce a CSSOM view");
+
+        assert_eq!(view.prefix, "svg");
+        assert_eq!(view.namespace_uri, "http://servo");
+        assert_eq!(view.css_text, r#"@namespace svg url("http://servo");"#);
+
+        let default = parse_namespace_rule_view(r#"@namespace "http://www.w3.org/1999/xhtml";"#)
+            .expect("default namespace should produce a CSSOM view");
+        assert_eq!(default.prefix, "");
+        assert_eq!(default.namespace_uri, "http://www.w3.org/1999/xhtml");
+        assert_eq!(
+            default.css_text,
+            r#"@namespace url("http://www.w3.org/1999/xhtml");"#
+        );
+        assert!(parse_namespace_rule_view("@namespace svg;").is_none());
+        assert!(parse_namespace_rule_view(".not-namespace { color: red; }").is_none());
     }
 
     #[test]
