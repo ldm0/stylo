@@ -63,6 +63,17 @@ pub struct CssFontFaceRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssImportRuleView {
+    pub css_text: String,
+    pub href: String,
+    pub condition_text: String,
+    pub condition_prefix: String,
+    pub media_text: String,
+    pub layer_name: Option<String>,
+    pub supports_text: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssPageRuleView {
     pub css_text: String,
     pub selector_text: String,
@@ -208,6 +219,16 @@ pub fn parse_font_face_rule_view(css_text: &str) -> Option<CssFontFaceRuleView> 
         css_text: rule.to_css_string(&guard),
         style_text: rule.descriptors.to_css_string().trim_end().to_owned(),
     })
+}
+
+pub fn parse_import_rule_view(css_text: &str) -> Option<CssImportRuleView> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::Yes);
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let [CssRule::Import(rule)] = rules.0.as_slice() else {
+        return None;
+    };
+    Some(import_rule_view(&rule.read_with(&guard), &guard)?)
 }
 
 pub fn parse_page_rule_view(css_text: &str) -> Option<CssPageRuleView> {
@@ -1589,6 +1610,71 @@ fn stylesheet_rule_child_views(
     }
 }
 
+fn import_rule_view(
+    rule: &ImportRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<CssImportRuleView> {
+    let condition_prefix = import_rule_condition_prefix(rule);
+    let media_text = import_rule_media_text(rule, guard);
+    let condition_text = if condition_prefix.is_empty() {
+        media_text.clone()
+    } else if media_text.is_empty() {
+        condition_prefix.clone()
+    } else {
+        format!("{condition_prefix} {media_text}")
+    };
+    Some(CssImportRuleView {
+        css_text: rule.to_css_string(guard),
+        href: css_url_href(&rule.url)?,
+        condition_text,
+        condition_prefix,
+        media_text,
+        layer_name: import_rule_layer_name(rule),
+        supports_text: rule
+            .supports
+            .as_ref()
+            .map(|supports| supports.condition.to_css_string()),
+    })
+}
+
+fn css_url_href(url: &CssUrl) -> Option<String> {
+    let css_text = url.to_css_string();
+    let mut input = ParserInput::new(&css_text);
+    let mut input = Parser::new(&mut input);
+    let href = input.expect_url_or_string().ok()?.as_ref().to_owned();
+    input.is_exhausted().then_some(href)
+}
+
+fn import_rule_layer_name(rule: &ImportRule) -> Option<String> {
+    match &rule.layer {
+        ImportLayer::None => None,
+        ImportLayer::Anonymous => Some(String::new()),
+        ImportLayer::Named(name) => Some(name.to_css_string()),
+    }
+}
+
+fn import_rule_condition_prefix(rule: &ImportRule) -> String {
+    let mut components = Vec::new();
+    if !matches!(rule.layer, ImportLayer::None) {
+        components.push(rule.layer.to_css_string());
+    }
+    if let Some(supports) = &rule.supports {
+        components.push(format!("supports({})", supports.condition.to_css_string()));
+    }
+    components.join(" ")
+}
+
+fn import_rule_media_text(
+    rule: &ImportRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> String {
+    rule.stylesheet
+        .media(guard)
+        .filter(|media| !media.is_empty())
+        .map(ToCss::to_css_string)
+        .unwrap_or_default()
+}
+
 fn page_rule_view(
     rule: &PageRule,
     guard: &crate::shared_lock::SharedRwLockReadGuard,
@@ -1782,10 +1868,10 @@ mod tests {
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         normalize_page_selector_text, parse_constructed_stylesheet_rule_texts,
         parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
-        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_keyframes_rule_view,
-        parse_page_descriptor_entries, parse_page_margin_rule_view, parse_page_rule_view,
-        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
-        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
+        parse_keyframes_rule_view, parse_page_descriptor_entries, parse_page_margin_rule_view,
+        parse_page_rule_view, parse_property_rule_view, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
         set_font_feature_values_rule_entry, set_keyframe_rule_declarations_in_stylesheet_rule_tree,
@@ -1813,6 +1899,42 @@ mod tests {
             rules[2].css_text,
             "@media screen {\n  .two { margin: 0px; }\n}"
         );
+    }
+
+    #[test]
+    fn parse_import_rule_view_exposes_import_conditions() {
+        let view = parse_import_rule_view(
+            r#"@import url("support/c.css") layer(A.B) supports((display: flex) or (foo: bar)) print and (WiDtH);"#,
+        )
+        .expect("valid @import should produce a CSSOM view");
+
+        assert_eq!(view.href, "support/c.css");
+        assert_eq!(view.layer_name.as_deref(), Some("A.B"));
+        assert_eq!(
+            view.supports_text.as_deref(),
+            Some("(display: flex) or (foo: bar)")
+        );
+        assert_eq!(view.media_text, "print and (width)");
+        assert_eq!(
+            view.condition_prefix,
+            "layer(A.B) supports((display: flex) or (foo: bar))"
+        );
+        assert_eq!(
+            view.condition_text,
+            "layer(A.B) supports((display: flex) or (foo: bar)) print and (width)"
+        );
+        assert_eq!(
+            view.css_text,
+            r#"@import url("support/c.css") layer(A.B) supports((display: flex) or (foo: bar)) print and (width);"#
+        );
+
+        let anonymous =
+            parse_import_rule_view(r#"@import "theme.css" layer;"#).expect("anonymous layer");
+        assert_eq!(anonymous.href, "theme.css");
+        assert_eq!(anonymous.layer_name.as_deref(), Some(""));
+        assert_eq!(anonymous.condition_prefix, "layer");
+        assert_eq!(anonymous.media_text, "");
+        assert!(parse_import_rule_view(".not-import { color: red; }").is_none());
     }
 
     #[test]
