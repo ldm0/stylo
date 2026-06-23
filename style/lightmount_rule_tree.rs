@@ -44,6 +44,7 @@ pub struct CssStylesheetRuleText {
 pub struct CssStylesheetRuleView {
     pub rule_type: CssRuleType,
     pub css_text: String,
+    pub declaration_text: Option<String>,
     pub child_rules: Vec<CssStylesheetRuleView>,
 }
 
@@ -1805,7 +1806,29 @@ fn stylesheet_rule_view(
     CssStylesheetRuleView {
         rule_type: rule.rule_type(),
         css_text: rule.to_css_string(guard),
+        declaration_text: stylesheet_rule_declaration_text(rule, guard),
         child_rules: stylesheet_rule_child_views(rule, guard),
+    }
+}
+
+fn stylesheet_rule_declaration_text(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<String> {
+    match rule {
+        CssRule::Style(rule) => {
+            let rule = rule.read_with(guard);
+            Some(declaration_block_css_text(&rule.block.read_with(guard)))
+        },
+        CssRule::NestedDeclarations(rule) => {
+            let rule = rule.read_with(guard);
+            Some(declaration_block_css_text(&rule.block.read_with(guard)))
+        },
+        CssRule::FontFace(rule) => {
+            let rule = rule.read_with(guard);
+            Some(rule.style_css_text())
+        },
+        _ => None,
     }
 }
 
@@ -2125,6 +2148,7 @@ fn keyframe_rule_view(
     CssStylesheetRuleView {
         rule_type: CssRuleType::Keyframe,
         css_text: rule.to_css_string(guard),
+        declaration_text: Some(declaration_block_css_text(&rule.block.read_with(guard))),
         child_rules: Vec::new(),
     }
 }
@@ -2483,6 +2507,10 @@ mod tests {
             rules[0].css_text,
             r#"@font-face { font-family: Foo; src: url("http://foo/bar/font.ttf"); font-weight: bold; }"#
         );
+        assert_eq!(
+            rules[0].declaration_text.as_deref(),
+            Some(r#"font-family: Foo; src: url("http://foo/bar/font.ttf"); font-weight: bold;"#)
+        );
         assert!(rules[0].child_rules.is_empty());
 
         let view = parse_font_face_rule_view(
@@ -2542,6 +2570,10 @@ mod tests {
             "@font-face { font-family: Bar !important; src: local(Foo); }"
         );
         assert_eq!(
+            mutation.parent_rule.declaration_text.as_deref(),
+            Some("font-family: Bar !important; src: local(Foo);")
+        );
+        assert_eq!(
             stylesheet_rule_tree_css_text(&rule_tree),
             "@media screen {\n  @font-face { font-family: Bar !important; src: local(Foo); }\n}"
         );
@@ -2555,6 +2587,10 @@ mod tests {
         assert_eq!(
             mutation.parent_rule.css_text,
             "@font-face { font-family: Baz; src: local(Baz) !important; }"
+        );
+        assert_eq!(
+            mutation.parent_rule.declaration_text.as_deref(),
+            Some("font-family: Baz; src: local(Baz) !important;")
         );
 
         let mutation = set_font_face_rule_descriptor_in_stylesheet_rule_tree(
