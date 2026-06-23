@@ -1042,6 +1042,36 @@ pub fn set_font_face_rule_descriptors_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, rule_path)
 }
 
+pub fn set_page_rule_descriptors_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    descriptor_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let block = mutable_page_rule_declaration_block_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let parsed = parse_declaration_block_for_rule(descriptor_text, CssRuleType::Page)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *block.write_with(&mut guard) = parsed;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+pub fn set_page_margin_rule_descriptors_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    descriptor_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let block = mutable_page_margin_rule_declaration_block_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let parsed = parse_page_margin_declaration_block_for_rule(descriptor_text)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *block.write_with(&mut guard) = parsed;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
 pub fn set_font_face_rule_descriptor_in_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1359,6 +1389,29 @@ fn mutable_font_face_rule_for_rule_path(
     }
 }
 
+fn mutable_page_rule_declaration_block_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Page(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(rule.read_with(&guard).block.clone())
+        },
+        _ => None,
+    }
+}
+
+fn mutable_page_margin_rule_declaration_block_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Margin(rule) => Some(rule.block.clone()),
+        _ => None,
+    }
+}
+
 fn mutable_style_rule_declaration_block_for_rule_path(
     rule_tree: &CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1447,6 +1500,26 @@ fn parse_declaration_block_for_rule(
     let mut input = ParserInput::new(declaration_text);
     let mut input = Parser::new(&mut input);
     Ok(parse_property_declaration_list(&context, &mut input, &[]))
+}
+
+fn parse_page_margin_declaration_block_for_rule(
+    declaration_text: &str,
+) -> Result<PropertyDeclarationBlock, CssRuleInsertError> {
+    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(
+        &format!("@page {{ @top-left {{ {declaration_text} }} }}"),
+        AllowImportRules::No,
+    );
+    let guard = rule_tree.shared_lock.read();
+    let rules = rule_tree.contents.rules.read_with(&guard);
+    let Some(CssRule::Page(page_rule)) = rules.0.first() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let page_rule = page_rule.read_with(&guard);
+    let margin_rules = page_rule.rules.read_with(&guard);
+    let Some(CssRule::Margin(margin_rule)) = margin_rules.0.first() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    Ok(margin_rule.block.read_with(&guard).clone())
 }
 
 fn parse_font_face_cssom_descriptor_rule(
@@ -2248,6 +2321,8 @@ mod tests {
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
+        set_page_margin_rule_descriptors_in_stylesheet_rule_tree,
+        set_page_rule_descriptors_in_stylesheet_rule_tree,
         set_style_rule_declarations_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
         stylesheet_rule_tree_rule_views, CssRuleInsertError,
     };
@@ -2781,6 +2856,65 @@ mod tests {
         assert!(parse_page_descriptor_entries("marks", "crop").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px; margin-bottom: 2px").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px !important").is_none());
+    }
+
+    #[test]
+    fn page_rule_tree_descriptor_mutation_preserves_margin_children() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
+        );
+        let mutation = set_page_rule_descriptors_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0],
+            "size: A4; margin: 2px 3px; bad-descriptor: 1;",
+        )
+        .expect("page descriptor block mutation should succeed");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Page);
+        let view = parse_page_rule_view(&mutation.parent_rule.css_text)
+            .expect("mutated page rule should stay parseable");
+        assert_eq!(view.selector_text, ":first");
+        assert_eq!(view.child_rules.len(), 1);
+        assert_eq!(
+            view.child_rules[0].css_text,
+            r#"@top-left { content: "x"; color: red; }"#
+        );
+        assert!(view.style_text.contains("size:"));
+        assert!(view.style_text.contains("margin"));
+        assert!(view.style_text.contains("2px"));
+        assert!(!view.style_text.contains("bad-descriptor"));
+        assert!(mutation.stylesheet_css_text.contains("@top-left"));
+    }
+
+    #[test]
+    fn page_margin_rule_tree_descriptor_mutation_preserves_parent_page() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
+        );
+        let mutation = set_page_margin_rule_descriptors_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0, 0],
+            r#"content: "y"; color: blue; margin-top: 4px; bad-descriptor: 1;"#,
+        )
+        .expect("page margin descriptor block mutation should succeed");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Margin);
+        let margin_view = parse_page_margin_rule_view(&mutation.parent_rule.css_text)
+            .expect("mutated margin rule should stay parseable");
+        assert_eq!(margin_view.name, "top-left");
+        assert_eq!(
+            margin_view.style_text,
+            r#"content: "y"; color: blue; margin-top: 4px;"#
+        );
+        assert!(!margin_view.style_text.contains("bad-descriptor"));
+
+        let rules = stylesheet_rule_tree_rule_views(&rule_tree);
+        let page_view = parse_page_rule_view(&rules[0].css_text)
+            .expect("parent page rule should stay parseable");
+        assert_eq!(page_view.selector_text, ":first");
+        assert_eq!(page_view.child_rules.len(), 1);
+        assert_eq!(page_view.child_rules[0], margin_view);
+        assert!(page_view.css_text.contains("margin-top: 1px"));
     }
 
     #[test]
