@@ -3168,6 +3168,24 @@ impl Descriptors {
         }
     }
 
+    /// Parses a given descriptor value for CSSOM. Returns whether the value
+    /// changed and whether the declaration had a CSSOM important priority.
+    pub fn set_cssom<'i, 't>(&mut self, id: DescriptorId, context: &ParserContext, input: &mut Parser<'i, 't>) -> Result<(bool, bool), ParseError<'i>> {
+        use crate::parser::Parse;
+        match id {
+        % for descriptor in descriptors:
+            DescriptorId::${descriptor.camel_case} => {
+                let value = Some(input.parse_until_before(cssparser::Delimiter::Bang, |i| Parse::parse(context, i))?);
+                let important = input.try_parse(cssparser::parse_important).is_ok();
+                input.expect_exhausted()?;
+                let change = self.${descriptor.ident} != value;
+                self.${descriptor.ident} = value;
+                Ok((change, important))
+            },
+        % endfor
+        }
+    }
+
     /// Removes a descriptor. Returns true if it used to be set.
     pub fn remove(&mut self, id: DescriptorId) -> bool {
         match id {

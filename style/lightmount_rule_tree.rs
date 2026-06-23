@@ -5,13 +5,19 @@ use std::{
     sync::{atomic::AtomicBool, Once},
 };
 
-use cssparser::{Parser, ParserInput, SourceLocation};
+use cssparser::{
+    CowRcStr, DeclarationParser, Parser, ParserInput, ParserState, RuleBodyItemParser,
+    RuleBodyParser, SourceLocation,
+};
 use servo_arc::Arc;
-use style_traits::{CssStringWriter, CssWriter, ParsingMode, ToCss};
+use style_traits::{
+    CssStringWriter, CssWriter, ParseError, ParsingMode, StyleParseErrorKind, ToCss,
+};
 
 use crate::{
     context::QuirksMode,
     custom_properties::AttrTaint,
+    font_face::{DescriptorId, FontFaceRule},
     media_queries::MediaList,
     parser::{Parse, ParserContext},
     properties::{parse_property_declaration_list, PropertyDeclarationBlock},
@@ -243,8 +249,14 @@ pub fn parse_font_face_rule_view(css_text: &str) -> Option<CssFontFaceRuleView> 
     let rule = rule.read_with(&guard);
     Some(CssFontFaceRuleView {
         css_text: rule.to_css_string(&guard),
-        style_text: rule.descriptors.to_css_string().trim_end().to_owned(),
+        style_text: rule.style_css_text(),
     })
+}
+
+pub fn parse_font_face_cssom_descriptor_block(style_text: &str) -> Option<String> {
+    parse_font_face_cssom_descriptor_rule(style_text)
+        .ok()
+        .map(|rule| rule.style_css_text())
 }
 
 pub fn parse_import_rule_view(css_text: &str) -> Option<CssImportRuleView> {
@@ -1012,6 +1024,56 @@ pub fn set_keyframe_rule_declarations_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, parent_path)
 }
 
+pub fn set_font_face_rule_descriptors_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    descriptor_text: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let font_face_rule = mutable_font_face_rule_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let parsed = parse_font_face_cssom_descriptor_rule(descriptor_text)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        let rule = font_face_rule.write_with(&mut guard);
+        rule.descriptors = parsed.descriptors;
+        rule.descriptor_importance = parsed.descriptor_importance;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+pub fn set_font_face_rule_descriptor_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    descriptor: &str,
+    value: &str,
+    important: bool,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let font_face_rule = mutable_font_face_rule_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let descriptor_id =
+        DescriptorId::from_ident(descriptor).map_err(|_| CssRuleInsertError::Syntax)?;
+    if value.trim().is_empty() {
+        {
+            let mut guard = rule_tree.shared_lock.write();
+            font_face_rule
+                .write_with(&mut guard)
+                .remove_cssom_descriptor(descriptor_id);
+        }
+        return nested_rule_tree_mutation_result(rule_tree, rule_path);
+    }
+    with_font_face_descriptor_context(|context| {
+        let mut input = ParserInput::new(value);
+        let mut input = Parser::new(&mut input);
+        let mut guard = rule_tree.shared_lock.write();
+        font_face_rule
+            .write_with(&mut guard)
+            .set_cssom_descriptor(descriptor_id, context, &mut input, important)
+            .map_err(|_| CssRuleInsertError::Syntax)?;
+        Ok(())
+    })?;
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
 pub fn set_keyframe_rule_selector_in_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     parent_path: &[usize],
@@ -1286,6 +1348,16 @@ fn mutable_media_rule_media_for_rule_path(
     }
 }
 
+fn mutable_font_face_rule_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<FontFaceRule>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::FontFace(rule) => Some(rule),
+        _ => None,
+    }
+}
+
 fn mutable_style_rule_declaration_block_for_rule_path(
     rule_tree: &CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1374,6 +1446,95 @@ fn parse_declaration_block_for_rule(
     let mut input = ParserInput::new(declaration_text);
     let mut input = Parser::new(&mut input);
     Ok(parse_property_declaration_list(&context, &mut input, &[]))
+}
+
+fn parse_font_face_cssom_descriptor_rule(
+    descriptor_text: &str,
+) -> Result<FontFaceRule, CssRuleInsertError> {
+    with_font_face_descriptor_context(|context| {
+        let mut rule = FontFaceRule::empty(SourceLocation { line: 0, column: 0 });
+        let mut input = ParserInput::new(descriptor_text);
+        let mut input = Parser::new(&mut input);
+        {
+            let mut parser = CssomFontFaceDescriptorParser {
+                context,
+                rule: &mut rule,
+            };
+            let iter = RuleBodyParser::new(&mut input, &mut parser);
+            for declaration in iter {
+                declaration.map_err(|_| CssRuleInsertError::Syntax)?;
+            }
+        }
+        Ok(rule)
+    })
+}
+
+fn with_font_face_descriptor_context<R>(
+    f: impl FnOnce(&ParserContext) -> Result<R, CssRuleInsertError>,
+) -> Result<R, CssRuleInsertError> {
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(CssRuleType::FontFace),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
+    f(&context)
+}
+
+struct CssomFontFaceDescriptorParser<'a, 'b: 'a> {
+    context: &'a ParserContext<'b>,
+    rule: &'a mut FontFaceRule,
+}
+
+impl<'a, 'b, 'i> cssparser::AtRuleParser<'i> for CssomFontFaceDescriptorParser<'a, 'b> {
+    type Prelude = ();
+    type AtRule = ();
+    type Error = StyleParseErrorKind<'i>;
+}
+
+impl<'a, 'b, 'i> cssparser::QualifiedRuleParser<'i> for CssomFontFaceDescriptorParser<'a, 'b> {
+    type Prelude = ();
+    type QualifiedRule = ();
+    type Error = StyleParseErrorKind<'i>;
+}
+
+impl<'a, 'b, 'i> RuleBodyItemParser<'i, (), StyleParseErrorKind<'i>>
+    for CssomFontFaceDescriptorParser<'a, 'b>
+{
+    fn parse_qualified(&self) -> bool {
+        false
+    }
+
+    fn parse_declarations(&self) -> bool {
+        true
+    }
+}
+
+impl<'a, 'b, 'i> DeclarationParser<'i> for CssomFontFaceDescriptorParser<'a, 'b> {
+    type Declaration = ();
+    type Error = StyleParseErrorKind<'i>;
+
+    fn parse_value<'t>(
+        &mut self,
+        name: CowRcStr<'i>,
+        input: &mut Parser<'i, 't>,
+        _declaration_start: &ParserState,
+    ) -> Result<(), ParseError<'i>> {
+        let Ok(id) = DescriptorId::from_ident(name.as_ref()) else {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnexpectedIdent(name.clone())));
+        };
+        self.rule
+            .set_cssom_descriptor_declaration(id, self.context, input)?;
+        Ok(())
+    }
 }
 
 fn rule_at_path(rule_tree: &CssStylesheetRuleTree, path: &[usize]) -> Option<CssRule> {
@@ -2049,14 +2210,16 @@ mod tests {
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
         normalize_page_selector_text, parse_condition_rule_view,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_font_face_rule_view,
-        parse_font_feature_values_rule_view, parse_import_rule_view, parse_keyframes_rule_view,
-        parse_layer_rule_view, parse_namespace_rule_view, parse_page_descriptor_entries,
-        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
-        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_font_feature_values_rule_entry,
+        parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
+        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
+        parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
+        parse_page_descriptor_entries, parse_page_margin_rule_view, parse_page_rule_view,
+        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
+        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
+        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_font_face_rule_descriptor_in_stylesheet_rule_tree,
+        set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
         set_media_rule_media_in_stylesheet_rule_tree,
@@ -2332,6 +2495,91 @@ mod tests {
             r#"font-family: Foo; src: url("http://foo/bar/font.ttf"); font-weight: bold;"#
         );
         assert!(parse_font_face_rule_view(".not-a-font-face { font-family: Foo; }").is_none());
+    }
+
+    #[test]
+    fn font_face_source_parse_rejects_descriptor_important() {
+        let view = parse_font_face_rule_view(
+            "@font-face { font-family: Foo !important; src: local(Foo); }",
+        )
+        .expect("font-face rule should still parse after dropping invalid descriptor");
+
+        assert_eq!(view.style_text, "src: local(Foo);");
+        assert!(!view.css_text.contains("font-family"));
+        assert!(!view.css_text.contains("!important"));
+    }
+
+    #[test]
+    fn font_face_cssom_descriptor_block_preserves_priority() {
+        assert_eq!(
+            parse_font_face_cssom_descriptor_block(
+                "font-family: Bar !important; src: local(Bar); font-display: swap !important;"
+            )
+            .as_deref(),
+            Some("font-family: Bar !important; src: local(Bar); font-display: swap !important;")
+        );
+        assert!(
+            parse_font_face_cssom_descriptor_block("font-family: Bar !important extra;").is_none()
+        );
+    }
+
+    #[test]
+    fn font_face_rule_tree_descriptor_mutations_preserve_priority() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            "@media screen { @font-face { font-family: Foo; src: local(Foo); } }",
+        );
+
+        let mutation = set_font_face_rule_descriptor_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0, 0],
+            "font-family",
+            "Bar",
+            true,
+        )
+        .expect("font-family descriptor mutation should succeed");
+        assert_eq!(
+            mutation.parent_rule.css_text,
+            "@font-face { font-family: Bar !important; src: local(Foo); }"
+        );
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            "@media screen {\n  @font-face { font-family: Bar !important; src: local(Foo); }\n}"
+        );
+
+        let mutation = set_font_face_rule_descriptors_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0, 0],
+            "font-family: Baz; src: local(Baz) !important;",
+        )
+        .expect("font-face descriptor block mutation should succeed");
+        assert_eq!(
+            mutation.parent_rule.css_text,
+            "@font-face { font-family: Baz; src: local(Baz) !important; }"
+        );
+
+        let mutation = set_font_face_rule_descriptor_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0, 0],
+            "src",
+            "",
+            true,
+        )
+        .expect("empty value should remove descriptor");
+        assert_eq!(
+            mutation.parent_rule.css_text,
+            "@font-face { font-family: Baz; }"
+        );
+        assert!(
+            set_font_face_rule_descriptor_in_stylesheet_rule_tree(
+                &mut rule_tree,
+                &[0, 0],
+                "font-weight",
+                "400 !important",
+                true,
+            )
+            .is_err(),
+            "single descriptor mutation keeps priority separate from value"
+        );
     }
 
     #[test]

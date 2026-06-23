@@ -202,6 +202,8 @@ impl ToCss for FontFaceSourceTechFlags {
 pub struct FontFaceRule {
     /// The descriptors of the @font-face rule.
     pub descriptors: Descriptors,
+    /// CSSOM priority flags for descriptors.
+    pub descriptor_importance: u64,
     /// The parser location of the rule.
     pub source_location: SourceLocation,
 }
@@ -211,9 +213,98 @@ impl FontFaceRule {
     pub fn empty(source_location: SourceLocation) -> Self {
         Self {
             descriptors: Default::default(),
+            descriptor_importance: 0,
             source_location,
         }
     }
+
+    /// Returns whether a descriptor has CSSOM important priority.
+    pub fn descriptor_is_important(&self, id: DescriptorId) -> bool {
+        (self.descriptor_importance & descriptor_importance_mask(id)) != 0
+    }
+
+    /// Sets a descriptor through CSSOM, keeping the priority outside the value.
+    pub fn set_cssom_descriptor<'i, 't>(
+        &mut self,
+        id: DescriptorId,
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        important: bool,
+    ) -> Result<bool, ParseError<'i>> {
+        let value_changed = self.descriptors.set(id, context, input)?;
+        let priority_changed = self.set_descriptor_importance(id, important);
+        Ok(value_changed || priority_changed)
+    }
+
+    /// Sets a descriptor from a CSSOM declaration, parsing trailing priority.
+    pub fn set_cssom_descriptor_declaration<'i, 't>(
+        &mut self,
+        id: DescriptorId,
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<bool, ParseError<'i>> {
+        let (value_changed, important) = self.descriptors.set_cssom(id, context, input)?;
+        let priority_changed = self.set_descriptor_importance(id, important);
+        Ok(value_changed || priority_changed)
+    }
+
+    /// Removes a descriptor and its CSSOM priority.
+    pub fn remove_cssom_descriptor(&mut self, id: DescriptorId) -> bool {
+        let value_changed = self.descriptors.remove(id);
+        let priority_changed = self.set_descriptor_importance(id, false);
+        value_changed || priority_changed
+    }
+
+    /// Removes all descriptors and CSSOM priorities.
+    pub fn clear_cssom_descriptors(&mut self) {
+        self.descriptors = Default::default();
+        self.descriptor_importance = 0;
+    }
+
+    /// Serializes descriptors with CSSOM priority metadata.
+    pub fn style_css_text(&self) -> String {
+        let mut result = CssStringWriter::new();
+        let _ = self.write_descriptors_to_css(&mut CssWriter::new(&mut result));
+        result.trim_end().to_owned()
+    }
+
+    fn set_descriptor_importance(&mut self, id: DescriptorId, important: bool) -> bool {
+        let mask = descriptor_importance_mask(id);
+        let before = self.descriptor_importance;
+        if important {
+            self.descriptor_importance |= mask;
+        } else {
+            self.descriptor_importance &= !mask;
+        }
+        before != self.descriptor_importance
+    }
+
+    fn write_descriptors_to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: fmt::Write,
+    {
+        use std::fmt::Write;
+        for index in 0..self.descriptors.len() {
+            let Some(id) = self.descriptors.at(index) else {
+                continue;
+            };
+            let mut value = CssStringWriter::new();
+            self.descriptors.get(id, &mut value)?;
+            dest.write_str(id.name())?;
+            dest.write_str(": ")?;
+            dest.write_str(value.trim())?;
+            if self.descriptor_is_important(id) {
+                dest.write_str(" !important")?;
+            }
+            dest.write_str("; ")?;
+        }
+        Ok(())
+    }
+}
+
+fn descriptor_importance_mask(id: DescriptorId) -> u64 {
+    debug_assert!(DescriptorId::COUNT <= u64::BITS as usize);
+    1u64 << (id as u8)
 }
 
 /// A POD representation for Gecko. All pointers here are non-owned and as such
@@ -560,7 +651,7 @@ impl ToCssWithGuard for FontFaceRule {
     // Serialization of FontFaceRule is not specced.
     fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
         dest.write_str("@font-face { ")?;
-        self.descriptors.to_css(&mut CssWriter::new(dest))?;
+        self.write_descriptors_to_css(&mut CssWriter::new(dest))?;
         dest.write_char('}')
     }
 }
