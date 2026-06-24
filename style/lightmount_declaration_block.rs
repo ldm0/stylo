@@ -182,6 +182,43 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_exposes_lightmount_cssom_compat_properties() {
+        static_prefs::set_pref!("layout.columns.enabled", true);
+        let block = parse_declaration_block(
+            "column-rule-width: 0; column-width: 0; scroll-margin-top: 0; \
+             scroll-padding-bottom: 0; scroll-snap-align: start start; \
+             scrollbar-color: auto; scrollbar-width: thin; shape-margin: 0;",
+        );
+
+        assert_eq!(
+            block.property_value("column-rule-width").as_deref(),
+            Some("0px")
+        );
+        assert_eq!(block.property_value("column-width").as_deref(), Some("0px"));
+        assert_eq!(
+            block.property_value("scroll-margin-top").as_deref(),
+            Some("0px")
+        );
+        assert_eq!(
+            block.property_value("scroll-padding-bottom").as_deref(),
+            Some("0px")
+        );
+        assert_eq!(
+            block.property_value("scroll-snap-align").as_deref(),
+            Some("start")
+        );
+        assert_eq!(
+            block.property_value("scrollbar-color").as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            block.property_value("scrollbar-width").as_deref(),
+            Some("thin")
+        );
+        assert_eq!(block.property_value("shape-margin").as_deref(), Some("0px"));
+    }
+
+    #[test]
     fn declaration_block_set_property_updates_through_pdb() {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 
