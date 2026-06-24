@@ -189,7 +189,10 @@ mod tests {
              scroll-padding-bottom: 0; scroll-snap-align: start start; \
              scrollbar-color: auto; scrollbar-width: thin; shape-margin: 0; \
              appearance: auto; user-select: none; print-color-adjust: economy; \
-             color-adjust: exact; forced-color-adjust: preserve-parent-color;",
+             color-adjust: exact; forced-color-adjust: preserve-parent-color; \
+             color-scheme: dark only; orphans: 2; widows: 3; \
+             page-break-after: always; page-break-before: avoid; \
+             page-break-inside: avoid;",
         );
 
         assert_eq!(
@@ -231,6 +234,24 @@ mod tests {
         assert_eq!(
             block.property_value("forced-color-adjust").as_deref(),
             Some("preserve-parent-color")
+        );
+        assert_eq!(
+            block.property_value("color-scheme").as_deref(),
+            Some("dark only")
+        );
+        assert_eq!(block.property_value("orphans").as_deref(), Some("2"));
+        assert_eq!(block.property_value("widows").as_deref(), Some("3"));
+        assert_eq!(
+            block.property_value("page-break-after").as_deref(),
+            Some("always")
+        );
+        assert_eq!(
+            block.property_value("page-break-before").as_deref(),
+            Some("avoid")
+        );
+        assert_eq!(
+            block.property_value("page-break-inside").as_deref(),
+            Some("avoid")
         );
     }
 

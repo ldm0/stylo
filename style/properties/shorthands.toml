@@ -216,19 +216,16 @@ sub_properties = ["alignment-baseline", "baseline-shift", "baseline-source"]
 spec = "https://drafts.csswg.org/css-inline-3/#transverse-alignment"
 
 [page-break-before]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-before"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
 
 [page-break-after]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-after"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
 
 [page-break-inside]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-inside"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
