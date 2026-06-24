@@ -542,6 +542,158 @@ pub fn stylesheet_rule_tree_margin_rule_view(
     }
 }
 
+pub fn stylesheet_rule_tree_counter_style_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssCounterStyleRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::CounterStyle(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            let rule = rule.read_with(&guard);
+            Some(CssCounterStyleRuleView {
+                css_text: rule.to_css_string(&guard),
+                name: rule.name().to_css_string(),
+            })
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_font_face_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssFontFaceRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::FontFace(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            let rule = rule.read_with(&guard);
+            Some(CssFontFaceRuleView {
+                css_text: rule.to_css_string(&guard),
+                style_text: rule.style_css_text(),
+            })
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_keyframes_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssKeyframesRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Keyframes(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            let rule = rule.read_with(&guard);
+            Some(CssKeyframesRuleView {
+                css_text: rule.to_css_string(&guard),
+                name: rule.name.as_atom().to_string(),
+            })
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_import_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssImportRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Import(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            import_rule_view(&rule.read_with(&guard), &guard)
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_namespace_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssNamespaceRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Namespace(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(namespace_rule_view(rule.as_ref(), &guard))
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_condition_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssConditionRuleView> {
+    let rule = rule_at_path(rule_tree, rule_path)?;
+    let guard = rule_tree.shared_lock.read();
+    condition_rule_view(&rule, &guard)
+}
+
+pub fn stylesheet_rule_tree_layer_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssLayerRuleView> {
+    let rule = rule_at_path(rule_tree, rule_path)?;
+    let guard = rule_tree.shared_lock.read();
+    layer_rule_view(&rule, &guard)
+}
+
+pub fn stylesheet_rule_tree_property_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssPropertyRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Property(rule) => {
+            let syntax = rule
+                .descriptors
+                .syntax
+                .as_ref()
+                .map(|syntax| {
+                    syntax
+                        .specified_string()
+                        .map(ToOwned::to_owned)
+                        .unwrap_or_else(|| syntax.to_css_string())
+                })
+                .filter(|syntax| !syntax.is_empty())?;
+            let guard = rule_tree.shared_lock.read();
+            Some(CssPropertyRuleView {
+                css_text: rule.to_css_string(&guard),
+                name: rule.name.to_css_string(),
+                syntax,
+                inherits: rule.descriptors.inherits(),
+                initial_value: rule
+                    .descriptors
+                    .initial_value
+                    .as_ref()
+                    .map(|value| value.css_text().trim().to_owned()),
+            })
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_font_feature_values_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssFontFeatureValuesRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::FontFeatureValues(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            let rule = rule.as_ref();
+            Some(CssFontFeatureValuesRuleView {
+                css_text: rule.to_css_string(&guard),
+                font_family: rule.family_names.to_css_string(),
+                annotation: single_font_feature_entries(&rule.annotation),
+                ornaments: single_font_feature_entries(&rule.ornaments),
+                stylistic: single_font_feature_entries(&rule.stylistic),
+                styleset: vector_font_feature_entries(&rule.styleset),
+                character_variant: pair_font_feature_entries(&rule.character_variant),
+                swash: single_font_feature_entries(&rule.swash),
+            })
+        },
+        _ => None,
+    }
+}
+
 pub fn insert_rule_into_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     rule_text: &str,
@@ -2449,8 +2601,13 @@ mod tests {
         set_page_margin_rule_descriptors_in_stylesheet_rule_tree,
         set_page_rule_descriptors_in_stylesheet_rule_tree,
         set_style_rule_declarations_in_stylesheet_rule_tree,
-        set_style_rule_selector_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
-        stylesheet_rule_tree_margin_rule_view, stylesheet_rule_tree_page_rule_view,
+        set_style_rule_selector_in_stylesheet_rule_tree, stylesheet_rule_tree_condition_rule_view,
+        stylesheet_rule_tree_counter_style_rule_view, stylesheet_rule_tree_css_text,
+        stylesheet_rule_tree_font_face_rule_view,
+        stylesheet_rule_tree_font_feature_values_rule_view, stylesheet_rule_tree_import_rule_view,
+        stylesheet_rule_tree_keyframes_rule_view, stylesheet_rule_tree_layer_rule_view,
+        stylesheet_rule_tree_margin_rule_view, stylesheet_rule_tree_namespace_rule_view,
+        stylesheet_rule_tree_page_rule_view, stylesheet_rule_tree_property_rule_view,
         stylesheet_rule_tree_rule_views, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
@@ -2917,6 +3074,68 @@ mod tests {
         assert!(
             set_font_feature_values_rule_entry(&css_text, "styleset", "empty", &[]).is_none(),
             "vector groups reject empty values"
+        );
+    }
+
+    #[test]
+    fn stylesheet_rule_tree_exposes_typed_rule_views_by_path() {
+        let css_text = concat!(
+            r#"@import url("support/c.css") layer(A.B) print;"#,
+            r#"@namespace svg url(http://servo);"#,
+            r#"@counter-style thumbs { system: cyclic; symbols: "*"; suffix: " "; }"#,
+            r#"@font-face { font-family: Foo; src: local(Foo); }"#,
+            r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: red; }"#,
+            r#"@font-feature-values test_family { @annotation { the_first: 6; } }"#,
+            "@keyframes slide { from { opacity: 0; } to { opacity: 1; } }",
+            "@media screen {}",
+            "@layer A.B {}",
+        );
+        let rule_tree = parse_stylesheet_rule_tree(css_text);
+
+        assert_eq!(
+            stylesheet_rule_tree_import_rule_view(&rule_tree, &[0]),
+            parse_import_rule_view(r#"@import url("support/c.css") layer(A.B) print;"#)
+        );
+        assert_eq!(
+            stylesheet_rule_tree_namespace_rule_view(&rule_tree, &[1]),
+            parse_namespace_rule_view(r#"@namespace svg url(http://servo);"#)
+        );
+        assert_eq!(
+            stylesheet_rule_tree_counter_style_rule_view(&rule_tree, &[2]),
+            parse_counter_style_rule_view(
+                r#"@counter-style thumbs { system: cyclic; symbols: "*"; suffix: " "; }"#
+            )
+        );
+        assert_eq!(
+            stylesheet_rule_tree_font_face_rule_view(&rule_tree, &[3]),
+            parse_font_face_rule_view(r#"@font-face { font-family: Foo; src: local(Foo); }"#)
+        );
+        assert_eq!(
+            stylesheet_rule_tree_property_rule_view(&rule_tree, &[4]),
+            parse_property_rule_view(
+                r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: red; }"#
+            )
+        );
+        assert_eq!(
+            stylesheet_rule_tree_font_feature_values_rule_view(&rule_tree, &[5]),
+            parse_font_feature_values_rule_view(
+                r#"@font-feature-values test_family { @annotation { the_first: 6; } }"#
+            )
+        );
+        assert_eq!(
+            stylesheet_rule_tree_keyframes_rule_view(&rule_tree, &[6]),
+            parse_keyframes_rule_view(
+                "@keyframes slide { from { opacity: 0; } to { opacity: 1; } }"
+            )
+        );
+        assert_eq!(
+            stylesheet_rule_tree_condition_rule_view(&rule_tree, &[7])
+                .map(|view| view.condition_text),
+            Some("screen".to_owned())
+        );
+        assert_eq!(
+            stylesheet_rule_tree_layer_rule_view(&rule_tree, &[8]).and_then(|view| view.name),
+            Some("A.B".to_owned())
         );
     }
 
