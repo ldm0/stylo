@@ -7,7 +7,7 @@ use std::{
 
 use cssparser::{
     CowRcStr, DeclarationParser, Parser, ParserInput, ParserState, RuleBodyItemParser,
-    RuleBodyParser, SourceLocation,
+    RuleBodyParser, SourceLocation, ToCss as CssParserToCss,
 };
 use servo_arc::Arc;
 use style_traits::{
@@ -44,6 +44,7 @@ pub struct CssStylesheetRuleText {
 pub struct CssStylesheetRuleView {
     pub rule_type: CssRuleType,
     pub css_text: String,
+    pub selector_text: Option<String>,
     pub declaration_text: Option<String>,
     pub child_rules: Vec<CssStylesheetRuleView>,
 }
@@ -1879,8 +1880,22 @@ fn stylesheet_rule_view(
     CssStylesheetRuleView {
         rule_type: rule.rule_type(),
         css_text: rule.to_css_string(guard),
+        selector_text: stylesheet_rule_selector_text(rule, guard),
         declaration_text: stylesheet_rule_declaration_text(rule, guard),
         child_rules: stylesheet_rule_child_views(rule, guard),
+    }
+}
+
+fn stylesheet_rule_selector_text(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<String> {
+    match rule {
+        CssRule::Style(rule) => {
+            let rule = rule.read_with(guard);
+            Some(rule.selectors.to_css_string())
+        },
+        _ => None,
     }
 }
 
@@ -2221,6 +2236,7 @@ fn keyframe_rule_view(
     CssStylesheetRuleView {
         rule_type: CssRuleType::Keyframe,
         css_text: rule.to_css_string(guard),
+        selector_text: Some(rule.selector.to_css_string()),
         declaration_text: Some(declaration_block_css_text(&rule.block.read_with(guard))),
         child_rules: Vec::new(),
     }
@@ -2472,6 +2488,8 @@ mod tests {
 
         assert_eq!(rules.len(), 2);
         assert_eq!(rules[0].rule_type, CssRuleType::Style);
+        assert_eq!(rules[0].selector_text.as_deref(), Some(".one"));
+        assert_eq!(rules[0].declaration_text.as_deref(), Some("color: red;"));
         assert!(rules[0].child_rules.is_empty());
         assert_eq!(rules[1].rule_type, CssRuleType::Media);
         assert_eq!(
@@ -2481,6 +2499,14 @@ mod tests {
         assert_eq!(rules[1].child_rules.len(), 2);
         assert_eq!(rules[1].child_rules[0].rule_type, CssRuleType::Style);
         assert_eq!(rules[1].child_rules[0].css_text, ".two { margin: 0px; }");
+        assert_eq!(
+            rules[1].child_rules[0].selector_text.as_deref(),
+            Some(".two")
+        );
+        assert_eq!(
+            rules[1].child_rules[0].declaration_text.as_deref(),
+            Some("margin: 0px;")
+        );
         assert_eq!(rules[1].child_rules[1].rule_type, CssRuleType::Supports);
         assert_eq!(rules[1].child_rules[1].child_rules.len(), 1);
         assert_eq!(
@@ -2500,7 +2526,16 @@ mod tests {
         assert_eq!(rules[0].child_rules.len(), 2);
         assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Keyframe);
         assert_eq!(rules[0].child_rules[0].css_text, "0% { opacity: 0; }");
+        assert_eq!(rules[0].child_rules[0].selector_text.as_deref(), Some("0%"));
+        assert_eq!(
+            rules[0].child_rules[0].declaration_text.as_deref(),
+            Some("opacity: 0;")
+        );
         assert_eq!(rules[0].child_rules[1].css_text, "100% { opacity: 1; }");
+        assert_eq!(
+            rules[0].child_rules[1].selector_text.as_deref(),
+            Some("100%")
+        );
 
         let view = parse_keyframes_rule_view(
             r#"@keyframes "slide show" { from { opacity: 0; } to { opacity: 1; } }"#,
