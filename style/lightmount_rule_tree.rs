@@ -1969,6 +1969,10 @@ fn stylesheet_rule_selector_text(
             let rule = rule.read_with(guard);
             Some(rule.selectors.to_css_string())
         },
+        CssRule::Page(rule) => {
+            let rule = rule.read_with(guard);
+            Some(rule.selectors.to_css_string())
+        },
         _ => None,
     }
 }
@@ -1990,6 +1994,11 @@ fn stylesheet_rule_declaration_text(
             let rule = rule.read_with(guard);
             Some(rule.style_css_text())
         },
+        CssRule::Page(rule) => {
+            let rule = rule.read_with(guard);
+            Some(declaration_block_css_text(rule.block.read_with(guard)))
+        },
+        CssRule::Margin(rule) => Some(declaration_block_css_text(rule.block.read_with(guard))),
         _ => None,
     }
 }
@@ -2896,11 +2905,19 @@ mod tests {
             rules[0].css_text,
             "@page :first {\n  margin-top: 1px;\n  @top-left { content: \"x\"; color: red; }\n}"
         );
+        assert_eq!(
+            rules[0].declaration_text.as_deref(),
+            Some("margin-top: 1px;")
+        );
         assert_eq!(rules[0].child_rules.len(), 1);
         assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Margin);
         assert_eq!(
             rules[0].child_rules[0].css_text,
             "@top-left { content: \"x\"; color: red; }"
+        );
+        assert_eq!(
+            rules[0].child_rules[0].declaration_text.as_deref(),
+            Some("content: \"x\"; color: red;")
         );
     }
 
