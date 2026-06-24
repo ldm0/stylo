@@ -99,9 +99,9 @@ pub use self::svg::{SVGLength, SVGOpacity, SVGPaint, TextDecorationPaint};
 pub use self::svg::{SVGPaintOrder, SVGStrokeDashArray, SVGWidth, VectorEffect};
 pub use self::svg_path::SVGPathData;
 pub use self::text::RubyPosition;
-pub use self::text::{HyphenateCharacter, HyphenateLimitChars};
+pub use self::text::{BookmarkLevel, BookmarkState, HyphenateCharacter, HyphenateLimitChars};
 pub use self::text::{InitialLetter, LetterSpacing, LineBreak, TextAlign, TextIndent};
-pub use self::text::{OverflowWrap, TextEmphasisPosition, TextEmphasisStyle, WordBreak};
+pub use self::text::{LinkParameters, OverflowWrap, TextEmphasisPosition, TextEmphasisStyle};
 pub use self::text::{TextAlignKeyword, TextDecorationLine, TextOverflow, WordSpacing};
 pub use self::text::{TextAlignLast, TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};
@@ -109,6 +109,7 @@ pub use self::text::{
     TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextDecorationSkipSpaces,
     TextJustify, TextTransform,
 };
+pub use self::text::{TextSizeAdjust, WordBreak};
 pub use self::time::Time;
 pub use self::transform::{Rotate, Scale, Transform};
 pub use self::transform::{TransformBox, TransformOrigin, TransformStyle, Translate};

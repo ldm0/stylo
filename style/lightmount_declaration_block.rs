@@ -192,7 +192,14 @@ mod tests {
              color-adjust: exact; forced-color-adjust: preserve-parent-color; \
              color-scheme: dark only; orphans: 2; widows: 3; \
              page-break-after: always; page-break-before: avoid; \
-             page-break-inside: avoid;",
+             page-break-inside: avoid; alignment-baseline: alphabetic; \
+             background-attachment: local; baseline-source: first; \
+             bookmark-level: 1; bookmark-state: closed; border-collapse: collapse; \
+             caption-side: bottom; clear: both; clip: rect(0px, 1px, 2px, 3px); \
+             empty-cells: hide; link-parameters: param(--a, orange), param(--b); \
+             list-style-position: inside; list-style-type: upper-alpha; \
+             outline-style: auto; table-layout: fixed; \
+             text-size-adjust: calc(10% * sibling-index()); text-transform: uppercase;",
         );
 
         assert_eq!(
@@ -252,6 +259,65 @@ mod tests {
         assert_eq!(
             block.property_value("page-break-inside").as_deref(),
             Some("avoid")
+        );
+        assert_eq!(
+            block.property_value("alignment-baseline").as_deref(),
+            Some("alphabetic")
+        );
+        assert_eq!(
+            block.property_value("background-attachment").as_deref(),
+            Some("local")
+        );
+        assert_eq!(
+            block.property_value("baseline-source").as_deref(),
+            Some("first")
+        );
+        assert_eq!(block.property_value("bookmark-level").as_deref(), Some("1"));
+        assert_eq!(
+            block.property_value("bookmark-state").as_deref(),
+            Some("closed")
+        );
+        assert_eq!(
+            block.property_value("border-collapse").as_deref(),
+            Some("collapse")
+        );
+        assert_eq!(
+            block.property_value("caption-side").as_deref(),
+            Some("bottom")
+        );
+        assert_eq!(block.property_value("clear").as_deref(), Some("both"));
+        assert_eq!(
+            block.property_value("clip").as_deref(),
+            Some("rect(0px, 1px, 2px, 3px)")
+        );
+        assert_eq!(block.property_value("empty-cells").as_deref(), Some("hide"));
+        assert_eq!(
+            block.property_value("link-parameters").as_deref(),
+            Some("param(--a, orange), param(--b)")
+        );
+        assert_eq!(
+            block.property_value("list-style-position").as_deref(),
+            Some("inside")
+        );
+        assert_eq!(
+            block.property_value("list-style-type").as_deref(),
+            Some("upper-alpha")
+        );
+        assert_eq!(
+            block.property_value("outline-style").as_deref(),
+            Some("auto")
+        );
+        assert_eq!(
+            block.property_value("table-layout").as_deref(),
+            Some("fixed")
+        );
+        assert_eq!(
+            block.property_value("text-size-adjust").as_deref(),
+            Some("calc(10% * sibling-index())")
+        );
+        assert_eq!(
+            block.property_value("text-transform").as_deref(),
+            Some("uppercase")
         );
     }
 

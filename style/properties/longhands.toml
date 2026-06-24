@@ -424,6 +424,22 @@ spec = "https://drafts.csswg.org/css-inline-3/#baseline-source"
 servo_restyle_damage = "rebuild_box"
 affects = "layout"
 
+[bookmark-level]
+type = "BookmarkLevel"
+initial = "computed::BookmarkLevel::None"
+struct = "box"
+animation_type = "discrete"
+spec = "https://drafts.csswg.org/css-gcpm/#propdef-bookmark-level"
+affects = "layout"
+
+[bookmark-state]
+type = "BookmarkState"
+initial = "computed::BookmarkState::Open"
+struct = "box"
+animation_type = "discrete"
+spec = "https://drafts.csswg.org/css-gcpm/#propdef-bookmark-state"
+affects = "layout"
+
 [block-size]
 type = "Size"
 initial = "computed::Size::auto()"
@@ -1260,6 +1276,14 @@ spec = "https://drafts.csswg.org/css-lists/#propdef-list-style-type"
 servo_restyle_damage = "rebuild_box"
 affects = "layout"
 
+[link-parameters]
+type = "LinkParameters"
+initial = "computed::LinkParameters::None"
+struct = "box"
+animation_type = "discrete"
+spec = "https://drafts.csswg.org/css-gcpm/#propdef-link-parameters"
+affects = ""
+
 [marker-end]
 type = "url::UrlOrNone"
 initial = "computed::url::UrlOrNone::none()"
@@ -2054,6 +2078,14 @@ ignored_when_colors_disabled = true
 spec = "https://drafts.csswg.org/css-text-decor-3/#text-shadow-property"
 servo_restyle_damage = "repaint"
 affects = "overflow"
+
+[text-size-adjust]
+type = "TextSizeAdjust"
+initial = "computed::TextSizeAdjust::auto()"
+struct = "inherited_text"
+animation_type = "discrete"
+spec = "https://drafts.csswg.org/css-size-adjust/#adjustment-control"
+affects = "layout"
 
 [text-transform]
 type = "TextTransform"
@@ -3514,7 +3546,7 @@ animation_type = "discrete"
 affects = "paint"
 servo_restyle_damage = "repaint"
 vector = {}
-keyword = { values = ["scroll", "fixed"], extra_gecko_values = ["local"], gecko_enum_prefix = "StyleImageLayerAttachment" }
+keyword = { values = ["scroll", "fixed", "local"], gecko_enum_prefix = "StyleImageLayerAttachment" }
 
 [background-clip]
 struct = "background"
