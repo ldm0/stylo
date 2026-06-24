@@ -247,7 +247,7 @@ pub(crate) fn parse_nested_rule_block(
     containing_rule_types: CssRuleTypes,
     parse_relative_rule_type: Option<CssRuleType>,
     wants_first_declaration_block: bool,
-) -> Vec<CssRule> {
+) -> NestedParseResult {
     let url_data = &parent_stylesheet_contents.url_data;
     let namespaces = &parent_stylesheet_contents.namespaces;
     let mut context = ParserContext::new(
@@ -282,7 +282,6 @@ pub(crate) fn parse_nested_rule_block(
     parser
         .nested()
         .parse_nested(&mut input, rule_type, wants_first_declaration_block)
-        .rules
 }
 
 #[derive(Clone, Debug, MallocSizeOf, ToShmem)]
@@ -560,9 +559,9 @@ impl<'a, 'i> QualifiedRuleParser<'i> for TopLevelRuleParser<'a, 'i> {
 #[derive(Deref, DerefMut)]
 struct NestedRuleParser<'a, 'i>(TopLevelRuleParser<'a, 'i>);
 
-struct NestedParseResult {
-    first_declaration_block: PropertyDeclarationBlock,
-    rules: Vec<CssRule>,
+pub(crate) struct NestedParseResult {
+    pub(crate) first_declaration_block: PropertyDeclarationBlock,
+    pub(crate) rules: Vec<CssRule>,
 }
 
 impl<'a, 'i> NestedRuleParser<'a, 'i> {

@@ -159,6 +159,7 @@ pub struct CssFontFeatureValuesRuleView {
 pub struct CssStylesheetMutationResult {
     pub css_text: String,
     pub rules: Vec<CssStylesheetRuleView>,
+    pub first_declaration_text: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -970,7 +971,7 @@ pub fn parse_nested_rule_block_views(
         containing_rule_type_bits,
         parse_relative_rule_type,
     )?;
-    let rules = parse_nested_rule_block(
+    let nested = parse_nested_rule_block(
         block_text,
         rule_type,
         &parsed.contents,
@@ -979,9 +980,12 @@ pub fn parse_nested_rule_block_views(
         parsed.parse_relative_rule_type,
         wants_first_declaration_block,
     );
-    Ok(css_rules_mutation_result(
-        &CssRules(rules),
+    let first_declaration_text = wants_first_declaration_block
+        .then(|| declaration_block_css_text(&nested.first_declaration_block));
+    Ok(css_rules_mutation_result_with_first_declaration_text(
+        &CssRules(nested.rules),
         &parsed.shared_lock,
+        first_declaration_text,
     ))
 }
 
@@ -2040,7 +2044,11 @@ fn css_rules_mutation_result(
         .map(|rule| rule.css_text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    CssStylesheetMutationResult { css_text, rules }
+    CssStylesheetMutationResult {
+        css_text,
+        rules,
+        first_declaration_text: None,
+    }
 }
 
 fn nested_rule_tree_mutation_result(
@@ -2098,7 +2106,21 @@ fn keyframe_rules_mutation_result(
         .map(|rule| rule.css_text.as_str())
         .collect::<Vec<_>>()
         .join(" ");
-    CssStylesheetMutationResult { css_text, rules }
+    CssStylesheetMutationResult {
+        css_text,
+        rules,
+        first_declaration_text: None,
+    }
+}
+
+fn css_rules_mutation_result_with_first_declaration_text(
+    rules: &CssRules,
+    shared_lock: &SharedRwLock,
+    first_declaration_text: Option<String>,
+) -> CssStylesheetMutationResult {
+    let mut result = css_rules_mutation_result(rules, shared_lock);
+    result.first_declaration_text = first_declaration_text;
+    result
 }
 
 fn parse_stylesheet_rule_texts_with_import_policy(
@@ -2858,6 +2880,10 @@ mod tests {
         )
         .expect("style nested block should parse");
 
+        assert_eq!(
+            parsed.first_declaration_text.as_deref(),
+            Some("color: red;")
+        );
         assert_eq!(parsed.rules.len(), 2);
         assert_eq!(parsed.rules[0].rule_type, CssRuleType::Style);
         assert_eq!(parsed.rules[0].selector_text.as_deref(), Some("& svg|path"));
@@ -2885,6 +2911,7 @@ mod tests {
         )
         .expect("nested grouping block should parse");
 
+        assert_eq!(parsed.first_declaration_text, None);
         assert_eq!(parsed.rules.len(), 2);
         assert_eq!(parsed.rules[0].rule_type, CssRuleType::NestedDeclarations);
         assert_eq!(
