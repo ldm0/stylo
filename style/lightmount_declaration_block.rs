@@ -322,6 +322,59 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_handles_lightmount_cssom_compat_edge_values() {
+        let block = parse_declaration_block(
+            "text-size-adjust: calc(10% + 5%); \
+             link-parameters: param(--a, ); \
+             bookmark-level: none;",
+        );
+
+        assert_eq!(
+            block.property_value("text-size-adjust").as_deref(),
+            Some("calc(15%)")
+        );
+        assert_eq!(
+            block.property_value("link-parameters").as_deref(),
+            Some("param(--a, )")
+        );
+        assert_eq!(
+            block.property_value("bookmark-level").as_deref(),
+            Some("none")
+        );
+
+        let block = parse_declaration_block(
+            "text-size-adjust: calc(10% * sibling-index()); \
+             link-parameters: param(--a);",
+        );
+        assert_eq!(
+            block.property_value("text-size-adjust").as_deref(),
+            Some("calc(10% * sibling-index())")
+        );
+        assert_eq!(
+            block.property_value("link-parameters").as_deref(),
+            Some("param(--a)")
+        );
+    }
+
+    #[test]
+    fn declaration_block_rejects_invalid_lightmount_cssom_compat_values() {
+        let block = parse_declaration_block(
+            "bookmark-level: 0; bookmark-state: none; \
+             text-size-adjust: -100%; text-size-adjust: 10px; \
+             link-parameters: param(-a); link-parameters: param(--a red); \
+             link-parameters: param(--a, red) param(--b, blue);",
+        );
+
+        assert_eq!(block.property_value("bookmark-level").as_deref(), Some(""));
+        assert_eq!(block.property_value("bookmark-state").as_deref(), Some(""));
+        assert_eq!(
+            block.property_value("text-size-adjust").as_deref(),
+            Some("")
+        );
+        assert_eq!(block.property_value("link-parameters").as_deref(), Some(""));
+    }
+
+    #[test]
     fn declaration_block_set_property_updates_through_pdb() {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 

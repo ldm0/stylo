@@ -20,11 +20,10 @@ use style_traits::{CssString, CssWriter, KeywordValue, ToCss, ToTyped, TypedValu
 use thin_vec::ThinVec;
 
 pub use crate::values::specified::text::{
-    BookmarkLevel, BookmarkState, HyphenateCharacter, LineBreak, LinkParameters,
-    MozControlCharacterVisibility, OverflowWrap, RubyPosition, TextAlignLast, TextAutospace,
-    TextBoxEdge, TextBoxTrim, TextDecorationLine, TextDecorationSkipInk, TextDecorationSkipSpaces,
-    TextEmphasisPosition, TextJustify, TextOverflow, TextSizeAdjust, TextTransform,
-    TextUnderlinePosition, WordBreak,
+    HyphenateCharacter, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyPosition,
+    TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextDecorationLine,
+    TextDecorationSkipInk, TextDecorationSkipSpaces, TextEmphasisPosition, TextJustify,
+    TextOverflow, TextSizeAdjust, TextTransform, TextUnderlinePosition, WordBreak,
 };
 
 /// A computed value for the `initial-letter` property.

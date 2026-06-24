@@ -5,16 +5,19 @@
 //! Specified types for counter properties.
 
 use crate::counter_style::CounterStyle;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::values::computed::{Context, ToComputedValue};
 use crate::values::generics::counters as generics;
 use crate::values::generics::counters::CounterPair;
 use crate::values::specified::image::Image;
 use crate::values::specified::Attr;
 use crate::values::specified::Integer;
 use crate::values::CustomIdent;
-use cssparser::{match_ignore_ascii_case, Parser, Token};
+use cssparser::{match_ignore_ascii_case, Parser, ParserInput, Token};
 use selectors::parser::SelectorParseErrorKind;
-use style_traits::{ParseError, StyleParseErrorKind};
+use std::fmt::{self, Write};
+use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
 
 #[derive(PartialEq)]
 enum CounterType {
@@ -144,6 +147,188 @@ pub type Content = generics::GenericContent<Image>;
 
 /// The specified value for a content item in the `content` property.
 pub type ContentItem = generics::GenericContentItem<Image>;
+
+/// A value for the `bookmark-level` property.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToShmem, ToTyped)]
+#[repr(C, u8)]
+#[typed(todo_derive_fields)]
+pub enum BookmarkLevel {
+    /// `none`
+    None,
+    /// A positive integer outline level.
+    Level(Integer),
+}
+
+impl Parse for BookmarkLevel {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::None);
+        }
+        Ok(Self::Level(Integer::parse_positive(context, input)?))
+    }
+}
+
+impl ToCss for BookmarkLevel {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::None => dest.write_str("none"),
+            Self::Level(ref level) => level.to_css(dest),
+        }
+    }
+}
+
+impl ToComputedValue for BookmarkLevel {
+    type ComputedValue = Self;
+
+    #[inline]
+    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
+        self.clone()
+    }
+
+    #[inline]
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        computed.clone()
+    }
+}
+
+impl crate::values::resolved::ToResolvedValue for BookmarkLevel {
+    type ResolvedValue = Self;
+
+    #[inline]
+    fn to_resolved_value(self, _: &crate::values::resolved::Context) -> Self::ResolvedValue {
+        self
+    }
+
+    #[inline]
+    fn from_resolved_value(resolved: Self::ResolvedValue) -> Self {
+        resolved
+    }
+}
+
+/// A value for the `bookmark-state` property.
+#[derive(
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum BookmarkState {
+    /// `open`
+    Open,
+    /// `closed`
+    Closed,
+}
+
+/// A value for the `link-parameters` property.
+#[derive(
+    Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToResolvedValue, ToShmem, ToTyped,
+)]
+#[repr(C, u8)]
+#[typed(todo_derive_fields)]
+pub enum LinkParameters {
+    /// `none`
+    None,
+    /// A serialized comma-separated list of `param()` functions.
+    Params(crate::OwnedStr),
+}
+
+impl Parse for LinkParameters {
+    fn parse<'i, 't>(
+        _: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::None);
+        }
+
+        let mut params = Vec::new();
+        loop {
+            params.push(parse_link_parameter(input)?);
+            if input.try_parse(|i| i.expect_comma()).is_err() {
+                break;
+            }
+        }
+        if params.is_empty() {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(Self::Params(params.join(", ").into()))
+    }
+}
+
+impl ToCss for LinkParameters {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::None => dest.write_str("none"),
+            Self::Params(ref params) => dest.write_str(params),
+        }
+    }
+}
+
+impl ToComputedValue for LinkParameters {
+    type ComputedValue = Self;
+
+    #[inline]
+    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
+        self.clone()
+    }
+
+    #[inline]
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        computed.clone()
+    }
+}
+
+fn parse_link_parameter<'i, 't>(input: &mut Parser<'i, 't>) -> Result<String, ParseError<'i>> {
+    input.expect_function_matching("param")?;
+    input.parse_nested_block(|input| {
+        let name = input.expect_ident_cloned()?.to_string();
+        if !name.starts_with("--") {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        if input.is_exhausted() {
+            return Ok(format!("param({name})"));
+        }
+        input.expect_comma()?;
+        let fallback_start = input.position();
+        while input.next_including_whitespace_and_comments().is_ok() {}
+        let fallback = input.slice_from(fallback_start).trim();
+        if fallback.is_empty() {
+            return Ok(format!("param({name}, )"));
+        }
+        if !css_component_value_is_valid(fallback) {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(format!("param({name}, {fallback})"))
+    })
+}
+
+fn css_component_value_is_valid(value: &str) -> bool {
+    let mut input = ParserInput::new(value);
+    let mut input = Parser::new(&mut input);
+    while !input.is_exhausted() {
+        if input.expect_no_error_token().is_err() {
+            return false;
+        }
+    }
+    true
+}
 
 impl Content {
     fn parse_counter_style(context: &ParserContext, input: &mut Parser) -> CounterStyle {

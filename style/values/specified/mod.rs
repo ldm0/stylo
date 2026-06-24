@@ -57,7 +57,10 @@ pub use self::color::{
     Color, ColorOrAuto, ColorPropertyValue, ColorScheme, ForcedColorAdjust, PrintColorAdjust,
 };
 pub use self::column::ColumnCount;
-pub use self::counters::{Content, ContentItem, CounterIncrement, CounterReset, CounterSet};
+pub use self::counters::{
+    BookmarkLevel, BookmarkState, Content, ContentItem, CounterIncrement, CounterReset, CounterSet,
+    LinkParameters,
+};
 pub use self::easing::TimingFunction;
 pub use self::effects::{BoxShadow, Filter, SimpleShadow};
 pub use self::flex::FlexBasis;
@@ -99,9 +102,9 @@ pub use self::svg::{SVGLength, SVGOpacity, SVGPaint, TextDecorationPaint};
 pub use self::svg::{SVGPaintOrder, SVGStrokeDashArray, SVGWidth, VectorEffect};
 pub use self::svg_path::SVGPathData;
 pub use self::text::RubyPosition;
-pub use self::text::{BookmarkLevel, BookmarkState, HyphenateCharacter, HyphenateLimitChars};
+pub use self::text::{HyphenateCharacter, HyphenateLimitChars};
 pub use self::text::{InitialLetter, LetterSpacing, LineBreak, TextAlign, TextIndent};
-pub use self::text::{LinkParameters, OverflowWrap, TextEmphasisPosition, TextEmphasisStyle};
+pub use self::text::{OverflowWrap, TextEmphasisPosition, TextEmphasisStyle};
 pub use self::text::{TextAlignKeyword, TextDecorationLine, TextOverflow, WordSpacing};
 pub use self::text::{TextAlignLast, TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};

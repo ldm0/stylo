@@ -66,7 +66,10 @@ pub use self::color::{
     Color, ColorOrAuto, ColorPropertyValue, ColorScheme, ForcedColorAdjust, PrintColorAdjust,
 };
 pub use self::column::ColumnCount;
-pub use self::counters::{Content, ContentItem, CounterIncrement, CounterReset, CounterSet};
+pub use self::counters::{
+    BookmarkLevel, BookmarkState, Content, ContentItem, CounterIncrement, CounterReset, CounterSet,
+    LinkParameters,
+};
 pub use self::easing::TimingFunction;
 pub use self::effects::{BoxShadow, Filter, SimpleShadow};
 pub use self::flex::FlexBasis;
@@ -109,9 +112,9 @@ pub use self::resolution::Resolution;
 pub use self::svg::{DProperty, MozContextProperties};
 pub use self::svg::{SVGLength, SVGOpacity, SVGPaint, SVGPaintKind, TextDecorationPaint};
 pub use self::svg::{SVGPaintOrder, SVGStrokeDashArray, SVGWidth, VectorEffect};
-pub use self::text::{BookmarkLevel, BookmarkState, HyphenateCharacter, HyphenateLimitChars};
+pub use self::text::{HyphenateCharacter, HyphenateLimitChars};
 pub use self::text::{InitialLetter, LetterSpacing, LineBreak, TextIndent};
-pub use self::text::{LinkParameters, OverflowWrap, RubyPosition, TextOverflow, WordBreak};
+pub use self::text::{OverflowWrap, RubyPosition, TextOverflow, WordBreak};
 pub use self::text::{TextAlign, TextAlignLast, TextEmphasisPosition, TextEmphasisStyle};
 pub use self::text::{TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};

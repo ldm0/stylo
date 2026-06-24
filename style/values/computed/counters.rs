@@ -10,6 +10,8 @@ use crate::values::generics::counters::CounterIncrement as GenericCounterIncreme
 use crate::values::generics::counters::CounterReset as GenericCounterReset;
 use crate::values::generics::counters::CounterSet as GenericCounterSet;
 
+pub use crate::values::specified::counters::{BookmarkLevel, BookmarkState, LinkParameters};
+
 /// A computed value for the `counter-increment` property.
 pub type CounterIncrement = GenericCounterIncrement<i32>;
 
