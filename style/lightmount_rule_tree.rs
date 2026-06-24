@@ -46,6 +46,7 @@ pub struct CssStylesheetRuleText {
 pub struct CssStylesheetRuleView {
     pub rule_type: CssRuleType,
     pub css_text: String,
+    pub prelude_text: Option<String>,
     pub selector_text: Option<String>,
     pub declaration_text: Option<String>,
     pub child_rules: Vec<CssStylesheetRuleView>,
@@ -2132,9 +2133,38 @@ fn stylesheet_rule_view(
     CssStylesheetRuleView {
         rule_type: rule.rule_type(),
         css_text: rule.to_css_string(guard),
+        prelude_text: stylesheet_rule_prelude_text(rule, guard),
         selector_text: stylesheet_rule_selector_text(rule, guard),
         declaration_text: stylesheet_rule_declaration_text(rule, guard),
         child_rules: stylesheet_rule_child_views(rule, guard),
+    }
+}
+
+fn stylesheet_rule_prelude_text(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> Option<String> {
+    match rule {
+        CssRule::Media(rule) => Some(rule.media_queries.read_with(guard).to_css_string()),
+        CssRule::Supports(rule) => Some(rule.condition.to_css_string()),
+        CssRule::Container(rule) => Some(rule.conditions.to_css_string()),
+        CssRule::Scope(rule) => Some(scope_rule_condition_text(rule)),
+        CssRule::LayerBlock(rule) => Some(
+            rule.name
+                .as_ref()
+                .map(ToCss::to_css_string)
+                .unwrap_or_default(),
+        ),
+        CssRule::LayerStatement(rule) => Some(
+            rule.names
+                .iter()
+                .map(ToCss::to_css_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+        CssRule::Keyframes(rule) => Some(rule.read_with(guard).name.as_atom().to_string()),
+        CssRule::Page(rule) => Some(rule.read_with(guard).selectors.to_css_string()),
+        _ => None,
     }
 }
 
@@ -2497,6 +2527,7 @@ fn keyframe_rule_view(
     CssStylesheetRuleView {
         rule_type: CssRuleType::Keyframe,
         css_text: rule.to_css_string(guard),
+        prelude_text: None,
         selector_text: Some(rule.selector.to_css_string()),
         declaration_text: Some(declaration_block_css_text(&rule.block.read_with(guard))),
         child_rules: Vec::new(),
@@ -2791,6 +2822,7 @@ mod tests {
 
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rule_type, CssRuleType::Keyframes);
+        assert_eq!(rules[0].prelude_text.as_deref(), Some("slide"));
         assert_eq!(rules[0].child_rules.len(), 2);
         assert_eq!(rules[0].child_rules[0].rule_type, CssRuleType::Keyframe);
         assert_eq!(rules[0].child_rules[0].css_text, "0% { opacity: 0; }");
@@ -3134,8 +3166,20 @@ mod tests {
             Some("screen".to_owned())
         );
         assert_eq!(
+            stylesheet_rule_tree_rule_views(&rule_tree)[7]
+                .prelude_text
+                .as_deref(),
+            Some("screen")
+        );
+        assert_eq!(
             stylesheet_rule_tree_layer_rule_view(&rule_tree, &[8]).and_then(|view| view.name),
             Some("A.B".to_owned())
+        );
+        assert_eq!(
+            stylesheet_rule_tree_rule_views(&rule_tree)[8]
+                .prelude_text
+                .as_deref(),
+            Some("A.B")
         );
     }
 
