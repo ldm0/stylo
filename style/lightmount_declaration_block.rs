@@ -184,7 +184,6 @@ mod tests {
     #[test]
     fn declaration_block_exposes_lightmount_cssom_compat_properties() {
         static_prefs::set_pref!("layout.columns.enabled", true);
-        static_prefs::set_pref!("layout.unimplemented", true);
         let block = parse_declaration_block(
             "column-rule-width: 0; column-width: 0; scroll-margin-top: 0; \
              scroll-padding-bottom: 0; scroll-snap-align: start start; \
