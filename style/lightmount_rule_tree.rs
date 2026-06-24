@@ -516,6 +516,32 @@ pub fn stylesheet_rule_tree_rule_views(
     stylesheet_mutation_result(&rule_tree.contents, &rule_tree.shared_lock).rules
 }
 
+pub fn stylesheet_rule_tree_page_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssPageRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Page(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(page_rule_view(rule.read_with(&guard), &guard))
+        },
+        _ => None,
+    }
+}
+
+pub fn stylesheet_rule_tree_margin_rule_view(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<CssMarginRuleView> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Margin(rule) => {
+            let guard = rule_tree.shared_lock.read();
+            Some(margin_rule_view(&rule, &guard))
+        },
+        _ => None,
+    }
+}
+
 pub fn insert_rule_into_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     rule_text: &str,
@@ -2424,6 +2450,7 @@ mod tests {
         set_page_rule_descriptors_in_stylesheet_rule_tree,
         set_style_rule_declarations_in_stylesheet_rule_tree,
         set_style_rule_selector_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
+        stylesheet_rule_tree_margin_rule_view, stylesheet_rule_tree_page_rule_view,
         stylesheet_rule_tree_rule_views, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
@@ -2895,9 +2922,9 @@ mod tests {
 
     #[test]
     fn stylesheet_rule_views_include_page_rules() {
-        let rules = parse_stylesheet_rule_views(
-            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
-        );
+        let css_text =
+            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#;
+        let rules = parse_stylesheet_rule_views(css_text);
 
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rule_type, CssRuleType::Page);
@@ -2919,6 +2946,16 @@ mod tests {
             rules[0].child_rules[0].declaration_text.as_deref(),
             Some("content: \"x\"; color: red;")
         );
+
+        let rule_tree = parse_stylesheet_rule_tree(css_text);
+        let page_view = stylesheet_rule_tree_page_rule_view(&rule_tree, &[0])
+            .expect("page view should be available by rule path");
+        assert_eq!(page_view.selector_text, ":first");
+        assert_eq!(page_view.style_text, "margin-top: 1px;");
+        let margin_view = stylesheet_rule_tree_margin_rule_view(&rule_tree, &[0, 0])
+            .expect("margin view should be available by rule path");
+        assert_eq!(margin_view.name, "top-left");
+        assert_eq!(margin_view.style_text, "content: \"x\"; color: red;");
     }
 
     #[test]
