@@ -184,10 +184,13 @@ mod tests {
     #[test]
     fn declaration_block_exposes_lightmount_cssom_compat_properties() {
         static_prefs::set_pref!("layout.columns.enabled", true);
+        static_prefs::set_pref!("layout.unimplemented", true);
         let block = parse_declaration_block(
             "column-rule-width: 0; column-width: 0; scroll-margin-top: 0; \
              scroll-padding-bottom: 0; scroll-snap-align: start start; \
-             scrollbar-color: auto; scrollbar-width: thin; shape-margin: 0;",
+             scrollbar-color: auto; scrollbar-width: thin; shape-margin: 0; \
+             appearance: auto; user-select: none; print-color-adjust: economy; \
+             color-adjust: exact; forced-color-adjust: preserve-parent-color;",
         );
 
         assert_eq!(
@@ -216,6 +219,20 @@ mod tests {
             Some("thin")
         );
         assert_eq!(block.property_value("shape-margin").as_deref(), Some("0px"));
+        assert_eq!(block.property_value("appearance").as_deref(), Some("auto"));
+        assert_eq!(block.property_value("user-select").as_deref(), Some("none"));
+        assert_eq!(
+            block.property_value("color-adjust").as_deref(),
+            Some("exact")
+        );
+        assert_eq!(
+            block.property_value("print-color-adjust").as_deref(),
+            Some("exact")
+        );
+        assert_eq!(
+            block.property_value("forced-color-adjust").as_deref(),
+            Some("preserve-parent-color")
+        );
     }
 
     #[test]
