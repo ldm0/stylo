@@ -19,20 +19,22 @@ use crate::{
     custom_properties::AttrTaint,
     font_face::{DescriptorId, FontFaceRule},
     media_queries::MediaList,
-    parser::{Parse, ParserContext},
+    parser::{NestingContext, Parse, ParserContext},
     properties::{parse_property_declaration_list, PropertyDeclarationBlock},
+    selector_parser::{SelectorImpl, SelectorParser},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
         keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
         AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, MarginRule, Namespaces,
-        Origin, PageRule, PageSelectors, RulesMutateError, Stylesheet, StylesheetContents,
-        StylesheetLoader, UrlExtraData,
+        Origin, PageRule, PageSelectors, RulesMutateError, StyleRule, Stylesheet,
+        StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
     Atom,
 };
+use selectors::parser::SelectorList;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssStylesheetRuleText {
@@ -1073,6 +1075,28 @@ pub fn set_page_margin_rule_descriptors_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, rule_path)
 }
 
+pub fn set_style_rule_selector_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    selector_text: &str,
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let style_rule = mutable_style_rule_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let selectors = parse_style_rule_selectors(
+        selector_text,
+        &rule_tree.contents,
+        containing_rule_type_bits,
+        parse_relative_rule_type,
+    )?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        style_rule.write_with(&mut guard).selectors = selectors;
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
 pub fn set_font_face_rule_descriptor_in_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1104,6 +1128,46 @@ pub fn set_font_face_rule_descriptor_in_stylesheet_rule_tree(
         Ok(())
     })?;
     nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+fn parse_style_rule_selectors(
+    selector_text: &str,
+    parent_stylesheet_contents: &StylesheetContents,
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+) -> Result<SelectorList<SelectorImpl>, CssRuleInsertError> {
+    let mut context = ParserContext::new(
+        parent_stylesheet_contents.origin,
+        &parent_stylesheet_contents.url_data,
+        None,
+        ParsingMode::DEFAULT,
+        parent_stylesheet_contents.quirks_mode,
+        Cow::Borrowed(&parent_stylesheet_contents.namespaces),
+        None,
+        None,
+        /* attr_taint */ Default::default(),
+    );
+    context.nesting_context = NestingContext::new(
+        CssRuleTypes::from_bits(containing_rule_type_bits),
+        parse_relative_rule_type,
+    );
+    let selector_parser = SelectorParser {
+        stylesheet_origin: context.stylesheet_origin,
+        namespaces: &context.namespaces,
+        url_data: context.url_data,
+        for_supports_rule: false,
+    };
+    let mut input = ParserInput::new(selector_text);
+    let mut input = Parser::new(&mut input);
+    input
+        .parse_entirely(|input| {
+            SelectorList::parse(
+                &selector_parser,
+                input,
+                context.nesting_context.parse_relative,
+            )
+        })
+        .map_err(|_| CssRuleInsertError::Syntax)
 }
 
 pub fn set_keyframe_rule_selector_in_stylesheet_rule_tree(
@@ -1386,6 +1450,16 @@ fn mutable_font_face_rule_for_rule_path(
 ) -> Option<Arc<crate::shared_lock::Locked<FontFaceRule>>> {
     match rule_at_path(rule_tree, rule_path)? {
         CssRule::FontFace(rule) => Some(rule),
+        _ => None,
+    }
+}
+
+fn mutable_style_rule_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<StyleRule>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::Style(rule) => Some(rule),
         _ => None,
     }
 }
@@ -2339,7 +2413,8 @@ mod tests {
         set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
         set_page_margin_rule_descriptors_in_stylesheet_rule_tree,
         set_page_rule_descriptors_in_stylesheet_rule_tree,
-        set_style_rule_declarations_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
+        set_style_rule_declarations_in_stylesheet_rule_tree,
+        set_style_rule_selector_in_stylesheet_rule_tree, stylesheet_rule_tree_css_text,
         stylesheet_rule_tree_rule_views, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
@@ -3523,6 +3598,65 @@ mod tests {
         assert_eq!(
             stylesheet_rule_tree_css_text(&rule_tree),
             "@keyframes fade {\n0% { opacity: 0; }\n100% { opacity: 0.5; transform: translateX(10px); }\n}"
+        );
+    }
+
+    #[test]
+    fn persistent_stylesheet_rule_tree_mutates_style_rule_selectors() {
+        let mut rule_tree =
+            parse_stylesheet_rule_tree(".one { color: red; } .host { & .child { color: blue; } }");
+
+        let mutation = set_style_rule_selector_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0],
+            ".renamed, main > .item",
+            0,
+            None,
+        )
+        .expect("top-level style rule selector should update in persistent tree");
+
+        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Style);
+        assert_eq!(
+            mutation.parent_rule.css_text,
+            ".renamed, main > .item { color: red; }"
+        );
+        assert_eq!(
+            mutation.parent_rule.selector_text.as_deref(),
+            Some(".renamed, main > .item")
+        );
+
+        let nested = set_style_rule_selector_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[1, 0],
+            "> .next",
+            CssRuleType::Style.bit(),
+            Some(CssRuleType::Style),
+        )
+        .expect("nested style rule selector should parse relative selector context");
+
+        assert_eq!(nested.parent_rule.rule_type, CssRuleType::Style);
+        assert_eq!(
+            nested.parent_rule.selector_text.as_deref(),
+            Some("& > .next")
+        );
+        assert_eq!(nested.parent_rule.css_text, "& > .next { color: blue; }");
+        assert_eq!(
+            stylesheet_rule_tree_css_text(&rule_tree),
+            ".renamed, main > .item { color: red; } .host {\n  & > .next { color: blue; }\n}"
+        );
+        assert_eq!(
+            set_style_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], "@bad", 0, None),
+            Err(CssRuleInsertError::Syntax)
+        );
+        assert_eq!(
+            set_style_rule_selector_in_stylesheet_rule_tree(
+                &mut rule_tree,
+                &[9],
+                ".missing",
+                0,
+                None
+            ),
+            Err(CssRuleInsertError::HierarchyRequest)
         );
     }
 
