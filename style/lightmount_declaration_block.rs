@@ -90,7 +90,9 @@ impl CssDeclarationBlock {
     ) -> Option<Vec<CssDeclarationEntry>> {
         let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
         let priority_suffix = if priority { " !important" } else { "" };
-        let parsed = parse_declaration_block(&format!("{name}: {value}{priority_suffix};"));
+        // CSSOM passes a complete value fragment. A synthetic semicolon changes EOF-recovered
+        // functions like `param(--a` into a semicolon inside the function body.
+        let parsed = parse_declaration_block(&format!("{name}: {value}{priority_suffix}"));
         let entries = parsed.entries();
         if entries.is_empty() || entries.iter().any(|entry| entry.priority != priority) {
             return None;
@@ -354,6 +356,12 @@ mod tests {
             block.property_value("link-parameters").as_deref(),
             Some("param(--a)")
         );
+
+        let block = parse_declaration_block("link-parameters: param(--a");
+        assert_eq!(
+            block.property_value("link-parameters").as_deref(),
+            Some("param(--a)")
+        );
     }
 
     #[test]
@@ -404,6 +412,19 @@ mod tests {
             block.css_text(),
             "padding: 1px 2px; color: blue; margin: 0px 2px !important;"
         );
+
+        let entries = block
+            .set_property("link-parameters", "param(--a", false)
+            .expect("EOF-recovered CSSOM values should update through PDB");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "link-parameters");
+        assert_eq!(entries[0].value, "param(--a)");
+        assert_eq!(entries[0].priority, false);
+        assert_eq!(
+            block.property_value("link-parameters").as_deref(),
+            Some("param(--a)")
+        );
+        assert!(!block.property_priority("link-parameters"));
 
         let mut longhand_block = parse_declaration_block("");
         for name in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
