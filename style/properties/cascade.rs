@@ -888,7 +888,6 @@ impl<'b> Cascade<'b> {
         #[cfg(feature = "gecko")]
         apply!(FontSizeAdjust);
 
-        #[cfg(feature = "gecko")]
         apply!(ForcedColorAdjust);
         // color-scheme needs to be after forced-color-adjust, since it's one of the "skipped in
         // forced-colors-mode" properties.
