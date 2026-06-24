@@ -75,6 +75,7 @@ pub use self::page_rule::{PagePseudoClassFlags, PageRule, PageSelector, PageSele
 pub use self::position_try_rule::PositionTryRule;
 pub use self::property_rule::PropertyRule;
 pub use self::rule_list::CssRules;
+pub(crate) use self::rule_parser::parse_nested_rule_block;
 pub use self::rule_parser::{InsertRuleContext, State, TopLevelRuleParser};
 pub use self::rules_iterator::{AllRules, EffectiveRules};
 pub use self::rules_iterator::{

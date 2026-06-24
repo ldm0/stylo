@@ -27,9 +27,9 @@ use crate::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
         keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
-        AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules, MarginRule, Namespaces,
-        Origin, PageRule, PageSelectors, RulesMutateError, StyleRule, Stylesheet,
-        StylesheetContents, StylesheetLoader, UrlExtraData,
+        parse_nested_rule_block, AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules,
+        MarginRule, Namespaces, Origin, PageRule, PageSelectors, RulesMutateError, StyleRule,
+        Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
     Atom,
@@ -954,6 +954,35 @@ pub fn delete_nested_rule(
     let mut rules = parsed.rules;
     rules.remove_rule(index).map_err(CssRuleInsertError::from)?;
     Ok(css_rules_mutation_result(&rules, &parsed.shared_lock))
+}
+
+pub fn parse_nested_rule_block_views(
+    parent_stylesheet_rule_texts: &[String],
+    block_text: &str,
+    rule_type: CssRuleType,
+    containing_rule_type_bits: u32,
+    parse_relative_rule_type: Option<CssRuleType>,
+    wants_first_declaration_block: bool,
+) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
+    let parsed = parse_nested_rules_for_mutation(
+        parent_stylesheet_rule_texts,
+        &[],
+        containing_rule_type_bits,
+        parse_relative_rule_type,
+    )?;
+    let rules = parse_nested_rule_block(
+        block_text,
+        rule_type,
+        &parsed.contents,
+        &parsed.shared_lock,
+        parsed.containing_rule_types,
+        parsed.parse_relative_rule_type,
+        wants_first_declaration_block,
+    );
+    Ok(css_rules_mutation_result(
+        &CssRules(rules),
+        &parsed.shared_lock,
+    ))
 }
 
 pub fn insert_nested_rule_into_stylesheet_rule_tree(
@@ -2618,9 +2647,9 @@ mod tests {
         parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
         parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
         parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
-        parse_page_descriptor_entries, parse_page_margin_rule_view, parse_page_rule_view,
-        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
-        parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        parse_nested_rule_block_views, parse_page_descriptor_entries, parse_page_margin_rule_view,
+        parse_page_rule_view, parse_property_rule_view, parse_stylesheet_rule_for_insert,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
         set_font_face_rule_descriptor_in_stylesheet_rule_tree,
@@ -2812,6 +2841,58 @@ mod tests {
             rules[1].child_rules[1].child_rules[0].css_text,
             ".three { display: grid; }"
         );
+    }
+
+    #[test]
+    fn parse_nested_rule_block_views_uses_stylo_nested_parser() {
+        let parent = vec![String::from(
+            r#"@namespace svg url("http://www.w3.org/2000/svg"); .host { color: red; }"#,
+        )];
+        let parsed = parse_nested_rule_block_views(
+            &parent,
+            "color: red; & svg|path { color: blue; } --after: 1;",
+            CssRuleType::Style,
+            CssRuleType::Style.bit(),
+            Some(CssRuleType::Style),
+            true,
+        )
+        .expect("style nested block should parse");
+
+        assert_eq!(parsed.rules.len(), 2);
+        assert_eq!(parsed.rules[0].rule_type, CssRuleType::Style);
+        assert_eq!(parsed.rules[0].selector_text.as_deref(), Some("& svg|path"));
+        assert_eq!(
+            parsed.rules[0].declaration_text.as_deref(),
+            Some("color: blue;")
+        );
+        assert_eq!(parsed.rules[1].rule_type, CssRuleType::NestedDeclarations);
+        assert_eq!(
+            parsed.rules[1].declaration_text.as_deref(),
+            Some("--after: 1;")
+        );
+    }
+
+    #[test]
+    fn parse_nested_rule_block_views_preserves_grouping_direct_declarations() {
+        let parent = vec![String::from(".host { @media screen { color: red; } }")];
+        let parsed = parse_nested_rule_block_views(
+            &parent,
+            "color: red; & .child { color: blue; }",
+            CssRuleType::Media,
+            CssRuleType::Style.bit() | CssRuleType::Media.bit(),
+            Some(CssRuleType::Style),
+            false,
+        )
+        .expect("nested grouping block should parse");
+
+        assert_eq!(parsed.rules.len(), 2);
+        assert_eq!(parsed.rules[0].rule_type, CssRuleType::NestedDeclarations);
+        assert_eq!(
+            parsed.rules[0].declaration_text.as_deref(),
+            Some("color: red;")
+        );
+        assert_eq!(parsed.rules[1].rule_type, CssRuleType::Style);
+        assert_eq!(parsed.rules[1].selector_text.as_deref(), Some("& .child"));
     }
 
     #[test]
