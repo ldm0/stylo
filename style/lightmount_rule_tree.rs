@@ -872,6 +872,18 @@ pub fn parse_stylesheet_rule_for_insert(
     })
 }
 
+pub fn parse_stylesheet_rule_view_for_insert(
+    existing_rule_texts: &[String],
+    rule_text: &str,
+    index: usize,
+    constructed: bool,
+) -> Result<CssStylesheetRuleView, CssRuleInsertError> {
+    let parsed =
+        parse_stylesheet_rule_for_insert_rule(existing_rule_texts, rule_text, index, constructed)?;
+    let guard = parsed.shared_lock.read();
+    Ok(stylesheet_rule_view(&parsed.rule, &guard))
+}
+
 pub fn insert_stylesheet_rule(
     existing_rule_texts: &[String],
     rule_text: &str,
@@ -2671,7 +2683,8 @@ mod tests {
         parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
         parse_nested_rule_block_views, parse_page_descriptor_entries, parse_page_margin_rule_view,
         parse_page_rule_view, parse_property_rule_view, parse_stylesheet_rule_for_insert,
-        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree, parse_stylesheet_rule_views,
+        parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
         set_font_face_rule_descriptor_in_stylesheet_rule_tree,
@@ -3512,6 +3525,26 @@ mod tests {
             parse_stylesheet_rule_for_insert(&existing, ".too-far {}", 4, false),
             Err(CssRuleInsertError::IndexSize)
         );
+    }
+
+    #[test]
+    fn insert_rule_view_parser_uses_parent_namespace_context() {
+        let existing = vec![String::from("@namespace ns\\:odd url(\"ns\");")];
+        let inserted = parse_stylesheet_rule_view_for_insert(
+            &existing,
+            r#"[ns\:odd|odd\:name] { color: red; }"#,
+            1,
+            false,
+        )
+        .expect("style rule should parse with parent namespace context");
+
+        assert_eq!(inserted.rule_type, CssRuleType::Style);
+        assert_eq!(
+            inserted.selector_text.as_deref(),
+            Some(r#"[ns\:odd|odd\:name]"#)
+        );
+        assert_eq!(inserted.declaration_text.as_deref(), Some("color: red;"));
+        assert_eq!(inserted.css_text, r#"[ns\:odd|odd\:name] { color: red; }"#);
     }
 
     #[test]
