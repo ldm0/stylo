@@ -96,6 +96,9 @@ impl CssDeclarationBlock {
     }
 
     pub fn affected_names_for_property(name: &str) -> Option<Vec<String>> {
+        if let Some(names) = lightmount_cssom_supplemental_affected_names(name) {
+            return Some(names);
+        }
         let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
         Some(affected_names_for_property_id(&property))
     }
@@ -312,6 +315,14 @@ fn append_lightmount_cssom_affected_names(name: &str, names: &mut Vec<String>) {
         },
         _ => {},
     }
+}
+
+fn lightmount_cssom_supplemental_affected_names(name: &str) -> Option<Vec<String>> {
+    matches!(
+        name,
+        "font-variant-alternates" | "font-variant-position" | "font-variant-emoji"
+    )
+    .then(|| vec![name.to_owned()])
 }
 
 fn append_unique_name(names: &mut Vec<String>, name: &str) {
@@ -834,6 +845,10 @@ mod tests {
                 "font-variant-position",
                 "font-variant-emoji",
             ],
+        );
+        assert_eq!(
+            CssDeclarationBlock::affected_names_for_property("font-variant-alternates"),
+            Some(vec!["font-variant-alternates".to_owned()])
         );
         assert_contains(
             "overscroll-behavior",
