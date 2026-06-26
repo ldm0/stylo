@@ -121,7 +121,7 @@ impl CssDeclarationBlock {
         value: &str,
         priority: bool,
     ) -> CssMutationProjection {
-        let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
+        let Some(property) = parse_style_context_property_id(name) else {
             return CssMutationProjection::parse_error();
         };
         let affected_names = affected_names_for_property_id(&property);
@@ -336,6 +336,10 @@ fn append_unique_name(names: &mut Vec<String>, name: &str) {
     if !names.iter().any(|existing| existing == name) {
         names.push(name.to_owned());
     }
+}
+
+fn parse_style_context_property_id(name: &str) -> Option<PropertyId> {
+    with_declaration_context(|context| PropertyId::parse(name, context).ok()).flatten()
 }
 
 fn property_name(property: &PropertyId) -> String {
@@ -764,6 +768,23 @@ mod tests {
         assert_eq!(entries[0].value, "inherit");
         assert_eq!(entries[0].priority, false);
         assert_eq!(all_block.css_text(), "all: inherit;");
+    }
+
+    #[test]
+    fn declaration_block_set_property_rejects_non_style_context_properties() {
+        let mut block = CssDeclarationBlock::default();
+
+        let projection = block.set_property_with_projection("size", "initial", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert!(projection.entries.is_empty());
+        assert!(block.css_text().is_empty());
+
+        let projection =
+            block.set_property_with_projection("border-bottom-color", "inherit", false);
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "border-bottom-color");
+        assert_eq!(projection.entries[0].value, "inherit");
     }
 
     #[test]
