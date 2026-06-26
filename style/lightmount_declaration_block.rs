@@ -104,16 +104,6 @@ impl CssDeclarationBlock {
             .set_result
     }
 
-    pub fn set_property_entries(
-        &mut self,
-        name: &str,
-        value: &str,
-        priority: bool,
-    ) -> Option<Vec<CssDeclarationEntry>> {
-        let projection = self.set_property_with_projection(name, value, priority);
-        (projection.set_result != CssSetResult::ParseError).then_some(projection.entries)
-    }
-
     pub fn set_property_with_projection(
         &mut self,
         name: &str,
@@ -363,7 +353,18 @@ fn with_declaration_context<R>(f: impl FnOnce(&ParserContext) -> R) -> Option<R>
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_declaration_block, CssSetResult};
+    use super::{parse_declaration_block, CssDeclarationBlock, CssDeclarationEntry, CssSetResult};
+
+    fn set_projection_entries(
+        block: &mut CssDeclarationBlock,
+        name: &str,
+        value: &str,
+        priority: bool,
+    ) -> Vec<CssDeclarationEntry> {
+        let projection = block.set_property_with_projection(name, value, priority);
+        assert_ne!(projection.set_result, CssSetResult::ParseError);
+        projection.entries
+    }
 
     #[test]
     fn declaration_block_uses_stylo_parser_and_cssom_serialization() {
@@ -602,9 +603,7 @@ mod tests {
     fn declaration_block_set_property_updates_through_pdb() {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 
-        let entries = block
-            .set_property_entries("color", "blue", false)
-            .expect("color should parse");
+        let entries = set_projection_entries(&mut block, "color", "blue", false);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "color");
         assert_eq!(entries[0].value, "blue");
@@ -612,9 +611,7 @@ mod tests {
         assert_eq!(block.property_value("color").as_deref(), Some("blue"));
         assert!(!block.property_priority("color"));
 
-        let entries = block
-            .set_property_entries("margin", "0 2px", true)
-            .expect("margin shorthand should parse");
+        let entries = set_projection_entries(&mut block, "margin", "0 2px", true);
         assert_eq!(
             entries
                 .iter()
@@ -629,9 +626,7 @@ mod tests {
             "padding: 1px 2px; color: blue; margin: 0px 2px !important;"
         );
 
-        let entries = block
-            .set_property_entries("link-parameters", "param(--a", false)
-            .expect("EOF-recovered CSSOM values should update through PDB");
+        let entries = set_projection_entries(&mut block, "link-parameters", "param(--a", false);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "link-parameters");
         assert_eq!(entries[0].value, "param(--a)");
@@ -644,9 +639,7 @@ mod tests {
 
         let mut longhand_block = parse_declaration_block("");
         for name in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
-            longhand_block
-                .set_property_entries(name, "0", true)
-                .expect("margin longhand should parse");
+            set_projection_entries(&mut longhand_block, name, "0", true);
         }
         assert_eq!(
             longhand_block.property_value("margin").as_deref(),
@@ -656,9 +649,7 @@ mod tests {
         assert_eq!(longhand_block.css_text(), "margin: 0px !important;");
 
         let mut single_longhand_block = parse_declaration_block("");
-        single_longhand_block
-            .set_property_entries("opacity", "0.5", true)
-            .expect("opacity should parse");
+        set_projection_entries(&mut single_longhand_block, "opacity", "0.5", true);
         assert_eq!(
             single_longhand_block.property_value("opacity").as_deref(),
             Some("0.5")
@@ -667,9 +658,7 @@ mod tests {
         assert_eq!(single_longhand_block.css_text(), "opacity: 0.5 !important;");
 
         let mut all_block = parse_declaration_block("display: block; color: red;");
-        let entries = all_block
-            .set_property_entries("all", "inherit", false)
-            .expect("all shorthand should parse as a CSSOM value fragment");
+        let entries = set_projection_entries(&mut all_block, "all", "inherit", false);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "all");
         assert_eq!(entries[0].value, "inherit");
