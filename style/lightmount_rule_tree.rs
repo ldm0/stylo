@@ -74,6 +74,12 @@ pub struct CssFontFaceRuleView {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssFontFaceDescriptorEntryView {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssImportRuleView {
     pub css_text: String,
     pub href: String,
@@ -133,6 +139,33 @@ pub struct CssPageDescriptorEntryView {
 
 pub fn font_face_descriptor_names() -> &'static [&'static str] {
     DescriptorId::names()
+}
+
+pub fn parse_font_face_cssom_descriptor_entry(
+    descriptor: &str,
+    value: &str,
+) -> Option<CssFontFaceDescriptorEntryView> {
+    let descriptor_id = DescriptorId::from_ident(descriptor).ok()?;
+    if value.trim().is_empty() {
+        return None;
+    }
+    let value = with_font_face_descriptor_context(|context| {
+        let mut rule = FontFaceRule::empty(SourceLocation { line: 0, column: 0 });
+        let mut input = ParserInput::new(value);
+        let mut input = Parser::new(&mut input);
+        rule.set_cssom_descriptor(descriptor_id, context, &mut input, false)
+            .map_err(|_| CssRuleInsertError::Syntax)?;
+        let mut value = CssStringWriter::new();
+        rule.descriptors
+            .get(descriptor_id, &mut value)
+            .map_err(|_| CssRuleInsertError::Syntax)?;
+        Ok(value.trim().to_owned())
+    })
+    .ok()?;
+    Some(CssFontFaceDescriptorEntryView {
+        name: descriptor_id.name().to_owned(),
+        value,
+    })
 }
 
 pub fn page_descriptor_names() -> &'static [&'static str] {
@@ -2714,15 +2747,16 @@ mod tests {
         normalize_page_selector_text, page_descriptor_names, parse_condition_rule_view,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
-        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
-        parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
-        parse_nested_rule_block_views, parse_page_descriptor_entries,
-        parse_page_margin_descriptor_block, parse_page_margin_rule_view, parse_page_rule_view,
-        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
-        parse_stylesheet_rule_tree, parse_stylesheet_rule_view_for_insert,
-        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
-        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
-        serialize_stylesheet, set_font_face_rule_descriptor_in_stylesheet_rule_tree,
+        parse_font_face_cssom_descriptor_entry, parse_font_face_rule_view,
+        parse_font_feature_values_rule_view, parse_import_rule_view, parse_keyframes_rule_view,
+        parse_layer_rule_view, parse_namespace_rule_view, parse_nested_rule_block_views,
+        parse_page_descriptor_entries, parse_page_margin_descriptor_block,
+        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
+        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
+        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_font_face_rule_descriptor_in_stylesheet_rule_tree,
         set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
@@ -3114,6 +3148,36 @@ mod tests {
         );
         assert!(
             parse_font_face_cssom_descriptor_block("font-family: Bar !important extra;").is_none()
+        );
+    }
+
+    #[test]
+    fn font_face_cssom_descriptor_entry_parses_value_fragments() {
+        let entry = parse_font_face_cssom_descriptor_entry("src", "local(Bar")
+            .expect("CSSOM descriptor entry should parse value fragments at EOF");
+        assert_eq!(entry.name, "src");
+        assert_eq!(entry.value, "local(Bar)");
+
+        let family = parse_font_face_cssom_descriptor_entry("font-family", "Bar")
+            .expect("font-family descriptor entry should parse");
+        assert_eq!(family.name, "font-family");
+        assert_eq!(family.value, "Bar");
+
+        assert!(
+            parse_font_face_cssom_descriptor_entry(
+                "src",
+                r#"url("a.woff2"); font-family: injected"#
+            )
+            .is_none(),
+            "CSSOM descriptor value fragments must not parse declaration injection"
+        );
+        assert!(
+            parse_font_face_cssom_descriptor_entry("font-weight", "400 !important").is_none(),
+            "single descriptor entry keeps priority outside the value"
+        );
+        assert!(
+            parse_font_face_cssom_descriptor_entry("font", "16px serif").is_none(),
+            "ordinary properties must not enter the font-face descriptor entry API"
         );
     }
 
