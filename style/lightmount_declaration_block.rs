@@ -99,6 +99,11 @@ impl CssDeclarationBlock {
         self.block.property_priority(&property) == Importance::Important
     }
 
+    pub fn affected_names_for_property(name: &str) -> Option<Vec<String>> {
+        let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
+        Some(affected_names_for_property_id(&property))
+    }
+
     pub fn set_property(&mut self, name: &str, value: &str, priority: bool) -> CssSetResult {
         self.set_property_with_projection(name, value, priority)
             .set_result
@@ -113,7 +118,7 @@ impl CssDeclarationBlock {
         let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
             return CssMutationProjection::parse_error();
         };
-        let affected_names = affected_names_for_property(&property);
+        let affected_names = affected_names_for_property_id(&property);
 
         if value.is_empty() {
             let result = self.remove_property_by_id(&property);
@@ -248,7 +253,7 @@ impl ParsedCssPropertyMutation {
     }
 }
 
-fn affected_names_for_property(property: &PropertyId) -> Vec<String> {
+fn affected_names_for_property_id(property: &PropertyId) -> Vec<String> {
     match property.as_shorthand() {
         Ok(shorthand) => {
             let mut names = vec![property_name(property)];
@@ -694,6 +699,33 @@ mod tests {
             block.set_property("margin", "", false),
             CssSetResult::Unchanged
         );
+    }
+
+    #[test]
+    fn declaration_block_exposes_cssom_affected_names_metadata() {
+        assert_eq!(
+            CssDeclarationBlock::affected_names_for_property("color"),
+            Some(vec!["color".to_owned()])
+        );
+        assert_eq!(
+            CssDeclarationBlock::affected_names_for_property("--token"),
+            Some(vec!["--token".to_owned()])
+        );
+        assert_eq!(
+            CssDeclarationBlock::affected_names_for_property("margin"),
+            Some(vec![
+                "margin".to_owned(),
+                "margin-top".to_owned(),
+                "margin-right".to_owned(),
+                "margin-bottom".to_owned(),
+                "margin-left".to_owned(),
+            ])
+        );
+        assert_eq!(
+            CssDeclarationBlock::affected_names_for_property("margin-top"),
+            Some(vec!["margin-top".to_owned()])
+        );
+        assert_eq!(CssDeclarationBlock::affected_names_for_property("--"), None);
     }
 
     #[test]
