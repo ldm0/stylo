@@ -95,6 +95,13 @@ impl CssDeclarationBlock {
         self.block.property_priority(&property) == Importance::Important
     }
 
+    pub fn property_is_declared(&self, name: &str) -> bool {
+        let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
+            return false;
+        };
+        self.block.first_declaration_to_remove(&property).is_some()
+    }
+
     pub fn affected_names_for_property(name: &str) -> Option<Vec<String>> {
         if let Some(names) = lightmount_cssom_supplemental_affected_names(name) {
             return Some(names);
@@ -683,6 +690,10 @@ mod tests {
             Some("")
         );
         assert_eq!(block.property_value("link-parameters").as_deref(), Some(""));
+        assert!(!block.property_is_declared("bookmark-level"));
+        assert!(!block.property_is_declared("bookmark-state"));
+        assert!(!block.property_is_declared("text-size-adjust"));
+        assert!(!block.property_is_declared("link-parameters"));
     }
 
     #[test]
@@ -695,6 +706,7 @@ mod tests {
         assert_eq!(entries[0].value, "blue");
         assert_eq!(entries[0].priority, false);
         assert_eq!(block.property_value("color").as_deref(), Some("blue"));
+        assert!(block.property_is_declared("color"));
         assert!(!block.property_priority("color"));
 
         let entries = set_projection_entries(&mut block, "margin", "0 2px", true);
@@ -706,6 +718,8 @@ mod tests {
             ["margin-top", "margin-right", "margin-bottom", "margin-left"]
         );
         assert_eq!(block.property_value("margin").as_deref(), Some("0px 2px"));
+        assert!(block.property_is_declared("margin"));
+        assert!(block.property_is_declared("margin-left"));
         assert!(block.property_priority("margin"));
         assert_eq!(
             block.css_text(),
@@ -776,6 +790,7 @@ mod tests {
             CssSetResult::ChangedPropertySet
         );
         assert_eq!(block.property_value("margin").as_deref(), Some(""));
+        assert!(!block.property_is_declared("margin"));
         assert_eq!(
             block.set_property("margin", "", false),
             CssSetResult::Unchanged
