@@ -131,6 +131,14 @@ pub struct CssPageDescriptorEntryView {
     pub value: String,
 }
 
+pub fn font_face_descriptor_names() -> &'static [&'static str] {
+    DescriptorId::names()
+}
+
+pub fn page_descriptor_names() -> &'static [&'static str] {
+    CSSOM_PAGE_DESCRIPTOR_NAMES
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssKeyframesRuleView {
     pub css_text: String,
@@ -2532,6 +2540,18 @@ fn margin_rule_view(
     }
 }
 
+const CSSOM_PAGE_DESCRIPTOR_NAMES: &[&str] = &[
+    "margin",
+    "margin-left",
+    "margin-right",
+    "margin-top",
+    "margin-bottom",
+    "page-orientation",
+    "size",
+    "marks",
+    "bleed",
+];
+
 fn canonical_page_descriptor_name(name: &str) -> Option<&'static str> {
     match name {
         "size" => Some("size"),
@@ -2687,11 +2707,11 @@ mod tests {
     use super::{
         delete_keyframe_rule, delete_keyframe_rule_from_stylesheet_rule_tree, delete_nested_rule,
         delete_nested_rule_from_stylesheet_rule_tree, delete_rule_from_stylesheet_rule_tree,
-        delete_stylesheet_rule, insert_keyframe_rule,
+        delete_stylesheet_rule, font_face_descriptor_names, insert_keyframe_rule,
         insert_keyframe_rule_into_stylesheet_rule_tree, insert_nested_rule,
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
         insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
-        normalize_page_selector_text, parse_condition_rule_view,
+        normalize_page_selector_text, page_descriptor_names, parse_condition_rule_view,
         parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
         parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
         parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
@@ -3419,6 +3439,22 @@ mod tests {
         assert!(parse_page_descriptor_entries("marks", "crop").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px; margin-bottom: 2px").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px !important").is_none());
+    }
+
+    #[test]
+    fn descriptor_name_metadata_exposes_cssom_accessor_surface() {
+        let font_face = font_face_descriptor_names();
+        assert!(font_face.contains(&"font-display"));
+        assert!(font_face.contains(&"ascent-override"));
+        assert!(font_face.contains(&"size-adjust"));
+
+        let page = page_descriptor_names();
+        assert!(page.contains(&"margin-top"));
+        assert!(page.contains(&"page-orientation"));
+        assert!(page.contains(&"marks"));
+        assert!(page.contains(&"bleed"));
+        assert!(parse_page_descriptor_entries("marks", "crop").is_none());
+        assert!(parse_page_descriptor_entries("bleed", "1mm").is_none());
     }
 
     #[test]

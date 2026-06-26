@@ -3117,14 +3117,21 @@ impl DescriptorId {
     /// The total number of descriptors.
     pub const COUNT: usize = ${len(descriptors)};
 
-    /// The CSS name of this descriptor.
-    pub fn name(&self) -> &'static str {
-        const NAMES: [&'static str; DescriptorId::COUNT] = [
+    /// CSS names for all descriptors.
+    pub const NAMES: [&'static str; DescriptorId::COUNT] = [
         % for descriptor in descriptors:
             "${descriptor.name}",
         % endfor
-        ];
-        NAMES[*self as usize]
+    ];
+
+    /// The CSS name of this descriptor.
+    pub fn name(&self) -> &'static str {
+        Self::NAMES[*self as usize]
+    }
+
+    /// CSS names for all descriptors in serialization order.
+    pub fn names() -> &'static [&'static str] {
+        &Self::NAMES
     }
 }
 
