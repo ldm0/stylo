@@ -20,7 +20,10 @@ use crate::{
     font_face::{DescriptorId, FontFaceRule},
     media_queries::MediaList,
     parser::{NestingContext, Parse, ParserContext},
-    properties::{parse_property_declaration_list, PropertyDeclarationBlock},
+    properties::{
+        parse_one_declaration_into, parse_property_declaration_list, Importance,
+        PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration,
+    },
     selector_parser::{SelectorImpl, SelectorParser},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
@@ -379,19 +382,11 @@ pub fn parse_page_descriptor_entries(
     value: &str,
 ) -> Option<Vec<CssPageDescriptorEntryView>> {
     let name = canonical_page_descriptor_name(name)?;
-    if !page_descriptor_value_is_safe_for_rule_template(value) {
+    if value.trim().is_empty() {
         return None;
     }
-    let css_text = format!("@page {{ {name}: {value}; }}");
-    let rule_tree = parse_stylesheet_rule_tree_with_import_policy(&css_text, AllowImportRules::No);
-    let guard = rule_tree.shared_lock.read();
-    let rules = rule_tree.contents.rules.read_with(&guard);
-    let [CssRule::Page(rule)] = rules.0.as_slice() else {
-        return None;
-    };
-    let rule = rule.read_with(&guard);
-    let block = rule.block.read_with(&guard);
-    let entries = page_descriptor_entries_from_block(block);
+    let block = parse_page_descriptor_declaration(name, value)?;
+    let entries = page_descriptor_entries_from_block(&block);
     (!entries.is_empty() && page_descriptor_entries_match_name(name, &entries)).then_some(entries)
 }
 
@@ -2598,10 +2593,25 @@ fn canonical_page_descriptor_name(name: &str) -> Option<&'static str> {
     }
 }
 
-fn page_descriptor_value_is_safe_for_rule_template(value: &str) -> bool {
-    !value.trim().is_empty()
-        && !value.contains(';')
-        && !value.to_ascii_lowercase().contains("!important")
+fn parse_page_descriptor_declaration(name: &str, value: &str) -> Option<PropertyDeclarationBlock> {
+    let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
+    let url_data = about_blank_url_data()?;
+    let mut declarations = SourcePropertyDeclaration::default();
+    parse_one_declaration_into(
+        &mut declarations,
+        property,
+        value,
+        Origin::Author,
+        &url_data,
+        None,
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        CssRuleType::Page,
+    )
+    .ok()?;
+    let mut block = PropertyDeclarationBlock::default();
+    block.extend(declarations.drain(), Importance::Normal);
+    Some(block)
 }
 
 fn page_descriptor_entries_from_block(
@@ -3503,6 +3513,7 @@ mod tests {
         assert!(parse_page_descriptor_entries("marks", "crop").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px; margin-bottom: 2px").is_none());
         assert!(parse_page_descriptor_entries("margin-top", "1px !important").is_none());
+        assert!(parse_page_descriptor_entries("margin-top", "1px } @page { size: a4").is_none());
     }
 
     #[test]
