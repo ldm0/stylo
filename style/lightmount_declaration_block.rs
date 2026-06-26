@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use cssparser::{Parser, ParserInput};
-use style_traits::{CssString, CssWriter, ParsingMode, ToCss};
+use style_traits::{CssString, ParsingMode};
 
 use crate::{
     context::QuirksMode,
@@ -11,7 +11,8 @@ use crate::{
     parser::ParserContext,
     properties::{
         parse_one_declaration_into, parse_property_declaration_list, AllShorthand, Importance,
-        PropertyDeclaration, PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration,
+        PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
+        SourcePropertyDeclaration,
     },
     stylesheets::{CssRuleType, Namespaces, Origin, UrlExtraData},
 };
@@ -72,12 +73,7 @@ impl CssDeclarationBlock {
 
     pub fn item(&self, index: usize) -> Option<String> {
         let (declaration, _) = self.block.declaration_importance_iter().nth(index)?;
-        let mut name = String::new();
-        declaration
-            .id()
-            .to_css(&mut CssWriter::new(&mut name))
-            .ok()?;
-        Some(name)
+        Some(property_declaration_name(declaration.id()))
     }
 
     pub fn entries(&self) -> Vec<CssDeclarationEntry> {
@@ -325,9 +321,14 @@ fn append_unique_name(names: &mut Vec<String>, name: &str) {
 }
 
 fn property_name(property: &PropertyId) -> String {
-    let mut name = String::new();
-    property.to_css(&mut CssWriter::new(&mut name)).ok();
-    name
+    match property.as_shorthand() {
+        Ok(shorthand) => shorthand.name().to_owned(),
+        Err(id) => id.name().into_owned(),
+    }
+}
+
+fn property_declaration_name(property: PropertyDeclarationId<'_>) -> String {
+    property.name().into_owned()
 }
 
 fn source_declaration_has_unresolved_value(declarations: &SourcePropertyDeclaration) -> bool {
@@ -342,11 +343,7 @@ fn declaration_entry(
     declaration: &PropertyDeclaration,
     importance: Importance,
 ) -> Option<CssDeclarationEntry> {
-    let mut name = String::new();
-    declaration
-        .id()
-        .to_css(&mut CssWriter::new(&mut name))
-        .ok()?;
+    let name = property_declaration_name(declaration.id());
     let mut value = CssString::new();
     declaration.to_css(&mut value).ok()?;
     Some(CssDeclarationEntry {
@@ -445,6 +442,23 @@ mod tests {
             block.css_text(),
             "width: 0px; margin: 1px 2px; --token: a b; color: red !important;"
         );
+    }
+
+    #[test]
+    fn declaration_block_item_and_entries_expose_custom_property_cssom_names() {
+        let block = parse_declaration_block(r"--a\;b: value; --\\: other;");
+        let entries = block.entries();
+
+        assert_eq!(block.item(0).as_deref(), Some("--a;b"));
+        assert_eq!(block.item(1).as_deref(), Some(r"--\"));
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].name, "--a;b");
+        assert_eq!(entries[0].value, "value");
+        assert_eq!(entries[1].name, r"--\");
+        assert_eq!(entries[1].value, "other");
+        assert_eq!(block.property_value("--a;b").as_deref(), Some("value"));
+        assert_eq!(block.property_value(r"--\").as_deref(), Some("other"));
+        assert_eq!(block.css_text(), r"--a\;b: value; --\\: other;");
     }
 
     #[test]
