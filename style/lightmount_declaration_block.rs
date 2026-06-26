@@ -920,6 +920,14 @@ mod tests {
             Some("env(safe-area-inset-top)")
         );
 
+        let projection = block.set_property_with_projection("top", "env(test 0 1, green)", false);
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert!(projection.has_unresolved_value);
+        assert_eq!(
+            block.property_value("top").as_deref(),
+            Some("env(test 0 1, green)")
+        );
+
         assert_eq!(
             block.set_property("--token", "var(--gap, 1px)", true),
             CssSetResult::ChangedPropertySet

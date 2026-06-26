@@ -307,6 +307,33 @@ fn parse_var_reference_name<'i, 't>(
     SubstitutionFunctionName::parse_var(input, context)
 }
 
+fn parse_env_reference_name<'i, 't>(
+    input: &mut Parser<'i, 't>,
+) -> Result<SubstitutionFunctionName, ParseError<'i>> {
+    let name =
+        SubstitutionFunctionName::from_static_name(Atom::from(input.expect_ident()?.as_ref()));
+    loop {
+        let state = input.state();
+        let location = input.current_source_location();
+        let Ok(token) = input.next() else {
+            break;
+        };
+        match *token {
+            Token::Number {
+                has_sign: false,
+                int_value: Some(index),
+                ..
+            } if index >= 0 => {},
+            Token::Comma => {
+                input.reset(&state);
+                break;
+            },
+            ref token => return Err(location.new_unexpected_token_error(token.clone())),
+        }
+    }
+    Ok(name)
+}
+
 /// A value for a custom property is just a set of tokens.
 ///
 /// We preserve the original CSS for serialization, and also the variable
@@ -1173,8 +1200,6 @@ fn parse_declaration_value_block<'i, 't>(
                                 }
                             }
                         }
-                        // TODO(emilio): For env() this should be <custom-ident> per spec, but no other browser does
-                        // that, see https://github.com/w3c/csswg-drafts/issues/3262.
                         let name = if substitution_kind == SubstitutionFunctionKind::Var {
                             let context = ParserContext::new(
                                 Origin::Author,
@@ -1188,6 +1213,8 @@ fn parse_declaration_value_block<'i, 't>(
                                 Default::default(),
                             );
                             parse_var_reference_name(input, &context)?
+                        } else if substitution_kind == SubstitutionFunctionKind::Env {
+                            parse_env_reference_name(input)?
                         } else {
                             SubstitutionFunctionName::from_static_name(Atom::from(
                                 input.expect_ident()?.as_ref(),
@@ -3169,6 +3196,13 @@ mod tests {
         VariableValue::parse(&mut parser, None, &url_data).unwrap()
     }
 
+    fn try_parse_variable_value(css: &str) -> Result<VariableValue, ParseError<'_>> {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let mut input = ParserInput::new(css);
+        let mut parser = Parser::new(&mut input);
+        VariableValue::parse(&mut parser, None, &url_data)
+    }
+
     #[test]
     fn custom_property_references_track_lh_units() {
         let value = parse_variable_value("10lh");
@@ -3199,6 +3233,38 @@ mod tests {
             value.references.refs[0].name,
             SubstitutionFunctionName::DynamicIdent(_)
         ));
+    }
+
+    #[test]
+    fn env_reference_name_allows_integer_indices() {
+        let value = parse_variable_value("env(test 0 1, green)");
+        assert_eq!(value.css, "env(test 0 1, green)");
+        assert!(value.references.any_env);
+        assert_eq!(value.references.refs.len(), 1);
+        assert_eq!(
+            value.references.refs[0]
+                .name
+                .as_static_name()
+                .map(|name| name.as_ref()),
+            Some("test")
+        );
+        assert!(value.references.refs[0].fallback.is_some());
+    }
+
+    #[test]
+    fn env_reference_name_rejects_invalid_indices() {
+        for css in [
+            "env(test1 test2, green)",
+            "env(test1 10 20 test2, green)",
+            "env(test 0.1, green)",
+            "env(test -1, green)",
+            "env(test+0, green)",
+        ] {
+            assert!(
+                try_parse_variable_value(css).is_err(),
+                "{css} should reject invalid env() index syntax"
+            );
+        }
     }
 
     #[test]
