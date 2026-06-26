@@ -940,6 +940,36 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_mutates_custom_properties_through_pdb() {
+        let mut block = parse_declaration_block("--token: old;");
+
+        let projection = block.set_property_with_projection("--token", "var(--gap, 1px)", true);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.affected_names, ["--token"]);
+        assert_eq!(projection.stored_names, ["--token"]);
+        assert!(!projection.has_unresolved_value);
+        assert_eq!(
+            block.property_value("--token").as_deref(),
+            Some("var(--gap, 1px)")
+        );
+        assert!(block.property_priority("--token"));
+        assert_eq!(block.css_text(), "--token: var(--gap, 1px) !important;");
+
+        let projection = block.set_property_with_projection("--token", "  ", false);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(block.property_value("--token").as_deref(), Some(""));
+        assert!(!block.property_priority("--token"));
+        assert_eq!(block.css_text(), "--token: ;");
+
+        let projection = block.set_property_with_projection("--token", "", false);
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert!(projection.entries.is_empty());
+        assert!(!block.property_is_declared("--token"));
+        assert_eq!(block.property_value("--token").as_deref(), Some(""));
+        assert_eq!(block.css_text(), "");
+    }
+
+    #[test]
     fn declaration_block_set_property_rejects_declaration_source_fragments() {
         let mut block = parse_declaration_block("color: red;");
 
