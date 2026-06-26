@@ -23,6 +23,29 @@ pub struct CssDeclarationEntry {
     pub priority: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CssSetResult {
+    ParseError,
+    Unchanged,
+    ModifiedExisting,
+    ChangedPropertySet,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CssRemoveResult {
+    pub changed: bool,
+    pub old_value: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CssMutationProjection {
+    pub set_result: CssSetResult,
+    pub entries: Vec<CssDeclarationEntry>,
+    pub affected_names: Vec<String>,
+    pub stored_names: Vec<String>,
+    pub has_unresolved_value: bool,
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CssDeclarationBlock {
     block: PropertyDeclarationBlock,
@@ -47,6 +70,16 @@ impl CssDeclarationBlock {
         output
     }
 
+    pub fn item(&self, index: usize) -> Option<String> {
+        let (declaration, _) = self.block.declaration_importance_iter().nth(index)?;
+        let mut name = String::new();
+        declaration
+            .id()
+            .to_css(&mut CssWriter::new(&mut name))
+            .ok()?;
+        Some(name)
+    }
+
     pub fn entries(&self) -> Vec<CssDeclarationEntry> {
         self.block
             .declaration_importance_iter()
@@ -56,11 +89,7 @@ impl CssDeclarationBlock {
 
     pub fn property_value(&self, name: &str) -> Option<String> {
         let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
-        let mut output = CssString::new();
-        self.block
-            .property_value_to_css(&property, &mut output)
-            .ok()?;
-        Some(output)
+        Some(self.property_value_by_id(&property))
     }
 
     pub fn property_priority(&self, name: &str) -> bool {
@@ -70,13 +99,133 @@ impl CssDeclarationBlock {
         self.block.property_priority(&property) == Importance::Important
     }
 
-    pub fn set_property(
+    pub fn set_property(&mut self, name: &str, value: &str, priority: bool) -> CssSetResult {
+        self.set_property_with_projection(name, value, priority)
+            .set_result
+    }
+
+    pub fn set_property_entries(
         &mut self,
         name: &str,
         value: &str,
         priority: bool,
     ) -> Option<Vec<CssDeclarationEntry>> {
-        let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
+        let projection = self.set_property_with_projection(name, value, priority);
+        (projection.set_result != CssSetResult::ParseError).then_some(projection.entries)
+    }
+
+    pub fn set_property_with_projection(
+        &mut self,
+        name: &str,
+        value: &str,
+        priority: bool,
+    ) -> CssMutationProjection {
+        let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
+            return CssMutationProjection::parse_error();
+        };
+        let affected_names = affected_names_for_property(&property);
+
+        if value.is_empty() {
+            let result = self.remove_property_by_id(&property);
+            return CssMutationProjection {
+                set_result: if result.changed {
+                    CssSetResult::ChangedPropertySet
+                } else {
+                    CssSetResult::Unchanged
+                },
+                entries: Vec::new(),
+                affected_names,
+                stored_names: Vec::new(),
+                has_unresolved_value: false,
+            };
+        }
+
+        let Some(mut parsed) = ParsedCssPropertyMutation::parse_property(property, value, priority)
+        else {
+            return CssMutationProjection::parse_error();
+        };
+        let before_css_text = self.css_text();
+        let modified_existing = self
+            .block
+            .first_declaration_to_remove(&parsed.property)
+            .is_some();
+        self.remove_property_by_id(&parsed.property);
+        self.block
+            .extend(parsed.declarations.drain(), parsed.importance);
+        let after_css_text = self.css_text();
+        let set_result = if after_css_text == before_css_text {
+            CssSetResult::Unchanged
+        } else if modified_existing {
+            CssSetResult::ModifiedExisting
+        } else {
+            CssSetResult::ChangedPropertySet
+        };
+
+        CssMutationProjection {
+            set_result,
+            affected_names,
+            stored_names: parsed
+                .entries
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect(),
+            has_unresolved_value: parsed.has_unresolved_value,
+            entries: parsed.entries,
+        }
+    }
+
+    pub fn remove_property(&mut self, name: &str) -> CssRemoveResult {
+        let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
+            return CssRemoveResult::default();
+        };
+        self.remove_property_by_id(&property)
+    }
+
+    pub fn into_inner(self) -> PropertyDeclarationBlock {
+        self.block
+    }
+
+    fn property_value_by_id(&self, property: &PropertyId) -> String {
+        let mut output = CssString::new();
+        self.block.property_value_to_css(property, &mut output).ok();
+        output
+    }
+
+    fn remove_property_by_id(&mut self, property: &PropertyId) -> CssRemoveResult {
+        let Some(first_declaration) = self.block.first_declaration_to_remove(property) else {
+            return CssRemoveResult::default();
+        };
+        let old_value = self.property_value_by_id(property);
+        self.block.remove_property(property, first_declaration);
+        CssRemoveResult {
+            changed: true,
+            old_value: Some(old_value),
+        }
+    }
+}
+
+impl CssMutationProjection {
+    fn parse_error() -> Self {
+        Self {
+            set_result: CssSetResult::ParseError,
+            entries: Vec::new(),
+            affected_names: Vec::new(),
+            stored_names: Vec::new(),
+            has_unresolved_value: false,
+        }
+    }
+}
+
+struct ParsedCssPropertyMutation {
+    property: PropertyId,
+    importance: Importance,
+    declarations: SourcePropertyDeclaration,
+    entries: Vec<CssDeclarationEntry>,
+    has_unresolved_value: bool,
+}
+
+impl ParsedCssPropertyMutation {
+    fn parse_property(property: PropertyId, value: &str, priority: bool) -> Option<Self> {
         let importance = if priority {
             Importance::Important
         } else {
@@ -98,31 +247,44 @@ impl CssDeclarationBlock {
             .ok()
         })??;
         let entries = source_declaration_entries(&declarations, importance)?;
-        if entries.is_empty() {
-            return None;
-        }
-
-        self.remove_property_by_id(&property);
-        self.block.extend(declarations.drain(), importance);
-        Some(entries)
+        let has_unresolved_value = source_declaration_has_unresolved_value(&declarations);
+        Some(Self {
+            property,
+            importance,
+            declarations,
+            entries,
+            has_unresolved_value,
+        })
     }
+}
 
-    pub fn remove_property(&mut self, name: &str) -> Option<bool> {
-        let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
-        Some(self.remove_property_by_id(&property))
+fn affected_names_for_property(property: &PropertyId) -> Vec<String> {
+    match property.as_shorthand() {
+        Ok(shorthand) => {
+            let mut names = vec![property_name(property)];
+            names.extend(
+                shorthand
+                    .longhands()
+                    .map(|longhand| longhand.name().to_owned()),
+            );
+            names
+        },
+        Err(id) => vec![id.name().into_owned()],
     }
+}
 
-    pub fn into_inner(self) -> PropertyDeclarationBlock {
-        self.block
-    }
+fn property_name(property: &PropertyId) -> String {
+    let mut name = String::new();
+    property.to_css(&mut CssWriter::new(&mut name)).ok();
+    name
+}
 
-    fn remove_property_by_id(&mut self, property: &PropertyId) -> bool {
-        let Some(first_declaration) = self.block.first_declaration_to_remove(property) else {
-            return false;
-        };
-        self.block.remove_property(property, first_declaration);
-        true
-    }
+fn source_declaration_has_unresolved_value(declarations: &SourcePropertyDeclaration) -> bool {
+    matches!(declarations.all_shorthand, AllShorthand::WithVariables(_))
+        || declarations
+            .declarations
+            .iter()
+            .any(|declaration| matches!(declaration, PropertyDeclaration::WithVariables(_)))
 }
 
 fn declaration_entry(
@@ -201,7 +363,7 @@ fn with_declaration_context<R>(f: impl FnOnce(&ParserContext) -> R) -> Option<R>
 
 #[cfg(test)]
 mod tests {
-    use super::parse_declaration_block;
+    use super::{parse_declaration_block, CssSetResult};
 
     #[test]
     fn declaration_block_uses_stylo_parser_and_cssom_serialization() {
@@ -209,6 +371,9 @@ mod tests {
             "width: 0; color: invalid; margin: 1px 2px; --token: a b; color: red !important;",
         );
 
+        assert_eq!(block.item(0).as_deref(), Some("width"));
+        assert_eq!(block.item(1).as_deref(), Some("margin-top"));
+        assert_eq!(block.item(99), None);
         assert_eq!(block.property_value("width").as_deref(), Some("0px"));
         assert_eq!(block.property_value("margin").as_deref(), Some("1px 2px"));
         assert_eq!(block.property_value("--token").as_deref(), Some("a b"));
@@ -438,7 +603,7 @@ mod tests {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 
         let entries = block
-            .set_property("color", "blue", false)
+            .set_property_entries("color", "blue", false)
             .expect("color should parse");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "color");
@@ -448,7 +613,7 @@ mod tests {
         assert!(!block.property_priority("color"));
 
         let entries = block
-            .set_property("margin", "0 2px", true)
+            .set_property_entries("margin", "0 2px", true)
             .expect("margin shorthand should parse");
         assert_eq!(
             entries
@@ -465,7 +630,7 @@ mod tests {
         );
 
         let entries = block
-            .set_property("link-parameters", "param(--a", false)
+            .set_property_entries("link-parameters", "param(--a", false)
             .expect("EOF-recovered CSSOM values should update through PDB");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "link-parameters");
@@ -480,7 +645,7 @@ mod tests {
         let mut longhand_block = parse_declaration_block("");
         for name in ["margin-top", "margin-right", "margin-bottom", "margin-left"] {
             longhand_block
-                .set_property(name, "0", true)
+                .set_property_entries(name, "0", true)
                 .expect("margin longhand should parse");
         }
         assert_eq!(
@@ -492,7 +657,7 @@ mod tests {
 
         let mut single_longhand_block = parse_declaration_block("");
         single_longhand_block
-            .set_property("opacity", "0.5", true)
+            .set_property_entries("opacity", "0.5", true)
             .expect("opacity should parse");
         assert_eq!(
             single_longhand_block.property_value("opacity").as_deref(),
@@ -503,7 +668,7 @@ mod tests {
 
         let mut all_block = parse_declaration_block("display: block; color: red;");
         let entries = all_block
-            .set_property("all", "inherit", false)
+            .set_property_entries("all", "inherit", false)
             .expect("all shorthand should parse as a CSSOM value fragment");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "all");
@@ -513,12 +678,77 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_set_property_reports_cssom_mutation_results() {
+        let mut block = parse_declaration_block("color: red;");
+
+        assert_eq!(
+            block.set_property("color", "red", false),
+            CssSetResult::Unchanged
+        );
+        assert_eq!(
+            block.set_property("color", "blue", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(
+            block.set_property("margin", "0", true),
+            CssSetResult::ChangedPropertySet
+        );
+        assert_eq!(block.property_value("margin").as_deref(), Some("0px"));
+        assert!(block.property_priority("margin"));
+
+        assert_eq!(
+            block.set_property("margin", "", false),
+            CssSetResult::ChangedPropertySet
+        );
+        assert_eq!(block.property_value("margin").as_deref(), Some(""));
+        assert_eq!(
+            block.set_property("margin", "", false),
+            CssSetResult::Unchanged
+        );
+    }
+
+    #[test]
+    fn declaration_block_preserves_unresolved_cssom_values_in_pdb() {
+        let mut block = parse_declaration_block("");
+
+        let projection = block.set_property_with_projection("margin", "var(--gap)", true);
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert!(projection.has_unresolved_value);
+        assert_eq!(
+            block.property_value("margin").as_deref(),
+            Some("var(--gap)")
+        );
+        assert!(block.property_priority("margin"));
+        assert_eq!(block.css_text(), "margin: var(--gap) !important;");
+
+        let projection =
+            block.set_property_with_projection("padding-top", "env(safe-area-inset-top)", false);
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert!(projection.has_unresolved_value);
+        assert_eq!(
+            block.property_value("padding-top").as_deref(),
+            Some("env(safe-area-inset-top)")
+        );
+
+        assert_eq!(
+            block.set_property("--token", "var(--gap, 1px)", true),
+            CssSetResult::ChangedPropertySet
+        );
+        assert_eq!(
+            block.property_value("--token").as_deref(),
+            Some("var(--gap, 1px)")
+        );
+        assert!(block.property_priority("--token"));
+    }
+
+    #[test]
     fn declaration_block_set_property_rejects_declaration_source_fragments() {
         let mut block = parse_declaration_block("color: red;");
 
-        assert!(block
-            .set_property("color", "blue; width: 1px", false)
-            .is_none());
+        assert_eq!(
+            block.set_property("color", "blue; width: 1px", false),
+            CssSetResult::ParseError
+        );
         assert_eq!(block.css_text(), "color: red;");
     }
 
@@ -526,14 +756,18 @@ mod tests {
     fn declaration_block_remove_property_uses_cssom_shorthand_semantics() {
         let mut block = parse_declaration_block("padding: 1px 2px; color: red;");
 
-        assert_eq!(block.remove_property("padding-left"), Some(true));
+        let result = block.remove_property("padding-left");
+        assert!(result.changed);
+        assert_eq!(result.old_value.as_deref(), Some("2px"));
         assert_eq!(block.property_value("padding").as_deref(), Some(""));
         assert_eq!(block.property_value("padding-left").as_deref(), Some(""));
         assert_eq!(block.property_value("padding-top").as_deref(), Some("1px"));
 
-        assert_eq!(block.remove_property("padding"), Some(true));
+        let result = block.remove_property("padding");
+        assert!(result.changed);
+        assert_eq!(result.old_value.as_deref(), Some(""));
         assert_eq!(block.property_value("padding-top").as_deref(), Some(""));
         assert_eq!(block.property_value("padding-right").as_deref(), Some(""));
-        assert_eq!(block.remove_property("does-not-exist"), None);
+        assert_eq!(block.remove_property("does-not-exist"), Default::default());
     }
 }
