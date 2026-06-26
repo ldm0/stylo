@@ -10,7 +10,8 @@ use crate::{
     custom_properties::AttrTaint,
     parser::ParserContext,
     properties::{
-        parse_property_declaration_list, Importance, PropertyDeclarationBlock, PropertyId,
+        parse_one_declaration_into, parse_property_declaration_list, AllShorthand, Importance,
+        PropertyDeclaration, PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration,
     },
     stylesheets::{CssRuleType, Namespaces, Origin, UrlExtraData},
 };
@@ -49,20 +50,7 @@ impl CssDeclarationBlock {
     pub fn entries(&self) -> Vec<CssDeclarationEntry> {
         self.block
             .declaration_importance_iter()
-            .filter_map(|(declaration, importance)| {
-                let mut name = String::new();
-                declaration
-                    .id()
-                    .to_css(&mut CssWriter::new(&mut name))
-                    .ok()?;
-                let mut value = CssString::new();
-                declaration.to_css(&mut value).ok()?;
-                Some(CssDeclarationEntry {
-                    name,
-                    value,
-                    priority: importance.important(),
-                })
-            })
+            .filter_map(|(declaration, importance)| declaration_entry(declaration, importance))
             .collect()
     }
 
@@ -89,19 +77,33 @@ impl CssDeclarationBlock {
         priority: bool,
     ) -> Option<Vec<CssDeclarationEntry>> {
         let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
-        let priority_suffix = if priority { " !important" } else { "" };
-        // CSSOM passes a complete value fragment. A synthetic semicolon changes EOF-recovered
-        // functions like `param(--a` into a semicolon inside the function body.
-        let parsed = parse_declaration_block(&format!("{name}: {value}{priority_suffix}"));
-        let entries = parsed.entries();
-        if entries.is_empty() || entries.iter().any(|entry| entry.priority != priority) {
+        let importance = if priority {
+            Importance::Important
+        } else {
+            Importance::Normal
+        };
+        let mut declarations = SourcePropertyDeclaration::default();
+        with_declaration_context(|context| {
+            parse_one_declaration_into(
+                &mut declarations,
+                property.clone(),
+                value,
+                Origin::Author,
+                context.url_data,
+                None,
+                ParsingMode::DEFAULT,
+                QuirksMode::NoQuirks,
+                CssRuleType::Style,
+            )
+            .ok()
+        })??;
+        let entries = source_declaration_entries(&declarations, importance)?;
+        if entries.is_empty() {
             return None;
         }
 
         self.remove_property_by_id(&property);
-        for (declaration, importance) in parsed.block.declaration_importance_iter() {
-            self.block.push(declaration.clone(), importance);
-        }
+        self.block.extend(declarations.drain(), importance);
         Some(entries)
     }
 
@@ -121,6 +123,55 @@ impl CssDeclarationBlock {
         self.block.remove_property(property, first_declaration);
         true
     }
+}
+
+fn declaration_entry(
+    declaration: &PropertyDeclaration,
+    importance: Importance,
+) -> Option<CssDeclarationEntry> {
+    let mut name = String::new();
+    declaration
+        .id()
+        .to_css(&mut CssWriter::new(&mut name))
+        .ok()?;
+    let mut value = CssString::new();
+    declaration.to_css(&mut value).ok()?;
+    Some(CssDeclarationEntry {
+        name,
+        value,
+        priority: importance.important(),
+    })
+}
+
+fn source_declaration_entries(
+    declarations: &SourcePropertyDeclaration,
+    importance: Importance,
+) -> Option<Vec<CssDeclarationEntry>> {
+    if !matches!(declarations.all_shorthand, AllShorthand::NotSet) {
+        let mut block = PropertyDeclarationBlock::new();
+        for declaration in declarations.all_shorthand.declarations() {
+            block.push(declaration, importance);
+        }
+        let mut value = CssString::new();
+        block
+            .property_value_to_css(
+                &PropertyId::parse_enabled_for_all_content("all").ok()?,
+                &mut value,
+            )
+            .ok()?;
+        return (!value.is_empty()).then(|| {
+            vec![CssDeclarationEntry {
+                name: "all".to_owned(),
+                value,
+                priority: importance.important(),
+            }]
+        });
+    }
+    declarations
+        .declarations
+        .iter()
+        .map(|declaration| declaration_entry(declaration, importance))
+        .collect()
 }
 
 pub fn parse_declaration_block(css_text: &str) -> CssDeclarationBlock {
@@ -449,6 +500,26 @@ mod tests {
         );
         assert!(single_longhand_block.property_priority("opacity"));
         assert_eq!(single_longhand_block.css_text(), "opacity: 0.5 !important;");
+
+        let mut all_block = parse_declaration_block("display: block; color: red;");
+        let entries = all_block
+            .set_property("all", "inherit", false)
+            .expect("all shorthand should parse as a CSSOM value fragment");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "all");
+        assert_eq!(entries[0].value, "inherit");
+        assert_eq!(entries[0].priority, false);
+        assert_eq!(all_block.css_text(), "all: inherit;");
+    }
+
+    #[test]
+    fn declaration_block_set_property_rejects_declaration_source_fragments() {
+        let mut block = parse_declaration_block("color: red;");
+
+        assert!(block
+            .set_property("color", "blue; width: 1px", false)
+            .is_none());
+        assert_eq!(block.css_text(), "color: red;");
     }
 
     #[test]
