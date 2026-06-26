@@ -254,9 +254,10 @@ impl ParsedCssPropertyMutation {
 }
 
 fn affected_names_for_property_id(property: &PropertyId) -> Vec<String> {
-    match property.as_shorthand() {
+    let name = property_name(property);
+    let mut names = match property.as_shorthand() {
         Ok(shorthand) => {
-            let mut names = vec![property_name(property)];
+            let mut names = vec![name.clone()];
             names.extend(
                 shorthand
                     .longhands()
@@ -265,6 +266,61 @@ fn affected_names_for_property_id(property: &PropertyId) -> Vec<String> {
             names
         },
         Err(id) => vec![id.name().into_owned()],
+    };
+    append_lightmount_cssom_affected_names(&name, &mut names);
+    names
+}
+
+fn append_lightmount_cssom_affected_names(name: &str, names: &mut Vec<String>) {
+    match name {
+        "animation" => {
+            for name in [
+                "animation-timeline",
+                "animation-range-start",
+                "animation-range-end",
+            ] {
+                append_unique_name(names, name);
+            }
+        },
+        "border" => append_unique_name(names, "border-image"),
+        "font" => {
+            for name in [
+                "font-variant-ligatures",
+                "font-variant-caps",
+                "font-variant-alternates",
+                "font-variant-numeric",
+                "font-variant-east-asian",
+                "font-variant-position",
+                "font-variant-emoji",
+                "font-variant",
+            ] {
+                append_unique_name(names, name);
+            }
+        },
+        "font-variant" => {
+            for name in [
+                "font-variant-ligatures",
+                "font-variant-caps",
+                "font-variant-alternates",
+                "font-variant-numeric",
+                "font-variant-east-asian",
+                "font-variant-position",
+                "font-variant-emoji",
+            ] {
+                append_unique_name(names, name);
+            }
+        },
+        "overscroll-behavior" => {
+            append_unique_name(names, "overscroll-behavior-x");
+            append_unique_name(names, "overscroll-behavior-y");
+        },
+        _ => {},
+    }
+}
+
+fn append_unique_name(names: &mut Vec<String>, name: &str) {
+    if !names.iter().any(|existing| existing == name) {
+        names.push(name.to_owned());
     }
 }
 
@@ -703,6 +759,17 @@ mod tests {
 
     #[test]
     fn declaration_block_exposes_cssom_affected_names_metadata() {
+        fn assert_contains(property: &str, names: &[&str]) {
+            let affected = CssDeclarationBlock::affected_names_for_property(property)
+                .unwrap_or_else(|| panic!("{property} should expose affected names"));
+            for name in names {
+                assert!(
+                    affected.iter().any(|affected| affected == name),
+                    "{property} should affect {name}; got {affected:?}"
+                );
+            }
+        }
+
         assert_eq!(
             CssDeclarationBlock::affected_names_for_property("color"),
             Some(vec!["color".to_owned()])
@@ -724,6 +791,43 @@ mod tests {
         assert_eq!(
             CssDeclarationBlock::affected_names_for_property("margin-top"),
             Some(vec!["margin-top".to_owned()])
+        );
+        assert_contains(
+            "animation",
+            &[
+                "animation",
+                "animation-timeline",
+                "animation-range-start",
+                "animation-range-end",
+            ],
+        );
+        assert_contains("border", &["border", "border-image"]);
+        assert_contains(
+            "font",
+            &[
+                "font",
+                "font-variant",
+                "font-variant-alternates",
+                "font-variant-position",
+                "font-variant-emoji",
+            ],
+        );
+        assert_contains(
+            "font-variant",
+            &[
+                "font-variant",
+                "font-variant-alternates",
+                "font-variant-position",
+                "font-variant-emoji",
+            ],
+        );
+        assert_contains(
+            "overscroll-behavior",
+            &[
+                "overscroll-behavior",
+                "overscroll-behavior-x",
+                "overscroll-behavior-y",
+            ],
         );
         assert_eq!(CssDeclarationBlock::affected_names_for_property("--"), None);
     }
