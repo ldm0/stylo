@@ -509,7 +509,7 @@ mod tests {
              color-scheme: dark only; orphans: 2; widows: 3; \
              page-break-after: always; page-break-before: avoid; \
              page-break-inside: avoid; alignment-baseline: alphabetic; \
-             background-attachment: local; baseline-source: first; \
+             background-attachment: local; background-clip: text; baseline-source: first; \
              bookmark-level: 1; bookmark-state: closed; border-collapse: collapse; \
              caption-side: bottom; clear: both; clip: rect(0px, 1px, 2px, 3px); \
              empty-cells: hide; link-parameters: param(--a, orange), param(--b); \
@@ -583,6 +583,10 @@ mod tests {
         assert_eq!(
             block.property_value("background-attachment").as_deref(),
             Some("local")
+        );
+        assert_eq!(
+            block.property_value("background-clip").as_deref(),
+            Some("text")
         );
         assert_eq!(
             block.property_value("baseline-source").as_deref(),
@@ -834,6 +838,20 @@ mod tests {
         assert_eq!(projection.entries.len(), 1);
         assert_eq!(projection.entries[0].name, "border-bottom-color");
         assert_eq!(projection.entries[0].value, "inherit");
+    }
+
+    #[test]
+    fn declaration_block_set_property_accepts_background_clip_text() {
+        let mut block = CssDeclarationBlock::default();
+        let projection = block.set_property_with_projection("background-clip", "text", false);
+
+        assert_eq!(projection.set_result, CssSetResult::ChangedPropertySet);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "background-clip");
+        assert_eq!(projection.entries[0].value, "text");
+        assert_eq!(projection.stored_names, ["background-clip"]);
+        assert_eq!(block.property_value("background-clip").as_deref(), Some("text"));
+        assert_eq!(block.css_text(), "background-clip: text;");
     }
 
     #[test]
