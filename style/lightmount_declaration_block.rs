@@ -771,6 +771,55 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_animation_shorthand_uses_cssom_longhand_order() {
+        let mut block = parse_declaration_block("");
+        let entries = set_projection_entries(
+            &mut block,
+            "animation",
+            "fade 1s linear 2s 3 reverse both paused",
+            false,
+        );
+        let expected = [
+            "animation-duration",
+            "animation-timing-function",
+            "animation-delay",
+            "animation-iteration-count",
+            "animation-direction",
+            "animation-fill-mode",
+            "animation-play-state",
+            "animation-name",
+        ];
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| entry.name.as_str())
+                .collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(block.item(0).as_deref(), Some("animation-duration"));
+        assert_eq!(block.item(7).as_deref(), Some("animation-name"));
+        assert_eq!(
+            block.property_value("animation").as_deref(),
+            Some("1s linear 2s 3 reverse both paused fade")
+        );
+    }
+
+    #[test]
+    fn declaration_block_animation_longhands_keep_write_order() {
+        let mut block = parse_declaration_block("");
+        set_projection_entries(&mut block, "animation-name", "fade", false);
+        set_projection_entries(&mut block, "animation-duration", "1s", false);
+        assert_eq!(block.item(0).as_deref(), Some("animation-name"));
+        assert_eq!(block.item(1).as_deref(), Some("animation-duration"));
+
+        let mut block = parse_declaration_block("");
+        set_projection_entries(&mut block, "animation-duration", "1s", false);
+        set_projection_entries(&mut block, "animation-name", "fade", false);
+        assert_eq!(block.item(0).as_deref(), Some("animation-duration"));
+        assert_eq!(block.item(1).as_deref(), Some("animation-name"));
+    }
+
+    #[test]
     fn declaration_block_set_property_rejects_non_style_context_properties() {
         let mut block = CssDeclarationBlock::default();
 
