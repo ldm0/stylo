@@ -87,6 +87,10 @@ pub enum PseudoElement {
     ServoAnonymousTableRow,
     ServoTableGrid,
     ServoTableWrapper,
+
+    /// An otherwise unknown `::-webkit-*` pseudo-element accepted for Web
+    /// compatibility. These selectors are valid but never match.
+    UnknownWebkit(AtomIdent),
 }
 
 /// The count of all pseudo-elements.
@@ -154,6 +158,10 @@ impl ToCss for PseudoElement {
             ServoAnonymousTableRow => dest.write_str("::-servo-anonymous-table-row"),
             ServoTableGrid => dest.write_str("::-servo-table-grid"),
             ServoTableWrapper => dest.write_str("::-servo-table-wrapper"),
+            UnknownWebkit(name) => {
+                dest.write_str("::-webkit-")?;
+                serialize_identifier(name, dest)
+            },
         }
     }
 }
@@ -162,7 +170,10 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
     fn accepts_state_pseudo_classes(&self) -> bool {
-        matches!(self, Self::DetailsContent | Self::Picker)
+        matches!(
+            self,
+            Self::DetailsContent | Self::Picker | Self::UnknownWebkit(_)
+        )
     }
 
     fn valid_after_before_or_after(&self) -> bool {
@@ -230,6 +241,7 @@ impl PseudoElement {
             PseudoElement::ServoAnonymousTableRow => 30,
             PseudoElement::ServoTableGrid => 31,
             PseudoElement::ServoTableWrapper => 32,
+            PseudoElement::UnknownWebkit(_) => PSEUDO_COUNT,
         }
     }
 
@@ -261,7 +273,7 @@ impl PseudoElement {
     /// Whether this is an unknown ::-webkit- pseudo-element.
     #[inline]
     pub fn is_unknown_webkit_pseudo_element(&self) -> bool {
-        false
+        matches!(self, PseudoElement::UnknownWebkit(_))
     }
 
     /// Whether this pseudo-element is the ::marker pseudo.
@@ -380,6 +392,7 @@ impl PseudoElement {
             | PseudoElement::ServoAnonymousTableRow
             | PseudoElement::ServoTableGrid
             | PseudoElement::ServoTableWrapper => PseudoElementCascadeType::Precomputed,
+            PseudoElement::UnknownWebkit(_) => PseudoElementCascadeType::Lazy,
         }
     }
 
@@ -411,6 +424,9 @@ impl PseudoElement {
     /// Whether this pseudo-element should actually exist if it has
     /// the given styles.
     pub fn should_exist(&self, style: &ComputedValues) -> bool {
+        if self.is_unknown_webkit_pseudo_element() {
+            return false;
+        }
         let display = style.get_box().clone_display();
         if display == Display::None {
             return false;
@@ -787,6 +803,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "active" => NonTSPseudoClass::Active,
             "any-link" => NonTSPseudoClass::AnyLink,
             "autofill" => NonTSPseudoClass::Autofill,
+            "-webkit-autofill" => NonTSPseudoClass::Autofill,
             "checked" => NonTSPseudoClass::Checked,
             "default" => NonTSPseudoClass::Default,
             "defined" => NonTSPseudoClass::Defined,
@@ -941,7 +958,22 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
                 }
                 ServoTableWrapper
             },
-            _ => return Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
+            _ => {
+                const WEBKIT_PREFIX: &str = "-webkit-";
+                let value = name.as_ref();
+                if !self.for_supports_rule
+                    && value
+                        .get(..WEBKIT_PREFIX.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(WEBKIT_PREFIX))
+                {
+                    UnknownWebkit(AtomIdent::from(
+                        value[WEBKIT_PREFIX.len()..].to_ascii_lowercase().as_str(),
+                    ))
+                } else {
+                    return Err(location
+                        .new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())));
+                }
+            },
 
         };
 
@@ -1232,10 +1264,48 @@ impl ServoElementSnapshot {
     }
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum WildcardSubtags {
+    Allow,
+    Disallow,
+}
+
+/// Validates the common BCP-47 grammar used by language tags and RFC 4647
+/// extended language ranges. Wildcards are valid only in ranges.
+fn is_valid_bcp47_value(value: &str, wildcard_subtags: WildcardSubtags) -> bool {
+    !value.is_empty()
+        && value.split('-').enumerate().all(|(index, subtag)| {
+            if subtag == "*" {
+                return wildcard_subtags == WildcardSubtags::Allow;
+            }
+            (1..=8).contains(&subtag.len())
+                && subtag.bytes().all(|byte| {
+                    if index == 0 {
+                        byte.is_ascii_alphabetic()
+                    } else {
+                        byte.is_ascii_alphanumeric()
+                    }
+                })
+        })
+}
+
 /// Returns whether the language is matched, as defined by
-/// [RFC 4647](https://tools.ietf.org/html/rfc4647#section-3.3.2).
+/// [RFC 4647](https://www.rfc-editor.org/rfc/rfc4647#section-3.3.2).
 pub fn extended_filtering(tag: &str, range: &str) -> bool {
+    // Per Selectors 4, an explicitly empty language matches :lang("").
+    if tag.is_empty() {
+        return range.split(',').any(str::is_empty);
+    }
+    // Malformed language tags never match, including wildcard ranges.
+    if !is_valid_bcp47_value(tag, WildcardSubtags::Disallow) {
+        return false;
+    }
+
     range.split(',').any(|lang_range| {
+        if !is_valid_bcp47_value(lang_range, WildcardSubtags::Allow) {
+            return false;
+        }
+
         // step 1
         let mut range_subtags = lang_range.split('\x2d');
         let mut tag_subtags = tag.split('\x2d');
@@ -1284,4 +1354,56 @@ pub fn extended_filtering(tag: &str, range: &str) -> bool {
         // step 4
         true
     })
+}
+
+#[cfg(test)]
+mod extended_filtering_tests {
+    use super::extended_filtering;
+
+    #[test]
+    fn rejects_malformed_language_tags() {
+        for tag in [
+            "en-",
+            "-en",
+            "en--US",
+            "en123",
+            "ninechars",
+            "en-ninechars",
+            "café",
+            "es-España",
+            "日本語",
+            "en_US",
+            "en-*",
+        ] {
+            assert!(!extended_filtering(tag, "en"), "tag `{tag}`");
+            assert!(!extended_filtering(tag, "*"), "tag `{tag}`");
+        }
+    }
+
+    #[test]
+    fn validates_extended_language_ranges() {
+        assert!(extended_filtering("en-US", "*"));
+        assert!(extended_filtering("en-US", "en-*"));
+        for range in [
+            "en-",
+            "-en",
+            "en--US",
+            "en123",
+            "ninechars",
+            "en-ninechars",
+            "café",
+            "en_US",
+        ] {
+            assert!(!extended_filtering("en-US", range), "range `{range}`");
+        }
+    }
+
+    #[test]
+    fn singleton_subtags_match_but_block_skipping() {
+        assert!(extended_filtering("fr-x-standard", "fr-x"));
+        assert!(!extended_filtering("fr-x-standard", "fr-standard"));
+        assert!(extended_filtering("cocoa-1-bar", "cocoa-1"));
+        assert!(!extended_filtering("cocoa-1-bar", "cocoa-bar"));
+        assert!(extended_filtering("", ""));
+    }
 }

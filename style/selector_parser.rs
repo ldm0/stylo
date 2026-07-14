@@ -270,6 +270,7 @@ impl ToCss for Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cssparser::ToCss as _;
 
     #[test]
     fn can_build_and_set_arbitrary_index() {
@@ -317,5 +318,30 @@ mod tests {
         assert!(parse("::details-content:nth-of-type(slot)").is_err());
         assert!(parse("::details-content:has(a)").is_err());
         assert!(parse("::details-content::part(a)").is_err());
+    }
+
+    #[test]
+    fn servo_parser_accepts_webkit_compatibility_pseudos() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let parse =
+            |selector| SelectorParser::parse_author_origin_no_namespace(selector, &url_data);
+
+        assert_eq!(
+            parse(":-webkit-autofill").unwrap().to_css_string(),
+            ":autofill"
+        );
+        assert_eq!(
+            parse("::-WeBkIt-Something-NoNeXiSt123")
+                .unwrap()
+                .to_css_string(),
+            "::-webkit-something-nonexist123"
+        );
+        assert_eq!(
+            parse(r"::-webkit-\ escaped").unwrap().to_css_string(),
+            r"::-webkit-\ escaped"
+        );
+        assert!(parse("span::-webkit-something-invalid:active").is_ok());
+        assert!(parse("span::-webkit-something-invalid::before").is_err());
+        assert!(parse("span::-webkitfoo").is_err());
     }
 }

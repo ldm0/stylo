@@ -161,7 +161,11 @@ impl IntermediateComputedKeyframe {
         let mut intermediate_steps: Vec<Self> = Vec::with_capacity(animation.steps.len());
         let mut current_step = IntermediateComputedKeyframe::new(0.);
         for step in animation.steps.iter() {
-            let start_percentage = step.start_offset.percentage.0 as f64;
+            let start_percentage = step
+                .start_offset
+                .resolved_percentage_without_context()
+                .expect("animation steps have resolved percentages")
+                .0 as f64;
             if start_percentage != current_step.start_percentage {
                 let new_step = IntermediateComputedKeyframe::new(start_percentage);
                 intermediate_steps.push(std::mem::replace(&mut current_step, new_step));

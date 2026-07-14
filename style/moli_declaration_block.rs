@@ -747,6 +747,23 @@ mod tests {
     }
 
     #[test]
+    fn list_style_type_symbols_function_rejects_image_symbols() {
+        let mut block = CssDeclarationBlock::default();
+        assert_eq!(
+            block.set_property(
+                "list-style-type",
+                r#"symbols(fixed url("https://example.com"))"#,
+                false,
+            ),
+            CssSetResult::ParseError
+        );
+        assert_eq!(
+            block.set_property("list-style-type", r#"symbols(fixed "1")"#, false),
+            CssSetResult::ChangedPropertySet
+        );
+    }
+
+    #[test]
     fn declaration_block_set_property_updates_through_pdb() {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 
@@ -1127,6 +1144,88 @@ mod tests {
                 "Chromium shorthand should serialize after parsing: {name}: {value}"
             );
         }
+    }
+
+    #[test]
+    fn declaration_block_supports_content_visibility_for_servo() {
+        let mut block = parse_declaration_block("content-visibility: auto;");
+
+        assert_eq!(block.item(0).as_deref(), Some("content-visibility"));
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("auto")
+        );
+        assert!(block.property_is_declared("content-visibility"));
+        assert_eq!(block.css_text(), "content-visibility: auto;");
+
+        let projection = block.set_property_with_projection("content-visibility", "hidden", true);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "content-visibility");
+        assert_eq!(projection.entries[0].value, "hidden");
+        assert!(projection.entries[0].priority);
+        assert_eq!(projection.stored_names, ["content-visibility"]);
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("hidden")
+        );
+        assert!(block.property_priority("content-visibility"));
+        assert_eq!(block.css_text(), "content-visibility: hidden !important;");
+
+        let projection = block.set_property_with_projection("content-visibility", "bogus", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("hidden")
+        );
+
+        let result = block.remove_property("content-visibility");
+        assert!(result.changed);
+        assert_eq!(result.old_value.as_deref(), Some("hidden"));
+        assert!(!block.property_is_declared("content-visibility"));
+        assert_eq!(block.css_text(), "");
+    }
+
+    #[test]
+    fn declaration_block_supports_touch_action_for_servo() {
+        let mut block = parse_declaration_block("touch-action: pinch-zoom pan-up pan-right;");
+
+        assert_eq!(block.item(0).as_deref(), Some("touch-action"));
+        assert_eq!(
+            block.property_value("touch-action").as_deref(),
+            Some("pan-right pan-up pinch-zoom")
+        );
+        assert_eq!(
+            block.css_text(),
+            "touch-action: pan-right pan-up pinch-zoom;"
+        );
+
+        let projection =
+            block.set_property_with_projection("touch-action", "pan-y pinch-zoom pan-x", false);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries[0].value, "manipulation");
+        assert_eq!(block.css_text(), "touch-action: manipulation;");
+
+        let projection =
+            block.set_property_with_projection("touch-action", "pan-x pan-left", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(block.css_text(), "touch-action: manipulation;");
+
+        let projection = block.set_property_with_projection("touch-action", "none", true);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "touch-action");
+        assert_eq!(projection.entries[0].value, "none");
+        assert!(projection.entries[0].priority);
+        assert_eq!(projection.stored_names, ["touch-action"]);
+        assert_eq!(block.css_text(), "touch-action: none !important;");
+
+        let projection = block.set_property_with_projection("touch-action", "bogus", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(
+            block.property_value("touch-action").as_deref(),
+            Some("none")
+        );
     }
 
     #[test]

@@ -1244,3 +1244,39 @@ impl ForcedColors {
         matches!(self, Self::Active)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::QuirksMode;
+    use crate::custom_properties::AttrTaint;
+    use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use cssparser::ParserInput;
+    use style_traits::ParsingMode;
+
+    #[test]
+    fn relative_currentcolor_is_preserved_for_computed_value_resolution() {
+        let url_data = UrlExtraData::from(url::Url::parse("about:blank").unwrap());
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+            AttrTaint::default(),
+        );
+        let mut input = ParserInput::new("color(from currentcolor srgb b g r)");
+        let mut parser = Parser::new(&mut input);
+        let color = parser
+            .parse_entirely(|input| Color::parse(&context, input))
+            .expect("relative currentcolor should parse");
+
+        assert!(matches!(
+            color.to_computed_color(None),
+            Ok(ComputedColor::ColorFunction(_))
+        ));
+    }
+}

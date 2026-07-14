@@ -37,7 +37,6 @@ use selectors::matching::{
 use selectors::parser::SelectorKey;
 use selectors::OpaqueElement;
 use smallvec::{smallvec, SmallVec};
-use std::ops::DerefMut;
 
 /// Kind of DOM mutation this relative selector invalidation is being carried out in.
 #[derive(Clone, Copy)]
@@ -255,7 +254,8 @@ where
     pub snapshot_table: Option<&'b ServoElementSnapshotTable>,
     /// Callback to trigger when the subject element is invalidated.
     pub invalidated: fn(E, &InvalidationResult),
-    /// Optional callback to collect affected elements directly.
+    /// Optional callback to collect affected elements directly, including
+    /// elements without materialized [`ElementData`].
     pub affected: Option<&'affected dyn Fn(E)>,
     /// The traversal map that should be used to process invalidations.
     pub sibling_traversal_map: SiblingTraversalMap<E>,
@@ -997,14 +997,14 @@ where
             NeedsSelectorFlags::No,
             MatchingForInvalidation::Yes,
         );
-        let mut data = match element.mutate_data() {
-            Some(data) => data,
-            None => return,
-        };
+        let mut existing_data = element.mutate_data();
+        if existing_data.is_none() && self.affected.is_none() {
+            return;
+        }
         let mut processor = RelativeSelectorOuterInvalidationProcessor {
             element,
             host,
-            data: data.deref_mut(),
+            data: existing_data.as_deref_mut(),
             dependency: &*outer_dependency,
             matching_context,
             traversal_map: &self.sibling_traversal_map,
@@ -1052,15 +1052,17 @@ pub struct RelativeSelectorOuterInvalidationProcessor<'a, 'b, 'affected, E: TEle
     pub element: E,
     /// The current shadow host, if any.
     pub host: Option<OpaqueElement>,
-    /// Data for the element being invalidated.
-    pub data: &'a mut ElementData,
+    /// Data for the element being invalidated, if it was materialized. A direct
+    /// affected-element collector can operate without Servo-owned style data.
+    pub data: Option<&'a mut ElementData>,
     /// Dependency to be processed.
     pub dependency: &'b Dependency,
     /// Matching context to use for invalidation.
     pub matching_context: MatchingContext<'a, E::Impl>,
     /// Traversal map for this invalidation.
     pub traversal_map: &'a SiblingTraversalMap<E>,
-    /// Optional callback to collect affected elements directly.
+    /// Optional callback to collect affected elements directly, including
+    /// elements without materialized [`ElementData`].
     pub affected: Option<&'affected dyn Fn(E)>,
 }
 
@@ -1196,7 +1198,9 @@ where
         };
 
         if invalidated_self {
-            self.data.hint.insert(RestyleHint::RESTYLE_SELF);
+            if let Some(data) = self.data.as_deref_mut() {
+                data.hint.insert(RestyleHint::RESTYLE_SELF);
+            }
             self.note_affected(element);
         }
         invalidated_self
@@ -1204,12 +1208,15 @@ where
 
     fn should_process_descendants(&mut self, element: E) -> bool {
         if element == self.element {
-            return should_process_descendants(&self.data);
+            return self
+                .data
+                .as_deref()
+                .map_or(self.affected.is_some(), should_process_descendants);
         }
 
         match element.borrow_data() {
             Some(d) => should_process_descendants(&d),
-            None => return false,
+            None => self.affected.is_some(),
         }
     }
 
@@ -1218,19 +1225,20 @@ where
     }
 
     fn invalidated_descendants(&mut self, element: E, child: E) {
-        invalidated_descendants(element, child)
+        invalidated_descendants(element, child);
+        self.note_affected(child);
     }
 
     fn invalidated_self(&mut self, element: E) {
         debug_assert_ne!(element, self.element);
-        if invalidated_self(element) {
+        if invalidated_self(element) || self.affected.is_some() {
             self.note_affected(element);
         }
     }
 
     fn invalidated_sibling(&mut self, element: E, of: E) {
         debug_assert_ne!(element, self.element);
-        if invalidated_sibling(element, of) {
+        if invalidated_sibling(element, of) || self.affected.is_some() {
             self.note_affected(element);
         }
     }

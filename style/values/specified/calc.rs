@@ -1285,7 +1285,15 @@ impl CalcNode {
                         right: &CalcNode,
                         in_place_operations: CalcNodeParseInPlaceOperations,
                     ) -> InPlaceDivisionResult {
-                        match right.unit() {
+                        // Relative-color channel keywords resolve to numbers, but retain the
+                        // COLOR_COMPONENT sentinel until the origin color is available. Normalize
+                        // those leaves only for denominator type checking so expressions such as
+                        // `1 / l` and `1 / (l + 1)` remain valid number division.
+                        let right_for_type_check = right.map_leaves(|leaf| match leaf {
+                            Leaf::ColorComponent(_) => Leaf::Number(NoCalcNumber::new(1.0)),
+                            leaf => leaf.clone(),
+                        });
+                        match right_for_type_check.unit() {
                             Ok(unit) if unit.is_empty() => {},
                             _ => return InPlaceDivisionResult::Invalid,
                         }
@@ -1654,6 +1662,7 @@ impl CalcNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::parsing::parse_color_with;
     use crate::context::QuirksMode;
     use crate::custom_properties::AttrTaint;
     use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
@@ -1661,7 +1670,7 @@ mod tests {
     use cssparser::{Parser, ParserInput};
     use style_traits::ParsingMode;
 
-    fn length_percentage_parses(value: &str) -> bool {
+    fn with_parser_context<T>(callback: impl FnOnce(&ParserContext) -> T) -> T {
         let url_data = UrlExtraData::from(url::Url::parse("about:blank").unwrap());
         let context = ParserContext::new(
             Origin::Author,
@@ -1674,11 +1683,27 @@ mod tests {
             None,
             AttrTaint::default(),
         );
-        let mut input = ParserInput::new(value);
-        let mut parser = Parser::new(&mut input);
-        parser
-            .parse_entirely(|input| LengthPercentage::parse(&context, input))
-            .is_ok()
+        callback(&context)
+    }
+
+    fn length_percentage_parses(value: &str) -> bool {
+        with_parser_context(|context| {
+            let mut input = ParserInput::new(value);
+            let mut parser = Parser::new(&mut input);
+            parser
+                .parse_entirely(|input| LengthPercentage::parse(context, input))
+                .is_ok()
+        })
+    }
+
+    fn color_parses(value: &str) -> bool {
+        with_parser_context(|context| {
+            let mut input = ParserInput::new(value);
+            let mut parser = Parser::new(&mut input);
+            parser
+                .parse_entirely(|input| parse_color_with(context, input))
+                .is_ok()
+        })
     }
 
     #[test]
@@ -1688,5 +1713,12 @@ mod tests {
         assert!(!length_percentage_parses("calc(5px / 1px)"));
         assert!(!length_percentage_parses("calc(5px * 10lh / 1px)"));
         assert!(!length_percentage_parses("calc(1em / 1rem * 1px)"));
+    }
+
+    #[test]
+    fn relative_color_channels_are_number_divisors() {
+        assert!(color_parses("oklch(from red calc(1 / l) c h)"));
+        assert!(color_parses("oklch(from red calc(1 / (l + 1)) c h)"));
+        assert!(!color_parses("oklch(from red calc(1 / 1px) c h)"));
     }
 }

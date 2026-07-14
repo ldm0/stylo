@@ -828,7 +828,7 @@ impl PropertyDeclaration {
                 if s != shorthand {
                     return None;
                 }
-                Some(&*declaration.value.variable_value.css)
+                Some(declaration.value.variable_value.css_text())
             },
             _ => None,
         }

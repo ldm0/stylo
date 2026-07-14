@@ -24,7 +24,8 @@ use crate::{
         parse_one_declaration_into, Importance, PropertyDeclarationBlock, PropertyId,
         SourcePropertyDeclaration,
     },
-    shared_lock::{SharedRwLock, ToCssWithGuard},
+    properties_and_values::registry::PropertyRegistration,
+    shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard},
     stylesheets::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
@@ -252,6 +253,13 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
     let [CssRule::Property(rule)] = rules.0.as_slice() else {
         return None;
     };
+    property_rule_view(rule, &guard)
+}
+
+fn property_rule_view(
+    rule: &PropertyRegistration,
+    guard: &SharedRwLockReadGuard,
+) -> Option<CssPropertyRuleView> {
     let syntax = rule
         .descriptors
         .syntax
@@ -264,8 +272,8 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
         })
         .filter(|syntax| !syntax.is_empty())?;
     Some(CssPropertyRuleView {
-        css_text: rule.to_css_string(&guard),
-        name: rule.name.to_css_string(),
+        css_text: rule.to_css_string(guard),
+        name: format!("--{}", rule.name.0.as_ref()),
         syntax,
         inherits: rule.descriptors.inherits(),
         initial_value: rule
@@ -568,29 +576,8 @@ pub fn stylesheet_rule_tree_property_rule_view(
 ) -> Option<CssPropertyRuleView> {
     match rule_at_path(rule_tree, rule_path)? {
         CssRule::Property(rule) => {
-            let syntax = rule
-                .descriptors
-                .syntax
-                .as_ref()
-                .map(|syntax| {
-                    syntax
-                        .specified_string()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| syntax.to_css_string())
-                })
-                .filter(|syntax| !syntax.is_empty())?;
             let guard = rule_tree.shared_lock.read();
-            Some(CssPropertyRuleView {
-                css_text: rule.to_css_string(&guard),
-                name: rule.name.to_css_string(),
-                syntax,
-                inherits: rule.descriptors.inherits(),
-                initial_value: rule
-                    .descriptors
-                    .initial_value
-                    .as_ref()
-                    .map(|value| value.css_text().trim().to_owned()),
-            })
+            property_rule_view(&rule, &guard)
         },
         _ => None,
     }
@@ -1190,9 +1177,24 @@ fn parse_keyframe_rules_for_mutation(
 }
 
 fn parse_keyframe_selectors(selector_text: &str) -> Option<KeyframeSelectors> {
+    ensure_moli_rule_tree_prefs();
+    let url_data = about_blank_url_data()?;
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(CssRuleType::Keyframe),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
     let mut input = ParserInput::new(selector_text);
     let mut input = Parser::new(&mut input);
-    input.parse_entirely(KeyframeSelectors::parse).ok()
+    input
+        .parse_entirely(|input| KeyframeSelectors::parse_with_context(&context, input))
+        .ok()
 }
 
 fn stylesheet_mutation_result(
@@ -1309,6 +1311,8 @@ fn ensure_moli_rule_tree_prefs() {
         static_prefs::set_pref!("layout.container-queries.enabled", true);
         static_prefs::set_pref!("layout.css.margin-rules.enabled", true);
         static_prefs::set_pref!("layout.css.at-scope.enabled", true);
+        static_prefs::set_pref!("layout.css.scroll-driven-animations.enabled", true);
+        static_prefs::set_pref!("layout.css.tree-counting-functions.enabled", true);
         static_prefs::set_pref!("layout.grid.enabled", true);
     });
 }
@@ -2190,6 +2194,21 @@ mod tests {
         assert_eq!(view.syntax, "<color>");
         assert!(!view.inherits);
         assert_eq!(view.initial_value.as_deref(), Some("red"));
+
+        let escaped_name_rule = r#"@property --tab\9 tab { syntax: "*"; inherits: true; }"#;
+        let escaped_name_view = parse_property_rule_view(escaped_name_rule)
+            .expect("escaped property name should parse");
+        assert_eq!(escaped_name_view.name, "--tab\ttab");
+        assert_eq!(escaped_name_view.css_text, escaped_name_rule);
+
+        let rule_tree = parse_stylesheet_rule_tree(escaped_name_rule);
+        assert_eq!(
+            stylesheet_rule_tree_property_rule_view(&rule_tree, &[0])
+                .expect("persistent property rule view should exist")
+                .name,
+            "--tab\ttab"
+        );
+
         assert!(
             parse_property_rule_view(
                 r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: 10px; }"#
@@ -2419,6 +2438,17 @@ mod tests {
             .expect("margin view should be available by rule path");
         assert_eq!(margin_view.name, "top-left");
         assert_eq!(margin_view.style_text, "content: \"x\"; color: red;");
+    }
+
+    #[test]
+    fn stylesheet_rule_views_preserve_implicitly_closed_variable_text() {
+        let rules = parse_stylesheet_rule_views(".target { width: var(--prop");
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].declaration_text.as_deref(),
+            Some("width: var(--prop;")
+        );
     }
 
     #[test]
@@ -2759,6 +2789,14 @@ mod tests {
         );
         assert_eq!(normalize_keyframe_selector_text("body"), None);
         assert_eq!(normalize_keyframe_selector_text("-1%"), None);
+        assert_eq!(
+            normalize_keyframe_selector_text("calc(10% * sibling-index())"),
+            Some("calc(10% * sibling-index())".into())
+        );
+        assert!(normalize_keyframe_selector_text("calc(10%)").is_some());
+        assert!(normalize_keyframe_selector_text("calc(10% * sign(1em - 1px))").is_some());
+        assert_eq!(normalize_keyframe_selector_text("calc(10px)"), None);
+        assert_eq!(normalize_keyframe_selector_text("calc(10% + 1px)"), None);
 
         assert!(keyframe_selector_texts_match("from", "0%"));
         assert!(keyframe_selector_texts_match("50%, to", "50%, 100%"));

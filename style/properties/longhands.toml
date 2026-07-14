@@ -700,6 +700,7 @@ type = "ContentVisibility"
 initial = "computed::ContentVisibility::Visible"
 struct = "box"
 spec = "https://drafts.csswg.org/css-contain/#content-visibility"
+servo_restyle_damage = "rebuild_box"
 affects = "layout"
 
 [counter-increment]
@@ -2070,9 +2071,9 @@ affects = "layout"
 type = "TouchAction"
 initial = "computed::TouchAction::auto()"
 struct = "box"
-servo_pref = "layout.unimplemented"
 animation_type = "discrete"
 spec = "https://compat.spec.whatwg.org/#touch-action"
+servo_restyle_damage = "repaint"
 affects = "paint"
 
 [transform]

@@ -10,7 +10,7 @@ use crate::derives::*;
 use crate::error_reporting::ContextualParseError;
 use crate::parser::{Parse, ParserContext};
 use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
-use crate::values::specified::Integer;
+use crate::values::specified::{Image as SpecifiedImage, Integer};
 use crate::values::{AtomString, CustomIdent};
 use crate::Atom;
 use cssparser::{
@@ -414,10 +414,15 @@ impl CounterStyleRule {
     }
 
     /// Set the name of the counter style rule. Caller must ensure that
-    /// the name is valid.
-    pub fn set_name(&mut self, name: CustomIdent) {
+    /// the name is valid. Returns whether the name changed.
+    pub fn set_name(&mut self, name: CustomIdent) -> bool {
         debug_assert!(is_valid_name_definition(&name));
+        if self.name == name {
+            return false;
+        }
         self.name = name;
+        self.generation += Wrapping(1);
+        true
     }
 
     /// Get the current generation of the counter style rule.
@@ -507,6 +512,36 @@ impl ToCss for System {
     }
 }
 
+/// A validated `<image>` retained for counter-style CSSOM serialization.
+///
+/// Lightmount does not paint list markers, so the fork keeps the canonical
+/// specified serialization instead of carrying a render-resource payload.
+#[derive(Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToResolvedValue, ToShmem)]
+#[repr(transparent)]
+pub struct SymbolImage(crate::OwnedStr);
+
+impl Parse for SymbolImage {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        let image = SpecifiedImage::parse(context, input)?;
+        if matches!(image, SpecifiedImage::None) {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(Self(image.to_css_string().into()))
+    }
+}
+
+impl ToCss for SymbolImage {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        dest.write_str(&self.0)
+    }
+}
+
 /// <https://drafts.csswg.org/css-counter-styles/#typedef-symbol>
 #[derive(
     Clone, Debug, Eq, MallocSizeOf, PartialEq, ToComputedValue, ToResolvedValue, ToCss, ToShmem,
@@ -517,16 +552,18 @@ pub enum Symbol {
     String(crate::OwnedStr),
     /// <custom-ident>
     Ident(CustomIdent),
-    // Not implemented:
-    // /// <image>
-    // Image(Image),
+    /// <image>
+    Image(SymbolImage),
 }
 
 impl Parse for Symbol {
     fn parse<'i, 't>(
-        _context: &ParserContext,
+        context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
+        if let Ok(image) = input.try_parse(|input| SymbolImage::parse(context, input)) {
+            return Ok(Symbol::Image(image));
+        }
         let location = input.current_source_location();
         match *input.next()? {
             Token::QuotedString(ref s) => Ok(Symbol::String(s.as_ref().to_owned().into())),
@@ -537,13 +574,13 @@ impl Parse for Symbol {
 }
 
 impl Symbol {
-    /// Returns whether this symbol is allowed in symbols() function.
+    /// Returns whether this symbol is supported in `symbols()` notation.
+    ///
+    /// Image symbols are accepted in `@counter-style` descriptors, but remain
+    /// unsupported in the property-level function, matching current WPT and
+    /// Chromium behavior.
     pub fn is_allowed_in_symbols(&self) -> bool {
-        match self {
-            // Identifier is not allowed.
-            &Symbol::Ident(_) => false,
-            _ => true,
-        }
+        matches!(self, Symbol::String(_))
     }
 }
 
@@ -752,8 +789,8 @@ pub enum SpeakAs {
     Numbers,
     /// words
     Words,
-    // /// spell-out, not supported, see bug 1024178
-    // SpellOut,
+    /// spell-out
+    SpellOut,
     /// <counter-style-name>
     Other(CustomIdent),
 }
@@ -763,7 +800,6 @@ impl Parse for SpeakAs {
         _context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let mut is_spell_out = false;
         let result = input.try_parse(|input| {
             let ident = input.expect_ident().map_err(|_| ())?;
             match_ignore_ascii_case! { &*ident,
@@ -771,18 +807,10 @@ impl Parse for SpeakAs {
                 "bullets" => Ok(SpeakAs::Bullets),
                 "numbers" => Ok(SpeakAs::Numbers),
                 "words" => Ok(SpeakAs::Words),
-                "spell-out" => {
-                    is_spell_out = true;
-                    Err(())
-                },
+                "spell-out" => Ok(SpeakAs::SpellOut),
                 _ => Err(()),
             }
         });
-        if is_spell_out {
-            // spell-out is not supported, but don’t parse it as a <counter-style-name>.
-            // See bug 1024178.
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-        }
         result.or_else(|_| Ok(SpeakAs::Other(parse_counter_style_name(input)?)))
     }
 }
