@@ -850,8 +850,51 @@ mod tests {
         assert_eq!(projection.entries[0].name, "background-clip");
         assert_eq!(projection.entries[0].value, "text");
         assert_eq!(projection.stored_names, ["background-clip"]);
-        assert_eq!(block.property_value("background-clip").as_deref(), Some("text"));
+        assert_eq!(
+            block.property_value("background-clip").as_deref(),
+            Some("text")
+        );
         assert_eq!(block.css_text(), "background-clip: text;");
+    }
+
+    #[test]
+    fn declaration_block_supports_content_visibility_for_servo() {
+        let mut block = parse_declaration_block("content-visibility: auto;");
+
+        assert_eq!(block.item(0).as_deref(), Some("content-visibility"));
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("auto")
+        );
+        assert!(block.property_is_declared("content-visibility"));
+        assert_eq!(block.css_text(), "content-visibility: auto;");
+
+        let projection = block.set_property_with_projection("content-visibility", "hidden", true);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "content-visibility");
+        assert_eq!(projection.entries[0].value, "hidden");
+        assert!(projection.entries[0].priority);
+        assert_eq!(projection.stored_names, ["content-visibility"]);
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("hidden")
+        );
+        assert!(block.property_priority("content-visibility"));
+        assert_eq!(block.css_text(), "content-visibility: hidden !important;");
+
+        let projection = block.set_property_with_projection("content-visibility", "bogus", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(
+            block.property_value("content-visibility").as_deref(),
+            Some("hidden")
+        );
+
+        let result = block.remove_property("content-visibility");
+        assert!(result.changed);
+        assert_eq!(result.old_value.as_deref(), Some("hidden"));
+        assert!(!block.property_is_declared("content-visibility"));
+        assert_eq!(block.css_text(), "");
     }
 
     #[test]

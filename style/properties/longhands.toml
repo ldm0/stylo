@@ -709,8 +709,8 @@ affects = "layout"
 type = "ContentVisibility"
 initial = "computed::ContentVisibility::Visible"
 struct = "box"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-contain/#content-visibility"
+servo_restyle_damage = "rebuild_box"
 affects = "layout"
 
 [counter-increment]
