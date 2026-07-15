@@ -739,8 +739,8 @@ pub enum SpeakAs {
     Numbers,
     /// words
     Words,
-    // /// spell-out, not supported, see bug 1024178
-    // SpellOut,
+    /// spell-out
+    SpellOut,
     /// <counter-style-name>
     Other(CustomIdent),
 }
@@ -750,7 +750,6 @@ impl Parse for SpeakAs {
         _context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let mut is_spell_out = false;
         let result = input.try_parse(|input| {
             let ident = input.expect_ident().map_err(|_| ())?;
             match_ignore_ascii_case! { &*ident,
@@ -758,18 +757,10 @@ impl Parse for SpeakAs {
                 "bullets" => Ok(SpeakAs::Bullets),
                 "numbers" => Ok(SpeakAs::Numbers),
                 "words" => Ok(SpeakAs::Words),
-                "spell-out" => {
-                    is_spell_out = true;
-                    Err(())
-                },
+                "spell-out" => Ok(SpeakAs::SpellOut),
                 _ => Err(()),
             }
         });
-        if is_spell_out {
-            // spell-out is not supported, but don’t parse it as a <counter-style-name>.
-            // See bug 1024178.
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-        }
         result.or_else(|_| Ok(SpeakAs::Other(parse_counter_style_name(input)?)))
     }
 }
