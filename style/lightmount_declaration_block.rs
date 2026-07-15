@@ -467,6 +467,27 @@ mod tests {
     }
 
     #[test]
+    fn opacity_cssom_serialization_preserves_calc_percentage_type() {
+        let mut block = CssDeclarationBlock::default();
+        for (value, expected) in [
+            ("50%", "0.5"),
+            ("calc(-50% - 50%)", "calc(-100%)"),
+            ("calc(25% * 2)", "calc(50%)"),
+            ("clamp(50%, 80%, 70%)", "calc(70%)"),
+            ("calc(-0.5 - 0.5)", "calc(-1)"),
+        ] {
+            let entries = set_projection_entries(&mut block, "opacity", value, false);
+            assert_eq!(entries.len(), 1, "{value}");
+            assert_eq!(entries[0].value, expected, "{value}");
+            assert_eq!(
+                block.property_value("opacity").as_deref(),
+                Some(expected),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
     fn declaration_block_item_and_entries_expose_custom_property_cssom_names() {
         let block = parse_declaration_block(r"--a\;b: value; --\\: other;");
         let entries = block.entries();
