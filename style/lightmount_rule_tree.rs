@@ -24,8 +24,9 @@ use crate::{
         parse_one_declaration_into, parse_property_declaration_list, Importance,
         PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration,
     },
+    properties_and_values::registry::PropertyRegistration,
     selector_parser::{SelectorImpl, SelectorParser},
-    shared_lock::{SharedRwLock, ToCssWithGuard},
+    shared_lock::{SharedRwLock, SharedRwLockReadGuard, ToCssWithGuard},
     stylesheets::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
@@ -305,6 +306,13 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
     let [CssRule::Property(rule)] = rules.0.as_slice() else {
         return None;
     };
+    property_rule_view(rule, &guard)
+}
+
+fn property_rule_view(
+    rule: &PropertyRegistration,
+    guard: &SharedRwLockReadGuard,
+) -> Option<CssPropertyRuleView> {
     let syntax = rule
         .descriptors
         .syntax
@@ -317,8 +325,8 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
         })
         .filter(|syntax| !syntax.is_empty())?;
     Some(CssPropertyRuleView {
-        css_text: rule.to_css_string(&guard),
-        name: rule.name.to_css_string(),
+        css_text: rule.to_css_string(guard),
+        name: format!("--{}", rule.name.0.as_ref()),
         syntax,
         inherits: rule.descriptors.inherits(),
         initial_value: rule
@@ -728,29 +736,8 @@ pub fn stylesheet_rule_tree_property_rule_view(
 ) -> Option<CssPropertyRuleView> {
     match rule_at_path(rule_tree, rule_path)? {
         CssRule::Property(rule) => {
-            let syntax = rule
-                .descriptors
-                .syntax
-                .as_ref()
-                .map(|syntax| {
-                    syntax
-                        .specified_string()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| syntax.to_css_string())
-                })
-                .filter(|syntax| !syntax.is_empty())?;
             let guard = rule_tree.shared_lock.read();
-            Some(CssPropertyRuleView {
-                css_text: rule.to_css_string(&guard),
-                name: rule.name.to_css_string(),
-                syntax,
-                inherits: rule.descriptors.inherits(),
-                initial_value: rule
-                    .descriptors
-                    .initial_value
-                    .as_ref()
-                    .map(|value| value.css_text().trim().to_owned()),
-            })
+            property_rule_view(&rule, &guard)
         },
         _ => None,
     }
@@ -3311,6 +3298,21 @@ mod tests {
         assert_eq!(view.syntax, "<color>");
         assert!(!view.inherits);
         assert_eq!(view.initial_value.as_deref(), Some("red"));
+
+        let escaped_name_rule = r#"@property --tab\9 tab { syntax: "*"; inherits: true; }"#;
+        let escaped_name_view = parse_property_rule_view(escaped_name_rule)
+            .expect("escaped property name should parse");
+        assert_eq!(escaped_name_view.name, "--tab\ttab");
+        assert_eq!(escaped_name_view.css_text, escaped_name_rule);
+
+        let rule_tree = parse_constructed_stylesheet_rule_tree(escaped_name_rule);
+        assert_eq!(
+            stylesheet_rule_tree_property_rule_view(&rule_tree, &[0])
+                .expect("persistent property rule view should exist")
+                .name,
+            "--tab\ttab"
+        );
+
         assert!(
             parse_property_rule_view(
                 r#"@property --accent { syntax: "<color>"; inherits: false; initial-value: 10px; }"#
