@@ -977,6 +977,16 @@ pub enum NumberOrPercentage {
     Number(Number),
 }
 
+impl NumberOrPercentage {
+    /// Returns the underlying numeric value.
+    pub fn value(&self) -> CSSFloat {
+        match self {
+            Self::Percentage(percentage) => percentage.0,
+            Self::Number(number) => *number,
+        }
+    }
+}
+
 impl ClampToNonNegative for NumberOrPercentage {
     fn clamp_to_non_negative(self) -> Self {
         match self {
