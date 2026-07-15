@@ -3102,6 +3102,20 @@ mod tests {
             view.css_text,
             r#"@counter-style spoken { system: symbolic; symbols: "X" "Y"; speak-as: spell-out; }"#
         );
+
+        let view = parse_counter_style_rule_view(
+            r#"@counter-style pictured { system: symbolic; prefix: url(https://example.com/prefix.png); suffix: linear-gradient(yellow, blue); symbols: ident "X" url("marker.png"); }"#,
+        )
+        .expect("counter-style symbols accept validated image values");
+        assert!(view
+            .css_text
+            .contains(r#"prefix: url("https://example.com/prefix.png")"#));
+        assert!(view
+            .css_text
+            .contains("suffix: linear-gradient(yellow, blue)"));
+        assert!(view
+            .css_text
+            .contains(r#"symbols: ident "X" url("marker.png")"#));
     }
 
     #[test]

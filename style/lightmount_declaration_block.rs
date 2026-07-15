@@ -726,6 +726,23 @@ mod tests {
     }
 
     #[test]
+    fn list_style_type_symbols_function_rejects_image_symbols() {
+        let mut block = CssDeclarationBlock::default();
+        assert_eq!(
+            block.set_property(
+                "list-style-type",
+                r#"symbols(fixed url("https://example.com"))"#,
+                false,
+            ),
+            CssSetResult::ParseError
+        );
+        assert_eq!(
+            block.set_property("list-style-type", r#"symbols(fixed "1")"#, false),
+            CssSetResult::ChangedPropertySet
+        );
+    }
+
+    #[test]
     fn declaration_block_set_property_updates_through_pdb() {
         let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
 
