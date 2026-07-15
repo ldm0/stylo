@@ -72,6 +72,7 @@ pub enum DisplayMode {
     MinimalUi,
     Standalone,
     Fullscreen,
+    PictureInPicture,
 }
 
 /// https://w3c.github.io/manifest/#the-display-mode-media-feature
@@ -532,3 +533,21 @@ pub static MEDIA_FEATURES: [QueryFeatureDescription; 31] = [
         FeatureFlags::empty(),
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cssparser::{Parser, ParserInput};
+    use style_traits::ToCss;
+
+    #[test]
+    fn display_mode_accepts_picture_in_picture() {
+        let mut input = ParserInput::new("picture-in-picture");
+        let mut parser = Parser::new(&mut input);
+        let value = DisplayMode::parse(&mut parser)
+            .expect("picture-in-picture should be a known display mode");
+
+        assert_eq!(value, DisplayMode::PictureInPicture);
+        assert_eq!(value.to_css_string(), "picture-in-picture");
+    }
+}
