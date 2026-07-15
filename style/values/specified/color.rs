@@ -889,10 +889,13 @@ impl Color {
                 );
 
                 // Try to eagerly resolve the color function before making it a computed color.
-                let absolute_color_function = color_function
-                    .map_origin_color(|origin_color| origin_color.resolve_to_absolute())?;
-                if let Ok(absolute) =
-                    absolute_color_function.resolve_to_absolute_with_context(context)
+                // An origin such as currentcolor cannot become absolute yet; that is a reason to
+                // preserve the function for computed-value resolution, not a conversion error.
+                if let Ok(absolute) = color_function
+                    .map_origin_color(|origin_color| origin_color.resolve_to_absolute())
+                    .and_then(|color_function| {
+                        color_function.resolve_to_absolute_with_context(context)
+                    })
                 {
                     ComputedColor::Absolute(absolute)
                 } else {
@@ -1249,5 +1252,41 @@ impl ForcedColors {
     /// Returns whether forced-colors is active for this page.
     pub fn is_active(self) -> bool {
         matches!(self, Self::Active)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::QuirksMode;
+    use crate::custom_properties::AttrTaint;
+    use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use cssparser::ParserInput;
+    use style_traits::ParsingMode;
+
+    #[test]
+    fn relative_currentcolor_is_preserved_for_computed_value_resolution() {
+        let url_data = UrlExtraData::from(url::Url::parse("about:blank").unwrap());
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+            AttrTaint::default(),
+        );
+        let mut input = ParserInput::new("color(from currentcolor srgb b g r)");
+        let mut parser = Parser::new(&mut input);
+        let color = parser
+            .parse_entirely(|input| Color::parse(&context, input))
+            .expect("relative currentcolor should parse");
+
+        assert!(matches!(
+            color.to_computed_color(None),
+            Ok(ComputedColor::ColorFunction(_))
+        ));
     }
 }
