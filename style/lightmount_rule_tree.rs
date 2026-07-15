@@ -59,6 +59,16 @@ pub struct CssStylesheetRuleView {
 pub struct CssCounterStyleRuleView {
     pub css_text: String,
     pub name: String,
+    pub system: String,
+    pub symbols: String,
+    pub additive_symbols: String,
+    pub negative: String,
+    pub prefix: String,
+    pub suffix: String,
+    pub range: String,
+    pub pad: String,
+    pub speak_as: String,
+    pub fallback: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -252,10 +262,40 @@ pub fn parse_counter_style_rule_view(css_text: &str) -> Option<CssCounterStyleRu
         return None;
     };
     let rule = rule.read_with(&guard);
-    Some(CssCounterStyleRuleView {
-        css_text: rule.to_css_string(&guard),
+    Some(counter_style_rule_view(rule, &guard))
+}
+
+fn counter_style_rule_view(
+    rule: &crate::counter_style::CounterStyleRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssCounterStyleRuleView {
+    use crate::counter_style::DescriptorId;
+
+    CssCounterStyleRuleView {
+        css_text: rule.to_css_string(guard),
         name: rule.name().to_css_string(),
-    })
+        system: counter_style_descriptor_text(rule, DescriptorId::System),
+        symbols: counter_style_descriptor_text(rule, DescriptorId::Symbols),
+        additive_symbols: counter_style_descriptor_text(rule, DescriptorId::AdditiveSymbols),
+        negative: counter_style_descriptor_text(rule, DescriptorId::Negative),
+        prefix: counter_style_descriptor_text(rule, DescriptorId::Prefix),
+        suffix: counter_style_descriptor_text(rule, DescriptorId::Suffix),
+        range: counter_style_descriptor_text(rule, DescriptorId::Range),
+        pad: counter_style_descriptor_text(rule, DescriptorId::Pad),
+        speak_as: counter_style_descriptor_text(rule, DescriptorId::SpeakAs),
+        fallback: counter_style_descriptor_text(rule, DescriptorId::Fallback),
+    }
+}
+
+fn counter_style_descriptor_text(
+    rule: &crate::counter_style::CounterStyleRule,
+    descriptor_id: crate::counter_style::DescriptorId,
+) -> String {
+    let mut value = CssStringWriter::new();
+    rule.descriptors()
+        .get(descriptor_id, &mut value)
+        .expect("serializing a counter-style descriptor into a string cannot fail");
+    value.trim().to_owned()
 }
 
 pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
@@ -598,10 +638,7 @@ pub fn stylesheet_rule_tree_counter_style_rule_view(
         CssRule::CounterStyle(rule) => {
             let guard = rule_tree.shared_lock.read();
             let rule = rule.read_with(&guard);
-            Some(CssCounterStyleRuleView {
-                css_text: rule.to_css_string(&guard),
-                name: rule.name().to_css_string(),
-            })
+            Some(counter_style_rule_view(rule, &guard))
         },
         _ => None,
     }
@@ -1298,6 +1335,48 @@ pub fn set_keyframe_rule_declarations_in_stylesheet_rule_tree(
     nested_rule_tree_mutation_result(rule_tree, parent_path)
 }
 
+pub fn set_counter_style_rule_name_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    name: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let counter_style_rule = mutable_counter_style_rule_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let mut input = ParserInput::new(name);
+    let mut input = Parser::new(&mut input);
+    let name = input
+        .parse_entirely(crate::counter_style::parse_counter_style_name_definition)
+        .map_err(|_| CssRuleInsertError::Syntax)?;
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        counter_style_rule.write_with(&mut guard).set_name(name);
+    }
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
+pub fn set_counter_style_rule_descriptor_in_stylesheet_rule_tree(
+    rule_tree: &mut CssStylesheetRuleTree,
+    rule_path: &[usize],
+    descriptor: &str,
+    value: &str,
+) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
+    let counter_style_rule = mutable_counter_style_rule_for_rule_path(rule_tree, rule_path)
+        .ok_or(CssRuleInsertError::HierarchyRequest)?;
+    let descriptor_id = crate::counter_style::DescriptorId::from_ident(descriptor)
+        .map_err(|_| CssRuleInsertError::Syntax)?;
+    with_counter_style_descriptor_context(|context| {
+        let mut input = ParserInput::new(value);
+        let mut input = Parser::new(&mut input);
+        let mut guard = rule_tree.shared_lock.write();
+        counter_style_rule
+            .write_with(&mut guard)
+            .set_descriptor(descriptor_id, context, &mut input)
+            .map_err(|_| CssRuleInsertError::Syntax)?;
+        Ok(())
+    })?;
+    nested_rule_tree_mutation_result(rule_tree, rule_path)
+}
+
 pub fn set_font_face_rule_descriptors_in_stylesheet_rule_tree(
     rule_tree: &mut CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1724,6 +1803,16 @@ fn mutable_font_face_rule_for_rule_path(
     }
 }
 
+fn mutable_counter_style_rule_for_rule_path(
+    rule_tree: &CssStylesheetRuleTree,
+    rule_path: &[usize],
+) -> Option<Arc<crate::shared_lock::Locked<crate::counter_style::CounterStyleRule>>> {
+    match rule_at_path(rule_tree, rule_path)? {
+        CssRule::CounterStyle(rule) => Some(rule),
+        _ => None,
+    }
+}
+
 fn mutable_style_rule_for_rule_path(
     rule_tree: &CssStylesheetRuleTree,
     rule_path: &[usize],
@@ -1903,6 +1992,26 @@ fn with_font_face_descriptor_context<R>(
         Origin::Author,
         &url_data,
         Some(CssRuleType::FontFace),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
+    f(&context)
+}
+
+fn with_counter_style_descriptor_context<R>(
+    f: impl FnOnce(&ParserContext) -> Result<R, CssRuleInsertError>,
+) -> Result<R, CssRuleInsertError> {
+    let Some(url_data) = about_blank_url_data() else {
+        return Err(CssRuleInsertError::Syntax);
+    };
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(CssRuleType::CounterStyle),
         ParsingMode::DEFAULT,
         QuirksMode::NoQuirks,
         Cow::Owned(Namespaces::default()),
@@ -2766,6 +2875,8 @@ mod tests {
         parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
         replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
         replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
+        set_counter_style_rule_descriptor_in_stylesheet_rule_tree,
+        set_counter_style_rule_name_in_stylesheet_rule_tree,
         set_font_face_rule_descriptor_in_stylesheet_rule_tree,
         set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
@@ -3071,6 +3182,16 @@ mod tests {
         )
         .expect("valid @counter-style should produce a CSSOM view");
         assert_eq!(view.name, "thumbs");
+        assert_eq!(view.system, "cyclic");
+        assert_eq!(view.symbols, r#""*""#);
+        assert_eq!(view.additive_symbols, "");
+        assert_eq!(view.negative, "");
+        assert_eq!(view.prefix, "");
+        assert_eq!(view.suffix, r#"" ""#);
+        assert_eq!(view.range, "");
+        assert_eq!(view.pad, "");
+        assert_eq!(view.speak_as, "");
+        assert_eq!(view.fallback, "");
         assert_eq!(view.css_text, rules[0].css_text);
         assert!(
             parse_counter_style_rule_view(
@@ -3079,6 +3200,63 @@ mod tests {
             .is_none(),
             "Stylo rejects counter styles whose system requires symbols"
         );
+    }
+
+    #[test]
+    fn counter_style_rule_tree_mutations_use_typed_name_and_descriptor_parsers() {
+        let mut rule_tree = parse_stylesheet_rule_tree(
+            r#"@counter-style thumbs { system: cyclic; symbols: "*"; suffix: " "; }"#,
+        );
+
+        set_counter_style_rule_name_in_stylesheet_rule_tree(&mut rule_tree, &[0], "renamed")
+            .expect("valid counter-style name mutation should succeed");
+        let view = stylesheet_rule_tree_counter_style_rule_view(&rule_tree, &[0])
+            .expect("mutated counter-style view should remain available");
+        assert_eq!(view.name, "renamed");
+
+        set_counter_style_rule_descriptor_in_stylesheet_rule_tree(
+            &mut rule_tree,
+            &[0],
+            "prefix",
+            r#""(""#,
+        )
+        .expect("valid descriptor mutation should succeed");
+        let view = stylesheet_rule_tree_counter_style_rule_view(&rule_tree, &[0])
+            .expect("mutated counter-style view should remain available");
+        assert_eq!(view.prefix, r#""(""#);
+        assert!(view.css_text.contains(r#"prefix: "(";"#));
+
+        assert_eq!(
+            set_counter_style_rule_name_in_stylesheet_rule_tree(&mut rule_tree, &[0], "none"),
+            Err(CssRuleInsertError::Syntax),
+            "reserved counter-style names must be ignored by CSSOM callers"
+        );
+        assert_eq!(
+            set_counter_style_rule_descriptor_in_stylesheet_rule_tree(
+                &mut rule_tree,
+                &[0],
+                "system",
+                "numeric",
+            ),
+            Err(CssRuleInsertError::Syntax),
+            "the system setter must not change the counter algorithm"
+        );
+        assert_eq!(
+            set_counter_style_rule_descriptor_in_stylesheet_rule_tree(
+                &mut rule_tree,
+                &[0],
+                "prefix",
+                "",
+            ),
+            Err(CssRuleInsertError::Syntax),
+            "empty descriptor values are invalid rather than removals"
+        );
+
+        let view = stylesheet_rule_tree_counter_style_rule_view(&rule_tree, &[0])
+            .expect("rejected mutations must preserve the counter-style rule");
+        assert_eq!(view.name, "renamed");
+        assert_eq!(view.system, "cyclic");
+        assert_eq!(view.prefix, r#""(""#);
     }
 
     #[test]

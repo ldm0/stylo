@@ -413,10 +413,15 @@ impl CounterStyleRule {
     }
 
     /// Set the name of the counter style rule. Caller must ensure that
-    /// the name is valid.
-    pub fn set_name(&mut self, name: CustomIdent) {
+    /// the name is valid. Returns whether the name changed.
+    pub fn set_name(&mut self, name: CustomIdent) -> bool {
         debug_assert!(is_valid_name_definition(&name));
+        if self.name == name {
+            return false;
+        }
         self.name = name;
+        self.generation += Wrapping(1);
+        true
     }
 
     /// Get the current generation of the counter style rule.
