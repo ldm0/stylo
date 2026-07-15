@@ -3093,6 +3093,15 @@ mod tests {
             .is_none(),
             "Stylo rejects counter styles whose system requires symbols"
         );
+
+        let view = parse_counter_style_rule_view(
+            r#"@counter-style spoken { system: symbolic; symbols: "X" "Y"; speak-as: spell-out; }"#,
+        )
+        .expect("spell-out is a valid speak-as descriptor");
+        assert_eq!(
+            view.css_text,
+            r#"@counter-style spoken { system: symbolic; symbols: "X" "Y"; speak-as: spell-out; }"#
+        );
     }
 
     #[test]
