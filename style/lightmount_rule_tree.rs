@@ -2078,9 +2078,23 @@ fn parse_keyframe_rules_for_mutation(
 }
 
 fn parse_keyframe_selectors(selector_text: &str) -> Option<KeyframeSelectors> {
+    let url_data = about_blank_url_data()?;
+    let context = ParserContext::new(
+        Origin::Author,
+        &url_data,
+        Some(CssRuleType::Keyframe),
+        ParsingMode::DEFAULT,
+        QuirksMode::NoQuirks,
+        Cow::Owned(Namespaces::default()),
+        None,
+        None,
+        AttrTaint::default(),
+    );
     let mut input = ParserInput::new(selector_text);
     let mut input = Parser::new(&mut input);
-    input.parse_entirely(KeyframeSelectors::parse).ok()
+    input
+        .parse_entirely(|input| KeyframeSelectors::parse_with_context(&context, input))
+        .ok()
 }
 
 fn stylesheet_mutation_result(
@@ -4417,6 +4431,14 @@ mod tests {
         );
         assert_eq!(normalize_keyframe_selector_text("body"), None);
         assert_eq!(normalize_keyframe_selector_text("-1%"), None);
+        assert_eq!(
+            normalize_keyframe_selector_text("calc(10% * sibling-index())"),
+            Some("calc(sibling-index() * 10%)".into())
+        );
+        assert!(normalize_keyframe_selector_text("calc(10%)").is_some());
+        assert!(normalize_keyframe_selector_text("calc(10% * sign(1em - 1px))").is_some());
+        assert_eq!(normalize_keyframe_selector_text("calc(10px)"), None);
+        assert_eq!(normalize_keyframe_selector_text("calc(10% + 1px)"), None);
 
         assert!(keyframe_selector_texts_match("from", "0%"));
         assert!(keyframe_selector_texts_match("50%, to", "50%, 100%"));

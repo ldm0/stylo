@@ -19,7 +19,9 @@ use crate::shared_lock::{DeepCloneWithLock, SharedRwLock, SharedRwLockReadGuard}
 use crate::shared_lock::{Locked, ToCssWithGuard};
 use crate::stylesheets::rule_parser::VendorPrefix;
 use crate::stylesheets::{CssRuleType, StylesheetContents};
+use crate::values::generics::calc::CalcUnits;
 use crate::values::specified::animation::TimelineRangeName;
+use crate::values::specified::calc::{AllowParse, CalcNode, Leaf};
 use crate::values::{serialize_percentage, KeyframesName};
 use cssparser::{
     parse_one_rule, AtRuleParser, DeclarationParser, Parser, ParserInput, ParserState,
@@ -28,6 +30,7 @@ use cssparser::{
 use servo_arc::Arc;
 use std::borrow::Cow;
 use std::fmt::{self, Write};
+use style_traits::values::specified::AllowedNumericType;
 use style_traits::{
     CssStringWriter, CssWriter, ParseError, ParsingMode, StyleParseErrorKind, ToCss,
 };
@@ -147,11 +150,94 @@ impl KeyframePercentage {
     }
 }
 
+/// The specified percentage component of a keyframe selector.
+///
+/// Unlike the resolved percentage used by [`KeyframesStep`], a selector can
+/// contain CSS math that depends on the element the animation is applied to,
+/// such as `calc(10% * sibling-index())`. Keep that calculation intact until
+/// an element-aware animation path can resolve it.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToShmem)]
+enum SpecifiedKeyframePercentage {
+    Literal(f32),
+    Calculation(CalcNode),
+}
+
+impl ToCss for SpecifiedKeyframePercentage {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::Literal(value) => serialize_percentage(value, dest),
+            Self::Calculation(ref node) => node.to_css(dest),
+        }
+    }
+}
+
+impl SpecifiedKeyframePercentage {
+    fn parse_literal<'i, 't>(
+        input: &mut Parser<'i, 't>,
+        restrict_to_animation_interval: bool,
+    ) -> Result<Self, ParseError<'i>> {
+        let location = input.current_source_location();
+        let token = input.next()?.clone();
+        match token {
+            Token::Percentage {
+                unit_value: percentage,
+                ..
+            } if !restrict_to_animation_interval || (percentage >= 0. && percentage <= 1.) => {
+                Ok(Self::Literal(percentage))
+            },
+            _ => Err(location.new_unexpected_token_error(token)),
+        }
+    }
+
+    fn parse_with_context<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        restrict_to_animation_interval: bool,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(percentage) =
+            input.try_parse(|input| Self::parse_literal(input, restrict_to_animation_interval))
+        {
+            return Ok(percentage);
+        }
+
+        let location = input.current_source_location();
+        let token = input.next()?.clone();
+        let Token::Function(name) = token else {
+            return Err(location.new_unexpected_token_error(token));
+        };
+        let function = CalcNode::math_function(context, &name, location)?;
+        let allowed_units = CalcUnits::ALL & !CalcUnits::COLOR_COMPONENT;
+        let mut node = CalcNode::parse(context, input, function, AllowParse::new(allowed_units))?;
+        if node
+            .unit()
+            .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?
+            != CalcUnits::PERCENTAGE
+        {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        node.simplify_and_sort();
+        Ok(Self::Calculation(node))
+    }
+
+    fn resolve_without_context(&self) -> Option<f32> {
+        match *self {
+            Self::Literal(value) => Some(value),
+            Self::Calculation(ref node) => match node.resolve().ok()? {
+                Leaf::Percentage(value) => Some(value),
+                _ => None,
+            },
+        }
+    }
+}
+
 /// A single `<keyframe-selector>`:
 /// `<keyframe-selector> = from | to | <percentage [0,100]> | <timeline-range-name> <percentage>`
 /// It could be a percentage, from/to, or a timeline range name together with a percentage.
 /// https://drafts.csswg.org/scroll-animations-1/#named-range-keyframes
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ToCss, ToShmem)]
+#[derive(Clone, Debug, PartialEq, ToCss, ToShmem)]
 pub struct KeyframeSelector {
     /// The named timeline range name component of the selector. If it is omitted, we use
     /// `TimelineRangeName::None`. Note that `TimelineRangeName::Normal` is not used for the
@@ -159,7 +245,7 @@ pub struct KeyframeSelector {
     range_name: TimelineRangeName,
     /// The percentage component of the selector. It is a percentage or a from/to symbol, which is
     /// converted at parse time to percentage.
-    percentage: KeyframePercentage,
+    percentage: SpecifiedKeyframePercentage,
 }
 
 impl KeyframeSelector {
@@ -167,7 +253,7 @@ impl KeyframeSelector {
     fn new_for_unit_testing(percentage: KeyframePercentage) -> Self {
         KeyframeSelector {
             range_name: TimelineRangeName::None,
-            percentage,
+            percentage: SpecifiedKeyframePercentage::Literal(percentage.0),
         }
     }
 
@@ -177,7 +263,7 @@ impl KeyframeSelector {
         if let Ok(percentage) = input.try_parse(KeyframePercentage::parse) {
             return Ok(Self {
                 range_name: TimelineRangeName::None,
-                percentage,
+                percentage: SpecifiedKeyframePercentage::Literal(percentage.0),
             });
         }
 
@@ -191,13 +277,61 @@ impl KeyframeSelector {
         // Note that <percentage> could be out of [0,100].
         Ok(Self {
             range_name: TimelineRangeName::parse(input)?,
-            percentage: KeyframePercentage::new(input.expect_percentage()?),
+            percentage: SpecifiedKeyframePercentage::parse_literal(
+                input, /* restrict_to_animation_interval */ false,
+            )?,
         })
+    }
+
+    /// Parse a keyframe selector with the stylesheet context needed by CSS
+    /// math functions.
+    pub fn parse_with_context<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if let Ok(percentage) = input.try_parse(KeyframePercentage::parse) {
+            return Ok(Self {
+                range_name: TimelineRangeName::None,
+                percentage: SpecifiedKeyframePercentage::Literal(percentage.0),
+            });
+        }
+        if let Ok(percentage) = input.try_parse(|input| {
+            SpecifiedKeyframePercentage::parse_with_context(
+                context, input, /* restrict_to_animation_interval */ true,
+            )
+        }) {
+            return Ok(Self {
+                range_name: TimelineRangeName::None,
+                percentage,
+            });
+        }
+
+        if !static_prefs::pref!("layout.css.scroll-driven-animations.enabled") {
+            let location = input.current_source_location();
+            return Err(location.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+
+        Ok(Self {
+            range_name: TimelineRangeName::parse(input)?,
+            percentage: SpecifiedKeyframePercentage::parse_with_context(
+                context, input, /* restrict_to_animation_interval */ false,
+            )?,
+        })
+    }
+
+    fn resolved_percentage_without_context(&self) -> Option<KeyframePercentage> {
+        if !self.range_name.is_none() {
+            return None;
+        }
+        let value = self.percentage.resolve_without_context()?;
+        Some(KeyframePercentage::new(
+            AllowedNumericType::ZeroToOne.clamp(value),
+        ))
     }
 }
 
 /// A list of `<keyframe-selector>`s.
-#[derive(Clone, Debug, Eq, PartialEq, ToCss, ToShmem)]
+#[derive(Clone, Debug, PartialEq, ToCss, ToShmem)]
 #[css(comma)]
 pub struct KeyframeSelectors(#[css(iterable)] Vec<KeyframeSelector>);
 
@@ -216,6 +350,17 @@ impl KeyframeSelectors {
     pub fn parse<'i, 't>(input: &mut Parser<'i, 't>) -> Result<Self, ParseError<'i>> {
         input
             .parse_comma_separated(KeyframeSelector::parse)
+            .map(KeyframeSelectors)
+    }
+
+    /// Parse keyframe selectors with the stylesheet context needed by CSS
+    /// math functions.
+    pub fn parse_with_context<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        input
+            .parse_comma_separated(|input| KeyframeSelector::parse_with_context(context, input))
             .map(KeyframeSelectors)
     }
 }
@@ -516,12 +661,14 @@ impl KeyframesAnimation {
         for keyframe in keyframes {
             let keyframe = keyframe.read_with(&guard);
             for selector in keyframe.selector.0.iter() {
-                // TODO: Bug 1824875. Handle range names.
-                if !selector.range_name.is_none() {
+                // TODO: Resolve element-dependent keyframe selector math and
+                // named ranges when animation construction has an element
+                // context.
+                let Some(percentage) = selector.resolved_percentage_without_context() else {
                     continue;
-                }
+                };
                 result.steps.push(KeyframesStep::new(
-                    selector.percentage,
+                    percentage,
                     KeyframesStepValue::Declarations {
                         block: keyframe.block.clone(),
                     },
@@ -616,7 +763,7 @@ impl<'a, 'b, 'i> QualifiedRuleParser<'i> for KeyframeListParser<'a, 'b> {
         input: &mut Parser<'i, 't>,
     ) -> Result<Self::Prelude, ParseError<'i>> {
         let start_position = input.position();
-        KeyframeSelectors::parse(input).map_err(|e| {
+        KeyframeSelectors::parse_with_context(self.context, input).map_err(|e| {
             let location = e.location;
             let error = ContextualParseError::InvalidKeyframeRule(
                 input.slice_from(start_position),
