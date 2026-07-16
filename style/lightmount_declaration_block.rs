@@ -954,6 +954,48 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_supports_touch_action_for_servo() {
+        let mut block = parse_declaration_block("touch-action: pinch-zoom pan-up pan-right;");
+
+        assert_eq!(block.item(0).as_deref(), Some("touch-action"));
+        assert_eq!(
+            block.property_value("touch-action").as_deref(),
+            Some("pan-right pan-up pinch-zoom")
+        );
+        assert_eq!(
+            block.css_text(),
+            "touch-action: pan-right pan-up pinch-zoom;"
+        );
+
+        let projection =
+            block.set_property_with_projection("touch-action", "pan-y pinch-zoom pan-x", false);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries[0].value, "manipulation");
+        assert_eq!(block.css_text(), "touch-action: manipulation;");
+
+        let projection =
+            block.set_property_with_projection("touch-action", "pan-x pan-left", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(block.css_text(), "touch-action: manipulation;");
+
+        let projection = block.set_property_with_projection("touch-action", "none", true);
+        assert_eq!(projection.set_result, CssSetResult::ModifiedExisting);
+        assert_eq!(projection.entries.len(), 1);
+        assert_eq!(projection.entries[0].name, "touch-action");
+        assert_eq!(projection.entries[0].value, "none");
+        assert!(projection.entries[0].priority);
+        assert_eq!(projection.stored_names, ["touch-action"]);
+        assert_eq!(block.css_text(), "touch-action: none !important;");
+
+        let projection = block.set_property_with_projection("touch-action", "bogus", false);
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert_eq!(
+            block.property_value("touch-action").as_deref(),
+            Some("none")
+        );
+    }
+
+    #[test]
     fn declaration_block_set_property_reports_cssom_mutation_results() {
         let mut block = parse_declaration_block("color: red;");
 

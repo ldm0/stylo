@@ -2111,9 +2111,9 @@ affects = "layout"
 type = "TouchAction"
 initial = "computed::TouchAction::auto()"
 struct = "box"
-engine = "gecko"
 animation_type = "discrete"
 spec = "https://compat.spec.whatwg.org/#touch-action"
+servo_restyle_damage = "repaint"
 affects = "paint"
 
 [transform]

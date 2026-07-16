@@ -1257,27 +1257,48 @@ impl Parse for WillChange {
     ToShmem,
     ToTyped,
 )]
-#[css(bitflags(single = "none,auto,manipulation", mixed = "pan-x,pan-y,pinch-zoom"))]
+#[css(bitflags(
+    single = "none,auto,manipulation",
+    mixed = "pan-x,pan-left,pan-right,pan-y,pan-up,pan-down,pinch-zoom",
+    validate_mixed = "Self::validate_mixed_flags",
+))]
 #[repr(C)]
 pub struct TouchAction(u8);
 bitflags! {
     impl TouchAction: u8 {
         /// `none` variant
-        const NONE = 1 << 0;
+        const NONE = 0;
         /// `auto` variant
-        const AUTO = 1 << 1;
+        const AUTO = 1 << 0;
         /// `pan-x` variant
-        const PAN_X = 1 << 2;
+        const PAN_X = 1 << 1;
+        /// `pan-left` variant
+        const PAN_LEFT = 1 << 2;
+        /// `pan-right` variant
+        const PAN_RIGHT = 1 << 3;
         /// `pan-y` variant
-        const PAN_Y = 1 << 3;
-        /// `manipulation` variant
-        const MANIPULATION = 1 << 4;
+        const PAN_Y = 1 << 4;
+        /// `pan-up` variant
+        const PAN_UP = 1 << 5;
+        /// `pan-down` variant
+        const PAN_DOWN = 1 << 6;
         /// `pinch-zoom` variant
-        const PINCH_ZOOM = 1 << 5;
+        const PINCH_ZOOM = 1 << 7;
+        /// `manipulation` variant
+        const MANIPULATION = TouchAction::PAN_X.bits()
+            | TouchAction::PAN_Y.bits()
+            | TouchAction::PINCH_ZOOM.bits();
     }
 }
 
 impl TouchAction {
+    fn validate_mixed_flags(&mut self) -> bool {
+        let horizontal = Self::PAN_X | Self::PAN_LEFT | Self::PAN_RIGHT;
+        let vertical = Self::PAN_Y | Self::PAN_UP | Self::PAN_DOWN;
+        (self.bits() & horizontal.bits()).count_ones() <= 1
+            && (self.bits() & vertical.bits()).count_ones() <= 1
+    }
+
     #[inline]
     /// Get default `touch-action` as `auto`
     pub fn auto() -> TouchAction {
