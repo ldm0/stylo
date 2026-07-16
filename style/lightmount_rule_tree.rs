@@ -3669,6 +3669,17 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_rule_views_preserve_implicitly_closed_variable_text() {
+        let rules = parse_stylesheet_rule_views(".target { width: var(--prop");
+
+        assert_eq!(rules.len(), 1);
+        assert_eq!(
+            rules[0].declaration_text.as_deref(),
+            Some("width: var(--prop;")
+        );
+    }
+
+    #[test]
     fn parse_page_rule_view_exposes_descriptors_and_margin_children() {
         let view = parse_page_rule_view(
             r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
