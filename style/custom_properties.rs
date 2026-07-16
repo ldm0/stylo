@@ -340,8 +340,16 @@ fn parse_env_reference_name<'i, 't>(
 /// references to other custom property names.
 #[derive(Clone, Debug, MallocSizeOf, ToShmem)]
 pub struct VariableValue {
-    /// The raw CSS string.
+    /// The CSS string used for parsing and substitution. Missing closing
+    /// characters are materialized here so reference byte ranges remain
+    /// self-contained.
     pub css: String,
+
+    /// The length of the original specified text when tokenization implicitly
+    /// closed a construct at EOF, or zero when `css` is serialized in full.
+    /// This avoids duplicating the string while preserving omitted closing
+    /// characters for CSSOM serialization.
+    specified_serialization_len: usize,
 
     /// The url data of the stylesheet where this value came from.
     pub url_data: UrlExtraData,
@@ -374,10 +382,11 @@ pub fn compute_variable_value(
     .ok()
 }
 
-// For all purposes, we want values to be considered equal if their css text is equal.
+// Specified values are equal when their observable CSS text is equal. Parsing
+// and substitution still use the normalized `css` string above.
 impl PartialEq for VariableValue {
     fn eq(&self, other: &Self) -> bool {
-        self.css == other.css
+        self.css_text() == other.css_text()
     }
 }
 
@@ -388,7 +397,7 @@ impl ToCss for SpecifiedValue {
     where
         W: Write,
     {
-        dest.write_str(&self.css)
+        dest.write_str(self.css_text())
     }
 }
 
@@ -867,6 +876,7 @@ impl VariableValue {
     fn empty(url_data: &UrlExtraData) -> Self {
         Self {
             css: String::new(),
+            specified_serialization_len: 0,
             last_token_type: Default::default(),
             first_token_type: Default::default(),
             url_data: url_data.clone(),
@@ -884,6 +894,7 @@ impl VariableValue {
     ) -> Self {
         Self {
             css,
+            specified_serialization_len: 0,
             url_data: url_data.clone(),
             first_token_type,
             last_token_type,
@@ -923,6 +934,10 @@ impl VariableValue {
         if css.is_empty() {
             return Ok(());
         }
+
+        // `push` builds a new computed value. Any original specified-text
+        // serialization no longer describes the resulting token sequence.
+        self.specified_serialization_len = 0;
 
         self.first_token_type.set_if_nothing(css_first_token_type);
         // If self.first_token_type was nothing,
@@ -964,6 +979,12 @@ impl VariableValue {
             .slice_from(start_position)
             .trim_ascii_start()
             .to_owned();
+        let specified_serialization_len =
+            if !missing_closing_characters.is_empty() && !css.ends_with('\\') {
+                css.trim_ascii_end().len()
+            } else {
+                0
+            };
         if !missing_closing_characters.is_empty() {
             // A backslash at EOF is ignored in a quoted string. In the other
             // token contexts below, tokenization replaces it with U+FFFD. The
@@ -986,6 +1007,7 @@ impl VariableValue {
 
         Ok(Self {
             css,
+            specified_serialization_len,
             url_data: url_data.clone(),
             first_token_type,
             last_token_type,
@@ -1064,6 +1086,7 @@ impl VariableValue {
 
         VariableValue {
             css,
+            specified_serialization_len: 0,
             url_data: url_data.clone(),
             first_token_type: token_type,
             last_token_type: token_type,
@@ -1073,7 +1096,11 @@ impl VariableValue {
 
     /// Returns the raw CSS text from this VariableValue
     pub fn css_text(&self) -> &str {
-        &self.css
+        if self.specified_serialization_len == 0 {
+            &self.css
+        } else {
+            &self.css[..self.specified_serialization_len]
+        }
     }
 
     /// Returns whether this variable value has any reference to the environment or other
@@ -3397,6 +3424,18 @@ mod tests {
             ident.first_token_type
         );
         assert_eq!(with_trailing_comment.last_token_type, ident.last_token_type);
+    }
+
+    #[test]
+    fn implicitly_closed_values_preserve_specified_serialization() {
+        let value = parse_variable_value("var(--prop");
+        assert_eq!(value.css, "var(--prop)");
+        assert_eq!(value.css_text(), "var(--prop");
+        assert_eq!(value.to_css_string(), "var(--prop");
+
+        let explicit = parse_variable_value("var(--prop)");
+        assert_eq!(explicit.css_text(), "var(--prop)");
+        assert_ne!(value, explicit);
     }
 
     #[test]
