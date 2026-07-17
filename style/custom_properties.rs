@@ -3439,6 +3439,92 @@ mod tests {
     }
 
     #[test]
+    fn escaped_eof_serializes_as_replacement_character() {
+        for (input, expected) in [
+            (r"foo\", "foo\u{fffd}"),
+            (r"1foo\", "1foo\u{fffd}"),
+            (r"url(foo\", "url(foo\u{fffd})"),
+            (r"@foo\", "@foo\u{fffd}"),
+            (r"#foo\", "#foo\u{fffd}"),
+        ] {
+            let value = parse_variable_value(input);
+            assert_eq!(value.css_text(), expected, "input: {input:?}");
+            assert_eq!(value.to_css_string(), expected, "input: {input:?}");
+        }
+    }
+
+    fn concatenate_substitution_fragments(fragments: &[&str]) -> String {
+        let first = parse_variable_value(fragments.first().copied().unwrap_or_default());
+        let mut result = VariableValue::empty(&first.url_data);
+        for fragment in fragments {
+            let value = parse_variable_value(fragment);
+            result
+                .push(
+                    &value.css,
+                    value.first_token_type,
+                    value.last_token_type,
+                    None,
+                )
+                .unwrap();
+        }
+        result.css
+    }
+
+    #[test]
+    fn substitution_fragments_drop_edge_comments_and_keep_interior_comments() {
+        assert_eq!(
+            concatenate_substitution_fragments(&["a/* comment */", "b"]),
+            "a/**/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["a", "/* comment */b"]),
+            "a/**/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r#"'a " '/* comment */"#, "b"]),
+            r#"'a " 'b"#
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["/* leading */a/* interior */b/* trailing */"]),
+            "a/* interior */b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r#""/* string comment */""#]),
+            r#""/* string comment */""#
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r"\/*/", "b"]),
+            r"\/*/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["func(foo/* comment */)"]),
+            "func(foo/* comment */)"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["/* one *//* two */"]),
+            ""
+        );
+    }
+
+    #[test]
+    fn comment_tokens_do_not_replace_fragment_boundary_token_types() {
+        let ident = parse_variable_value("a");
+        let with_leading_comment = parse_variable_value("/* comment */a");
+        let with_trailing_comment = parse_variable_value("a/* comment */");
+
+        assert_eq!(
+            with_leading_comment.first_token_type,
+            ident.first_token_type
+        );
+        assert_eq!(with_leading_comment.last_token_type, ident.last_token_type);
+        assert_eq!(
+            with_trailing_comment.first_token_type,
+            ident.first_token_type
+        );
+        assert_eq!(with_trailing_comment.last_token_type, ident.last_token_type);
+    }
+
+    #[test]
     fn env_reference_name_rejects_invalid_indices() {
         for css in [
             "env(test1 test2, green)",
