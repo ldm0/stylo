@@ -87,6 +87,10 @@ pub enum PseudoElement {
     ServoAnonymousTableRow,
     ServoTableGrid,
     ServoTableWrapper,
+
+    /// An otherwise unknown `::-webkit-*` pseudo-element accepted for Web
+    /// compatibility. These selectors are valid but never match.
+    UnknownWebkit(AtomIdent),
 }
 
 /// The count of all pseudo-elements.
@@ -154,6 +158,10 @@ impl ToCss for PseudoElement {
             ServoAnonymousTableRow => dest.write_str("::-servo-anonymous-table-row"),
             ServoTableGrid => dest.write_str("::-servo-table-grid"),
             ServoTableWrapper => dest.write_str("::-servo-table-wrapper"),
+            UnknownWebkit(name) => {
+                dest.write_str("::-webkit-")?;
+                serialize_identifier(name, dest)
+            },
         }
     }
 }
@@ -162,7 +170,10 @@ impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
     fn accepts_state_pseudo_classes(&self) -> bool {
-        matches!(self, Self::DetailsContent | Self::Picker)
+        matches!(
+            self,
+            Self::DetailsContent | Self::Picker | Self::UnknownWebkit(_)
+        )
     }
 
     fn valid_after_before_or_after(&self) -> bool {
@@ -230,6 +241,7 @@ impl PseudoElement {
             PseudoElement::ServoAnonymousTableRow => 30,
             PseudoElement::ServoTableGrid => 31,
             PseudoElement::ServoTableWrapper => 32,
+            PseudoElement::UnknownWebkit(_) => PSEUDO_COUNT,
         }
     }
 
@@ -261,7 +273,7 @@ impl PseudoElement {
     /// Whether this is an unknown ::-webkit- pseudo-element.
     #[inline]
     pub fn is_unknown_webkit_pseudo_element(&self) -> bool {
-        false
+        matches!(self, PseudoElement::UnknownWebkit(_))
     }
 
     /// Whether this pseudo-element is the ::marker pseudo.
@@ -380,6 +392,7 @@ impl PseudoElement {
             | PseudoElement::ServoAnonymousTableRow
             | PseudoElement::ServoTableGrid
             | PseudoElement::ServoTableWrapper => PseudoElementCascadeType::Precomputed,
+            PseudoElement::UnknownWebkit(_) => PseudoElementCascadeType::Lazy,
         }
     }
 
@@ -411,6 +424,9 @@ impl PseudoElement {
     /// Whether this pseudo-element should actually exist if it has
     /// the given styles.
     pub fn should_exist(&self, style: &ComputedValues) -> bool {
+        if self.is_unknown_webkit_pseudo_element() {
+            return false;
+        }
         let display = style.get_box().clone_display();
         if display == Display::None {
             return false;
@@ -788,6 +804,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "active" => NonTSPseudoClass::Active,
             "any-link" => NonTSPseudoClass::AnyLink,
             "autofill" => NonTSPseudoClass::Autofill,
+            "-webkit-autofill" => NonTSPseudoClass::Autofill,
             "checked" => NonTSPseudoClass::Checked,
             "default" => NonTSPseudoClass::Default,
             "defined" => NonTSPseudoClass::Defined,
@@ -942,7 +959,22 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
                 }
                 ServoTableWrapper
             },
-            _ => return Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
+            _ => {
+                const WEBKIT_PREFIX: &str = "-webkit-";
+                let value = name.as_ref();
+                if !self.for_supports_rule
+                    && value
+                        .get(..WEBKIT_PREFIX.len())
+                        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(WEBKIT_PREFIX))
+                {
+                    UnknownWebkit(AtomIdent::from(
+                        value[WEBKIT_PREFIX.len()..].to_ascii_lowercase().as_str(),
+                    ))
+                } else {
+                    return Err(location
+                        .new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())));
+                }
+            },
 
         };
 
