@@ -907,6 +907,11 @@ impl VariableValue {
         /// (just choose a larger initial value and boom).
         const MAX_VALUE_LENGTH_IN_BYTES: usize = 2 * 1024 * 1024;
 
+        // Comments at the edge of a substitution fragment are no longer
+        // between the same pair of source tokens, so they cannot be preserved.
+        // Keep comments inside the fragment exactly as authored.
+        let css = trim_edge_comments(css);
+
         if self.css.len() + css.len() > MAX_VALUE_LENGTH_IN_BYTES {
             return Err(());
         }
@@ -960,9 +965,15 @@ impl VariableValue {
             .trim_ascii_start()
             .to_owned();
         if !missing_closing_characters.is_empty() {
-            // Unescaped backslash at EOF in a quoted string is ignored.
+            // A backslash at EOF is ignored in a quoted string. In the other
+            // token contexts below, tokenization replaces it with U+FFFD. The
+            // normalized suffix starts with the character that must replace
+            // the source backslash in either case.
             if css.ends_with("\\")
-                && matches!(missing_closing_characters.as_bytes()[0], b'"' | b'\'')
+                && matches!(
+                    missing_closing_characters.chars().next(),
+                    Some('"' | '\'' | '\u{fffd}')
+                )
             {
                 css.pop();
             }
@@ -1112,12 +1123,15 @@ fn parse_declaration_value_block<'i, 't>(
             break;
         };
 
+        let is_comment = matches!(token, Token::Comment(_));
         let prev_token_type = last_token_type;
         let serialization_type = token.serialization_type();
-        last_token_type = serialization_type;
-        if is_first {
-            first_token_type = last_token_type;
-            is_first = false;
+        if !is_comment {
+            last_token_type = serialization_type;
+            if is_first {
+                first_token_type = last_token_type;
+                is_first = false;
+            }
         }
 
         macro_rules! nested {
@@ -1141,8 +1155,10 @@ fn parse_declaration_value_block<'i, 't>(
                 result
             }};
         }
-        if let Some(index) = prev_reference_index.take() {
-            references.refs[index].next_token_type = serialization_type;
+        if !is_comment {
+            if let Some(index) = prev_reference_index.take() {
+                references.refs[index].next_token_type = serialization_type;
+            }
         }
         match *token {
             Token::Comment(_) => {
@@ -1344,8 +1360,8 @@ fn parse_declaration_value_block<'i, 't>(
                 if value.ends_with("�") && input.slice_from(token_start).ends_with("\\") {
                     // Unescaped backslash at EOF in these contexts is interpreted as U+FFFD
                     // Check the value in case the final backslash was itself escaped.
-                    // Serialize as escaped U+FFFD, which is also interpreted as U+FFFD.
-                    // (Unescaped U+FFFD would also work, but removing the backslash is annoying.)
+                    // Record the normalized suffix; VariableValue::parse replaces the source
+                    // backslash with this character for CSSOM serialization.
                     missing_closing_characters.push_str("�")
                 }
                 if is_unquoted_url && !input.slice_from(token_start).ends_with(")") {
@@ -2822,6 +2838,52 @@ impl<'a> Substitution<'a> {
             attr_tainted,
         }
     }
+
+    fn without_edge_comments(mut self) -> Self {
+        let trimmed = trim_edge_comments(self.css.as_ref());
+        if trimmed.len() != self.css.len() {
+            self.css = Cow::Owned(trimmed.to_owned());
+        }
+        self
+    }
+}
+
+/// Strip comments that directly border a substitution fragment while
+/// preserving every comment between non-comment source text.
+fn trim_edge_comments(css: &str) -> &str {
+    if !css.starts_with("/*") && !css.ends_with("*/") {
+        return css;
+    }
+
+    let mut input = ParserInput::new(css);
+    let mut parser = Parser::new(&mut input);
+    let mut leading_end = 0;
+    let mut saw_non_comment = false;
+    let mut trailing_start = None;
+
+    loop {
+        let comment_len = match parser.next_including_whitespace_and_comments() {
+            Ok(Token::Comment(value)) => Some(value.len() + "/**/".len()),
+            Ok(_) => None,
+            Err(_) => break,
+        };
+        let token_end = parser.position().byte_index();
+
+        if let Some(comment_len) = comment_len {
+            let comment_start = token_end - comment_len;
+            if !saw_non_comment {
+                leading_end = token_end;
+            }
+            trailing_start.get_or_insert(comment_start);
+            continue;
+        }
+
+        trailing_start = None;
+        saw_non_comment = true;
+    }
+
+    let end = trailing_start.unwrap_or(css.len());
+    &css[leading_end.min(end)..end]
 }
 
 /// Result of var(), env(), and attr() substitution.
@@ -2933,7 +2995,7 @@ fn do_substitute_chunk<'a>(
             if let Some(taint) = attr_taint.filter(|_| substitution.attr_tainted) {
                 taint.push(start, end);
             }
-            return Ok(substitution);
+            return Ok(substitution.without_edge_comments());
         }
 
         substituted.push(
@@ -3249,6 +3311,92 @@ mod tests {
             Some("test")
         );
         assert!(value.references.refs[0].fallback.is_some());
+    }
+
+    #[test]
+    fn escaped_eof_serializes_as_replacement_character() {
+        for (input, expected) in [
+            (r"foo\", "foo\u{fffd}"),
+            (r"1foo\", "1foo\u{fffd}"),
+            (r"url(foo\", "url(foo\u{fffd})"),
+            (r"@foo\", "@foo\u{fffd}"),
+            (r"#foo\", "#foo\u{fffd}"),
+        ] {
+            let value = parse_variable_value(input);
+            assert_eq!(value.css_text(), expected, "input: {input:?}");
+            assert_eq!(value.to_css_string(), expected, "input: {input:?}");
+        }
+    }
+
+    fn concatenate_substitution_fragments(fragments: &[&str]) -> String {
+        let first = parse_variable_value(fragments.first().copied().unwrap_or_default());
+        let mut result = VariableValue::empty(&first.url_data);
+        for fragment in fragments {
+            let value = parse_variable_value(fragment);
+            result
+                .push(
+                    &value.css,
+                    value.first_token_type,
+                    value.last_token_type,
+                    None,
+                )
+                .unwrap();
+        }
+        result.css
+    }
+
+    #[test]
+    fn substitution_fragments_drop_edge_comments_and_keep_interior_comments() {
+        assert_eq!(
+            concatenate_substitution_fragments(&["a/* comment */", "b"]),
+            "a/**/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["a", "/* comment */b"]),
+            "a/**/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r#"'a " '/* comment */"#, "b"]),
+            r#"'a " 'b"#
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["/* leading */a/* interior */b/* trailing */"]),
+            "a/* interior */b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r#""/* string comment */""#]),
+            r#""/* string comment */""#
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&[r"\/*/", "b"]),
+            r"\/*/b"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["func(foo/* comment */)"]),
+            "func(foo/* comment */)"
+        );
+        assert_eq!(
+            concatenate_substitution_fragments(&["/* one *//* two */"]),
+            ""
+        );
+    }
+
+    #[test]
+    fn comment_tokens_do_not_replace_fragment_boundary_token_types() {
+        let ident = parse_variable_value("a");
+        let with_leading_comment = parse_variable_value("/* comment */a");
+        let with_trailing_comment = parse_variable_value("a/* comment */");
+
+        assert_eq!(
+            with_leading_comment.first_token_type,
+            ident.first_token_type
+        );
+        assert_eq!(with_leading_comment.last_token_type, ident.last_token_type);
+        assert_eq!(
+            with_trailing_comment.first_token_type,
+            ident.first_token_type
+        );
+        assert_eq!(with_trailing_comment.last_token_type, ident.last_token_type);
     }
 
     #[test]
