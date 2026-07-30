@@ -29,6 +29,7 @@ use crate::lightmount_invalidation::{
     lightmount_dependency_summary_for_relative_invalidation_map,
     lightmount_sibling_summary_for_invalidation_map,
     lightmount_sibling_summary_for_relative_invalidation_map,
+    LightmountChildListStructuralBoundaryDependencySummary,
 };
 #[cfg(feature = "gecko")]
 use crate::properties::StyleBuilder;
@@ -2760,6 +2761,155 @@ fn component_has_child_list_structural_dependency(c: &Component<SelectorImpl>) -
     )
 }
 
+#[derive(Clone)]
+enum LightmountStructuralBoundaryKey {
+    Id(Atom),
+    Class(Atom),
+    Attribute(LocalName),
+    Type(LocalName),
+    Universal,
+}
+
+impl LightmountStructuralBoundaryKey {
+    fn specificity(&self) -> u8 {
+        match self {
+            Self::Universal => 0,
+            Self::Type(_) => 1,
+            Self::Attribute(_) => 2,
+            Self::Class(_) => 3,
+            Self::Id(_) => 4,
+        }
+    }
+
+    fn note_in(self, summary: &mut LightmountChildListStructuralBoundaryDependencySummary) {
+        match self {
+            Self::Id(id) => summary.note_id_dependency(id),
+            Self::Class(class) => summary.note_class_dependency(class),
+            Self::Attribute(attribute) => summary.note_attribute_dependency(attribute),
+            Self::Type(local_name) => summary.note_type_dependency(local_name),
+            Self::Universal => summary.note_universal_dependency(),
+        }
+    }
+}
+
+fn lightmount_structural_boundary_key_for_compound(
+    components: &[&Component<SelectorImpl>],
+) -> LightmountStructuralBoundaryKey {
+    let mut selected = LightmountStructuralBoundaryKey::Universal;
+    for component in components {
+        let candidate = match component {
+            Component::ID(id) => LightmountStructuralBoundaryKey::Id(id.0.clone()),
+            Component::Class(class) => LightmountStructuralBoundaryKey::Class(class.0.clone()),
+            Component::AttributeInNoNamespaceExists {
+                local_name_lower, ..
+            } => LightmountStructuralBoundaryKey::Attribute(local_name_lower.clone()),
+            Component::AttributeInNoNamespace { local_name, .. } => {
+                LightmountStructuralBoundaryKey::Attribute(local_name.clone())
+            },
+            Component::AttributeOther(attribute) => {
+                LightmountStructuralBoundaryKey::Attribute(attribute.local_name.clone())
+            },
+            Component::LocalName(local_name) => {
+                LightmountStructuralBoundaryKey::Type(local_name.lower_name.clone())
+            },
+            _ => continue,
+        };
+        if candidate.specificity() >= selected.specificity() {
+            selected = candidate;
+        }
+    }
+    selected
+}
+
+fn lightmount_selector_has_nested_child_list_structural_dependency(
+    selector: &Selector<SelectorImpl>,
+) -> bool {
+    let mut iter = selector.iter();
+    loop {
+        for component in &mut iter {
+            if component_has_child_list_structural_dependency(component)
+                || lightmount_component_has_nested_child_list_structural_dependency(component)
+            {
+                return true;
+            }
+        }
+        if iter.next_sequence().is_none() {
+            return false;
+        }
+    }
+}
+
+fn lightmount_component_has_nested_child_list_structural_dependency(
+    component: &Component<SelectorImpl>,
+) -> bool {
+    match component {
+        Component::Negation(selectors) | Component::Is(selectors) | Component::Where(selectors) => {
+            selectors
+                .slice()
+                .iter()
+                .any(lightmount_selector_has_nested_child_list_structural_dependency)
+        },
+        Component::Slotted(selector)
+        | Component::Host(Some(selector))
+        | Component::HostContext(selector) => {
+            lightmount_selector_has_nested_child_list_structural_dependency(selector)
+        },
+        Component::Has(selectors) => selectors.iter().any(|selector| {
+            lightmount_selector_has_nested_child_list_structural_dependency(&selector.selector)
+        }),
+        _ => false,
+    }
+}
+
+fn lightmount_note_child_list_structural_boundary_dependencies(
+    selector: &Selector<SelectorImpl>,
+    summary: &mut LightmountChildListStructuralBoundaryDependencySummary,
+) {
+    let mut iter = selector.iter();
+    let mut compounds = Vec::new();
+    loop {
+        let components = (&mut iter).collect::<Vec<_>>();
+        let combinator_to_left = iter.next_sequence();
+        compounds.push((components, combinator_to_left));
+        if combinator_to_left.is_none() {
+            break;
+        }
+    }
+
+    for (index, (components, combinator_to_left)) in compounds.iter().enumerate() {
+        if components
+            .iter()
+            .any(|component| matches!(component, Component::Empty))
+        {
+            lightmount_structural_boundary_key_for_compound(components).note_in(summary);
+        }
+        if components
+            .iter()
+            .any(|component| matches!(component, Component::Nth(_) | Component::NthOf(_)))
+        {
+            if *combinator_to_left == Some(Combinator::Child) {
+                compounds
+                    .get(index + 1)
+                    .map(|(parent_components, _)| {
+                        lightmount_structural_boundary_key_for_compound(parent_components)
+                    })
+                    .unwrap_or(LightmountStructuralBoundaryKey::Universal)
+                    .note_in(summary);
+            } else {
+                summary.note_universal_dependency();
+            }
+        }
+        if components.iter().any(|component| {
+            lightmount_component_has_nested_child_list_structural_dependency(component)
+        }) {
+            // Nested selector-list structural state can change direction and
+            // scope (notably through :has()). Keep this branch conservative
+            // until its boundary relation is represented explicitly.
+            summary.note_universal_dependency();
+        }
+    }
+}
+
 impl<'a> StylistSelectorVisitor<'a> {
     fn visit_nested_selector(
         &mut self,
@@ -3432,6 +3582,11 @@ pub struct CascadeData {
     /// structural state, such as :empty or :nth-child().
     has_child_list_structural_dependency: bool,
 
+    /// Selector-derived keys for boundaries whose children can affect
+    /// tree-structural selector matching.
+    lightmount_child_list_structural_boundary_dependencies:
+        LightmountChildListStructuralBoundaryDependencySummary,
+
     /// The attribute local names that appear in attribute selectors.  Used
     /// to avoid taking element snapshots when an irrelevant attribute changes.
     /// (We don't bother storing the namespace, since namespaced attributes are
@@ -3566,6 +3721,8 @@ impl CascadeData {
             additional_relative_selector_invalidation_map:
                 AdditionalRelativeSelectorInvalidationMap::new(),
             has_child_list_structural_dependency: false,
+            lightmount_child_list_structural_boundary_dependencies:
+                LightmountChildListStructuralBoundaryDependencySummary::default(),
             nth_of_mapped_ids: PrecomputedHashSet::default(),
             nth_of_class_dependencies: PrecomputedHashSet::default(),
             nth_of_attribute_dependencies: PrecomputedHashSet::default(),
@@ -3684,6 +3841,15 @@ impl CascadeData {
     #[inline]
     pub fn has_child_list_structural_dependency(&self) -> bool {
         self.has_child_list_structural_dependency
+    }
+
+    /// Returns selector-derived child-list structural boundary keys for
+    /// Lightmount source dependency planning.
+    #[inline]
+    pub(crate) fn lightmount_child_list_structural_boundary_dependency_summary(
+        &self,
+    ) -> &LightmountChildListStructuralBoundaryDependencySummary {
+        &self.lightmount_child_list_structural_boundary_dependencies
     }
 
     /// Returns sibling-sensitive selector dependency keys for Lightmount style
@@ -4119,6 +4285,12 @@ impl CascadeData {
                 };
                 rule.selector.visit(&mut visitor);
                 self.has_child_list_structural_dependency |= has_child_list_structural_dependency;
+                if has_child_list_structural_dependency {
+                    lightmount_note_child_list_structural_boundary_dependencies(
+                        &rule.selector,
+                        &mut self.lightmount_child_list_structural_boundary_dependencies,
+                    );
+                }
 
                 if needs_revalidation {
                     self.selectors_for_cache_revalidation.insert(
@@ -4664,6 +4836,10 @@ impl CascadeData {
                     )?;
                     self.has_child_list_structural_dependency |=
                         has_child_list_structural_dependency;
+                    if has_child_list_structural_dependency {
+                        self.lightmount_child_list_structural_boundary_dependencies
+                            .note_universal_dependency();
+                    }
 
                     containing_rule_state
                         .containing_scope_rule_state
@@ -4954,6 +5130,8 @@ impl CascadeData {
         self.relative_selector_invalidation_map.clear();
         self.additional_relative_selector_invalidation_map.clear();
         self.has_child_list_structural_dependency = false;
+        self.lightmount_child_list_structural_boundary_dependencies =
+            LightmountChildListStructuralBoundaryDependencySummary::default();
         self.attribute_dependencies.clear();
         self.nth_of_attribute_dependencies.clear();
         self.nth_of_custom_state_dependencies.clear();
@@ -5233,9 +5411,42 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::selector_parser::SelectorParser;
 
     fn url_data() -> UrlExtraData {
         UrlExtraData::from(url::Url::parse("https://example.test/").unwrap())
+    }
+
+    fn structural_boundary_summary_for_selector(
+        selector_text: &str,
+    ) -> LightmountChildListStructuralBoundaryDependencySummary {
+        let selectors =
+            SelectorParser::parse_author_origin_no_namespace(selector_text, &url_data())
+                .expect("selector should parse");
+        let mut summary = LightmountChildListStructuralBoundaryDependencySummary::default();
+        for selector in selectors.slice() {
+            lightmount_note_child_list_structural_boundary_dependencies(selector, &mut summary);
+        }
+        summary
+    }
+
+    #[test]
+    fn lightmount_structural_boundary_summary_keys_selector_relationships() {
+        let details = structural_boundary_summary_for_selector("details > summary:first-of-type");
+        assert!(details.matches_query(LightmountStyleInvalidationQuery::Type("details")));
+        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("summary")));
+        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("section")));
+
+        let empty = structural_boundary_summary_for_selector("section:empty");
+        assert!(empty.matches_query(LightmountStyleInvalidationQuery::Type("section")));
+        assert!(!empty.matches_query(LightmountStyleInvalidationQuery::Universal));
+
+        let keyed_nth = structural_boundary_summary_for_selector(".items > .item:last-child");
+        assert!(keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("items")));
+        assert!(!keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("item")));
+
+        let unscoped_nth = structural_boundary_summary_for_selector(".item:last-child");
+        assert!(unscoped_nth.matches_query(LightmountStyleInvalidationQuery::Universal));
     }
 
     fn assert_registration_valid(syntax: &str, initial_value: Option<&str>) {
