@@ -1748,18 +1748,17 @@ impl LightmountSourceDependencySummary {
         })
     }
 
-    /// Return whether this source needs an empty-target fallback for the
-    /// requested source dependency batch.
+    /// Return whether this source needs an empty-target fallback that cannot
+    /// coexist with source-local work for the requested dependency batch.
     #[inline]
-    fn requires_empty_target_fallback_for_requests<Root>(
+    fn requires_nonstructural_empty_target_fallback_for_requests<Root>(
         &self,
         requests: &[LightmountSourceDependencyInvalidationRequest<'_, Root>],
     ) -> bool
     where
         Root: Copy,
     {
-        self.has_child_list_structural_dependency_for_requests(requests)
-            || self.has_relative_previous_sibling_dependency_for_requests(requests)
+        self.has_relative_previous_sibling_dependency_for_requests(requests)
             || self.has_slotted_dependency_for_requests(requests)
     }
 
@@ -4068,20 +4067,36 @@ where
     ContextRootsProvider: LightmountSourceDependencyInvalidationContextRootsProvider<Root>,
 {
     let mut planned_sources = Vec::new();
-    let mut empty_target_fallback_source: Option<(usize, Vec<Root>)> = None;
+    let mut structural_boundary_fallback_source: Option<(usize, Vec<Root>)> = None;
+    let mut nonstructural_empty_target_fallback_source: Option<(usize, Vec<Root>)> = None;
     for (source_index, source) in sources.iter().enumerate() {
         let selected_fallback_roots = source.selected_fallback_roots();
         if source
             .dependency_summary()
-            .requires_empty_target_fallback_for_requests(requests)
+            .has_child_list_structural_dependency_for_requests(requests)
         {
             let has_fallback_roots = !selected_fallback_roots.is_empty();
-            let should_replace_empty_target_source = match &empty_target_fallback_source {
+            let should_replace_empty_target_source = match &structural_boundary_fallback_source {
                 None => true,
                 Some((_, roots)) => roots.is_empty() && has_fallback_roots,
             };
             if should_replace_empty_target_source {
-                empty_target_fallback_source =
+                structural_boundary_fallback_source =
+                    Some((source_index, selected_fallback_roots.to_vec()));
+            }
+        }
+        if source
+            .dependency_summary()
+            .requires_nonstructural_empty_target_fallback_for_requests(requests)
+        {
+            let has_fallback_roots = !selected_fallback_roots.is_empty();
+            let should_replace_empty_target_source =
+                match &nonstructural_empty_target_fallback_source {
+                    None => true,
+                    Some((_, roots)) => roots.is_empty() && has_fallback_roots,
+                };
+            if should_replace_empty_target_source {
+                nonstructural_empty_target_fallback_source =
                     Some((source_index, selected_fallback_roots.to_vec()));
             }
         }
@@ -4119,6 +4134,12 @@ where
             },
         }
     }
+    let empty_target_fallback_source = structural_boundary_fallback_source.or_else(|| {
+        planned_sources
+            .is_empty()
+            .then_some(nonstructural_empty_target_fallback_source)
+            .flatten()
+    });
     let boundary_fallback = match empty_target_fallback_source {
         Some((source_index, selected_fallback_roots)) => {
             if boundary_roots.empty_target_fallback_roots.is_empty() {
@@ -8866,7 +8887,10 @@ mod tests {
         assert!(source_summary.has_child_list_structural_dependency_for_requests(&[request]));
         assert!(!source_summary.has_relative_previous_sibling_dependency_for_requests(&[request]));
         assert!(!source_summary.has_slotted_dependency_for_requests(&[request]));
-        assert!(source_summary.requires_empty_target_fallback_for_requests(&[request]));
+        assert!(source_summary.has_child_list_structural_dependency_for_requests(&[request]));
+        assert!(
+            !source_summary.requires_nonstructural_empty_target_fallback_for_requests(&[request])
+        );
         assert!(source_summary
             .structural_boundary_cleanup_roots_for_requests(&[request], &[9])
             .is_empty());
@@ -8886,7 +8910,8 @@ mod tests {
             None,
             LightmountSourceDependencyRequestRequirement::relative_previous_sibling(),
         );
-        assert!(relative_summary.requires_empty_target_fallback_for_requests(&[relative_request]));
+        assert!(relative_summary
+            .requires_nonstructural_empty_target_fallback_for_requests(&[relative_request]));
         assert_eq!(
             relative_summary
                 .structural_boundary_cleanup_roots_for_requests(&[relative_request], &[9]),
@@ -8941,7 +8966,8 @@ mod tests {
         assert!(
             !source_summary.has_child_list_structural_dependency_for_requests(&[unrelated_request])
         );
-        assert!(!source_summary.requires_empty_target_fallback_for_requests(&[unrelated_request,]));
+        assert!(!source_summary
+            .requires_nonstructural_empty_target_fallback_for_requests(&[unrelated_request,]));
 
         let universal_summary = LightmountSourceDependencySummary::new(
             lightmount_dependency_summary_for_selector(":first-child"),
