@@ -12,7 +12,7 @@ use crate::{
     properties::{
         parse_one_declaration_into, parse_property_declaration_list, AllShorthand, Importance,
         PropertyDeclaration, PropertyDeclarationBlock, PropertyDeclarationId, PropertyId,
-        SourcePropertyDeclaration,
+        SourcePropertyDeclaration, SourcePropertyDeclarationUpdate,
     },
     stylesheets::{CssRuleType, Namespaces, Origin, UrlExtraData},
 };
@@ -145,21 +145,24 @@ impl CssDeclarationBlock {
         else {
             return CssMutationProjection::parse_error();
         };
-        let before_css_text = self.css_text();
         let modified_existing = self
             .block
             .first_declaration_to_remove(&parsed.property)
             .is_some();
-        self.remove_property_by_id(&parsed.property);
-        self.block
-            .extend(parsed.declarations.drain(), parsed.importance);
-        let after_css_text = self.css_text();
-        let set_result = if after_css_text == before_css_text {
+        let mut updates = SourcePropertyDeclarationUpdate::default();
+        let changed =
+            self.block
+                .prepare_for_update(&parsed.declarations, parsed.importance, &mut updates);
+        let set_result = if !changed {
             CssSetResult::Unchanged
-        } else if modified_existing {
-            CssSetResult::ModifiedExisting
         } else {
-            CssSetResult::ChangedPropertySet
+            self.block
+                .update(parsed.declarations.drain(), parsed.importance, &mut updates);
+            if modified_existing {
+                CssSetResult::ModifiedExisting
+            } else {
+                CssSetResult::ChangedPropertySet
+            }
         };
 
         CssMutationProjection {
@@ -744,7 +747,7 @@ mod tests {
 
     #[test]
     fn declaration_block_set_property_updates_through_pdb() {
-        let mut block = parse_declaration_block("color: red !important; padding: 1px 2px;");
+        let mut block = parse_declaration_block("padding: 1px 2px; color: red !important;");
 
         let entries = set_projection_entries(&mut block, "color", "blue", false);
         assert_eq!(entries.len(), 1);
@@ -1005,6 +1008,113 @@ mod tests {
         assert_eq!(
             block.set_property("margin", "", false),
             CssSetResult::Unchanged
+        );
+    }
+
+    #[test]
+    fn declaration_block_updates_existing_longhand_in_place() {
+        let mut block = parse_declaration_block("color: black; margin-top: 7px;");
+
+        assert_eq!(block.item(0).as_deref(), Some("color"));
+        assert_eq!(block.item(1).as_deref(), Some("margin-top"));
+        assert_eq!(
+            block.set_property("color", "rgb(12, 34, 56)", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(block.item(0).as_deref(), Some("color"));
+        assert_eq!(block.item(1).as_deref(), Some("margin-top"));
+        assert_eq!(block.css_text(), "color: rgb(12, 34, 56); margin-top: 7px;");
+
+        assert_eq!(
+            block.set_property("color", "red", true),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(block.item(0).as_deref(), Some("color"));
+        assert_eq!(block.item(1).as_deref(), Some("margin-top"));
+        assert_eq!(block.css_text(), "color: red !important; margin-top: 7px;");
+
+        assert!(block.remove_property("color").changed);
+        assert_eq!(
+            block.set_property("color", "green", false),
+            CssSetResult::ChangedPropertySet
+        );
+        assert_eq!(block.item(0).as_deref(), Some("margin-top"));
+        assert_eq!(block.item(1).as_deref(), Some("color"));
+        assert_eq!(block.css_text(), "margin-top: 7px; color: green;");
+    }
+
+    #[test]
+    fn declaration_block_updates_custom_and_shorthand_declarations_in_place() {
+        let mut custom = parse_declaration_block("--token: first; color: red; --other: x;");
+        assert_eq!(
+            custom.set_property("--token", "second", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(custom.item(0).as_deref(), Some("--token"));
+        assert_eq!(custom.item(1).as_deref(), Some("color"));
+        assert_eq!(custom.item(2).as_deref(), Some("--other"));
+        assert_eq!(
+            custom.css_text(),
+            "--token: second; color: red; --other: x;"
+        );
+
+        let mut shorthand = parse_declaration_block("margin: 1px 2px; color: red;");
+        assert_eq!(
+            shorthand.set_property("margin", "3px 4px", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(
+            (0..shorthand.len())
+                .filter_map(|index| shorthand.item(index))
+                .collect::<Vec<_>>(),
+            [
+                "margin-top",
+                "margin-right",
+                "margin-bottom",
+                "margin-left",
+                "color",
+            ]
+        );
+        assert_eq!(shorthand.css_text(), "margin: 3px 4px; color: red;");
+
+        let mut partial = parse_declaration_block("margin-top: 1px; color: red; margin-left: 4px;");
+        assert_eq!(
+            partial.set_property("margin", "5px 6px", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(
+            (0..partial.len())
+                .filter_map(|index| partial.item(index))
+                .collect::<Vec<_>>(),
+            [
+                "margin-top",
+                "color",
+                "margin-left",
+                "margin-right",
+                "margin-bottom",
+            ]
+        );
+        assert_eq!(partial.css_text(), "margin: 5px 6px; color: red;");
+    }
+
+    #[test]
+    fn declaration_block_reappends_across_logical_physical_order_boundary() {
+        let mut block =
+            parse_declaration_block("margin-left: 1px; color: red; margin-inline-start: 2px;");
+
+        assert_eq!(
+            block.set_property("margin-left", "3px", false),
+            CssSetResult::ModifiedExisting
+        );
+        assert_eq!(
+            (0..block.len())
+                .filter_map(|index| block.item(index))
+                .collect::<Vec<_>>(),
+            ["color", "margin-inline-start", "margin-left"]
+        );
+        assert_eq!(
+            block.css_text(),
+            "color: red; margin-inline-start: 2px; margin-left: 3px;"
         );
     }
 
