@@ -1512,8 +1512,11 @@ impl LightmountChildListStructuralBoundaryDependencySummary {
 
     #[inline]
     pub(crate) fn matches_query(&self, query: LightmountStyleInvalidationQuery<'_>) -> bool {
+        if self.universal_dependency {
+            return true;
+        }
         match query {
-            LightmountStyleInvalidationQuery::Universal => self.universal_dependency,
+            LightmountStyleInvalidationQuery::Universal => false,
             LightmountStyleInvalidationQuery::Type(local_name) => self
                 .type_dependencies
                 .contains(&LocalName::from(local_name)),
@@ -1533,9 +1536,31 @@ impl LightmountChildListStructuralBoundaryDependencySummary {
 }
 
 impl LightmountSourceDependencySummary {
-    /// Create source dependency metadata from raw Stylo-derived summary parts.
+    /// Create conservative source dependency metadata from legacy summary
+    /// parts that do not identify child-list structural boundary keys.
+    ///
+    /// A structural dependency supplied through this constructor is treated
+    /// as universal. Prefer [`Self::from_cascade_data`] whenever parsed
+    /// selector metadata is available.
     #[inline]
-    pub(crate) fn new(
+    pub fn new(
+        dependency_summary: LightmountDependencyInvalidationSummary,
+        has_child_list_structural_dependency: bool,
+    ) -> Self {
+        let mut child_list_structural_boundary_dependencies =
+            LightmountChildListStructuralBoundaryDependencySummary::default();
+        if has_child_list_structural_dependency {
+            child_list_structural_boundary_dependencies.note_universal_dependency();
+        }
+        Self::from_parts(
+            dependency_summary,
+            has_child_list_structural_dependency,
+            child_list_structural_boundary_dependencies,
+        )
+    }
+
+    #[inline]
+    fn from_parts(
         dependency_summary: LightmountDependencyInvalidationSummary,
         has_child_list_structural_dependency: bool,
         child_list_structural_boundary_dependencies:
@@ -1551,7 +1576,7 @@ impl LightmountSourceDependencySummary {
     /// Create source dependency metadata from Stylo cascade data.
     #[inline]
     pub fn from_cascade_data(cascade_data: &CascadeData) -> Self {
-        Self::new(
+        Self::from_parts(
             cascade_data.lightmount_dependency_invalidation_summary(),
             cascade_data.has_child_list_structural_dependency(),
             cascade_data
@@ -8865,7 +8890,7 @@ mod tests {
     #[test]
     fn lightmount_source_dependency_summary_and_batch_source_expose_typed_inputs() {
         let dependency_summary = lightmount_dependency_summary_for_selector(".active");
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             true,
             lightmount_structural_boundary_summary_for_class("active"),
@@ -8900,7 +8925,7 @@ mod tests {
         let mut relative_dependency_summary = LightmountDependencyInvalidationSummary::default();
         relative_dependency_summary
             .note_class_dependency(Atom::from("active"), relative_dependency);
-        let relative_summary = LightmountSourceDependencySummary::new(
+        let relative_summary = LightmountSourceDependencySummary::from_parts(
             relative_dependency_summary,
             false,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
@@ -8940,7 +8965,7 @@ mod tests {
 
     #[test]
     fn lightmount_structural_empty_target_gate_requires_a_keyed_dependency() {
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             lightmount_dependency_summary_for_selector("details > summary:first-of-type"),
             true,
             lightmount_structural_boundary_summary_for_type("details"),
@@ -8969,7 +8994,7 @@ mod tests {
         assert!(!source_summary
             .requires_nonstructural_empty_target_fallback_for_requests(&[unrelated_request,]));
 
-        let universal_summary = LightmountSourceDependencySummary::new(
+        let universal_summary = LightmountSourceDependencySummary::from_parts(
             lightmount_dependency_summary_for_selector(":first-child"),
             true,
             lightmount_universal_structural_boundary_summary(),
@@ -8982,6 +9007,19 @@ mod tests {
         );
         assert!(universal_summary
             .has_child_list_structural_dependency_for_requests(&[universal_request]));
+        let universal_type_query =
+            LightmountRetainedStyleInvalidationQuery::element_type(4_u32, "article".into());
+        let universal_type_request = LightmountSourceDependencyInvalidationRequest::new(
+            &universal_type_query,
+            None,
+            LightmountSourceDependencyRequestRequirement::child_list_structural(),
+        );
+        assert!(universal_summary
+            .has_child_list_structural_dependency_for_requests(&[universal_type_request]));
+
+        let conservative_summary = LightmountSourceDependencySummary::new(Default::default(), true);
+        assert!(conservative_summary
+            .has_child_list_structural_dependency_for_requests(&[universal_type_request]));
     }
 
     #[test]
@@ -9005,7 +9043,7 @@ mod tests {
         target.add_kind(LightmountDependencyKind::Element);
         dependency_summary.note_state_dependency(ElementState::URLTARGET, target);
 
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             true,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
@@ -9786,7 +9824,7 @@ mod tests {
             }
         }
 
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             lightmount_dependency_summary_for_selector("details > summary:first-of-type"),
             true,
             lightmount_structural_boundary_summary_for_type("details"),
@@ -9848,7 +9886,7 @@ mod tests {
         dependency.add_fallback_reason(LightmountDependencyFallbackReason::NthOfDependency);
         let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
         dependency_summary.note_class_dependency(Atom::from("active"), dependency);
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             false,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
@@ -9922,7 +9960,7 @@ mod tests {
         let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
         dependency_summary.note_class_dependency(Atom::from("nth"), nth_dependency);
         dependency_summary.note_class_dependency(Atom::from("full"), full_dependency);
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             false,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
@@ -10004,7 +10042,7 @@ mod tests {
         dependency.add_kind(LightmountDependencyKind::Siblings);
         let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
         dependency_summary.note_custom_state_dependency(AtomIdent::from("--active"), dependency);
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             true,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
@@ -10084,7 +10122,7 @@ mod tests {
         dependency.add_kind(LightmountDependencyKind::Scope);
         let mut dependency_summary = LightmountDependencyInvalidationSummary::default();
         dependency_summary.note_class_dependency(Atom::from("scoped"), dependency);
-        let source_summary = LightmountSourceDependencySummary::new(
+        let source_summary = LightmountSourceDependencySummary::from_parts(
             dependency_summary,
             false,
             LightmountChildListStructuralBoundaryDependencySummary::default(),
