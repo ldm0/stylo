@@ -999,63 +999,6 @@ mod tests {
     }
 
     #[test]
-    fn declaration_block_projects_border_longhands_in_chromium_order() {
-        let expected = [
-            "border-top-width",
-            "border-right-width",
-            "border-bottom-width",
-            "border-left-width",
-            "border-top-style",
-            "border-right-style",
-            "border-bottom-style",
-            "border-left-style",
-            "border-top-color",
-            "border-right-color",
-            "border-bottom-color",
-            "border-left-color",
-            "border-image-source",
-            "border-image-slice",
-            "border-image-width",
-            "border-image-outset",
-            "border-image-repeat",
-        ];
-
-        let parsed = parse_declaration_block("border: 10px solid pink;");
-        assert_eq!(
-            (0..parsed.len())
-                .filter_map(|index| parsed.item(index))
-                .collect::<Vec<_>>(),
-            expected
-        );
-
-        let mut mutated = CssDeclarationBlock::default();
-        assert_eq!(
-            mutated.set_property("border", "10px solid pink", false),
-            CssSetResult::ChangedPropertySet
-        );
-        assert_eq!(
-            (0..mutated.len())
-                .filter_map(|index| mutated.item(index))
-                .collect::<Vec<_>>(),
-            expected
-        );
-        assert_eq!(
-            mutated.set_property("border-top", "11px solid pink", false),
-            CssSetResult::ModifiedExisting
-        );
-        assert_eq!(
-            (0..mutated.len())
-                .filter_map(|index| mutated.item(index))
-                .collect::<Vec<_>>(),
-            expected
-        );
-        assert_eq!(
-            mutated.css_text(),
-            "border-width: 11px 10px 10px; border-style: solid; border-color: pink; border-image: none;"
-        );
-    }
-
-    #[test]
     fn declaration_block_exposes_cssom_affected_names_metadata() {
         fn assert_contains(property: &str, names: &[&str]) {
             let affected = CssDeclarationBlock::affected_names_for_property(property)

@@ -176,22 +176,22 @@ spec = "https://drafts.csswg.org/css-backgrounds-3/#border-image"
 [border]
 sub_properties = [
   "border-top-width",
-  "border-right-width",
-  "border-bottom-width",
-  "border-left-width",
   "border-top-style",
-  "border-right-style",
-  "border-bottom-style",
-  "border-left-style",
   "border-top-color",
+  "border-right-width",
+  "border-right-style",
   "border-right-color",
+  "border-bottom-width",
+  "border-bottom-style",
   "border-bottom-color",
+  "border-left-width",
+  "border-left-style",
   "border-left-color",
-  "border-image-source",
-  "border-image-slice",
-  "border-image-width",
   "border-image-outset",
-  "border-image-repeat"
+  "border-image-repeat",
+  "border-image-slice",
+  "border-image-source",
+  "border-image-width"
 ]
 spec = "https://drafts.csswg.org/css-backgrounds-3/#border"
 derive_value_info = false
