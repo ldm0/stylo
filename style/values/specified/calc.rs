@@ -1363,6 +1363,33 @@ impl CalcNode {
         &self,
         context: &crate::values::computed::Context,
     ) -> Result<CSSFloat, ()> {
+        match self.to_number_or_percentage_leaf_with_context(context)? {
+            crate::values::computed::length_percentage::CalcLengthPercentageLeaf::Number(
+                number,
+            ) => Ok(number),
+            _ => Err(()),
+        }
+    }
+
+    /// Resolves a calculation whose result is either a `<number>` or a `<percentage>`.
+    /// Percentages are returned as their unit value, so `25%` resolves to `0.25`.
+    pub fn to_number_or_percentage_with_context(
+        &self,
+        context: &crate::values::computed::Context,
+    ) -> Result<CSSFloat, ()> {
+        use crate::values::computed::length_percentage::CalcLengthPercentageLeaf;
+
+        match self.to_number_or_percentage_leaf_with_context(context)? {
+            CalcLengthPercentageLeaf::Number(number) => Ok(number),
+            CalcLengthPercentageLeaf::Percentage(percentage) => Ok(percentage.0),
+            CalcLengthPercentageLeaf::Length(_) => Err(()),
+        }
+    }
+
+    fn to_number_or_percentage_leaf_with_context(
+        &self,
+        context: &crate::values::computed::Context,
+    ) -> Result<crate::values::computed::length_percentage::CalcLengthPercentageLeaf, ()> {
         use crate::values::computed::length_percentage::CalcLengthPercentageLeaf;
 
         let mut unsupported = false;
@@ -1387,12 +1414,7 @@ impl CalcNode {
         if unsupported {
             return Err(());
         }
-        let number = if let CalcLengthPercentageLeaf::Number(number) = node.resolve()? {
-            number
-        } else {
-            return Err(());
-        };
-        Ok(number)
+        node.resolve()
     }
 
     /// Tries to simplify this expression into a `<percentage>` value.

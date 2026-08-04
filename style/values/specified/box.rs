@@ -12,10 +12,12 @@ use crate::values::generics::box_::{
     BaselineShiftKeyword, GenericBaselineShift, GenericContainIntrinsicSize, GenericLineClamp,
     GenericOverflowClipMargin, GenericPerspective, OverflowClipMarginBox,
 };
+use crate::values::generics::calc::CalcUnits;
+use crate::values::specified::calc::{AllowParse, CalcNode};
 use crate::values::specified::length::{LengthPercentage, NonNegativeLength};
 use crate::values::specified::{AllowQuirks, Integer, NonNegativeNumberOrPercentage};
 use crate::values::CustomIdent;
-use cssparser::Parser;
+use cssparser::{Parser, Token};
 use num_traits::FromPrimitive;
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, KeywordsCollectFn, ParseError};
@@ -2035,18 +2037,16 @@ impl ScrollbarGutter {
 }
 
 /// A specified value for the zoom property.
-#[derive(
-    Clone, Copy, Debug, MallocSizeOf, PartialEq, Parse, SpecifiedValueInfo, ToCss, ToShmem, ToTyped,
-)]
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, ToCss, ToShmem, ToTyped)]
 #[allow(missing_docs)]
 #[typed(todo_derive_fields)]
 pub enum Zoom {
     Normal,
     /// An internal value that resets the effective zoom to 1. Used for scrollbar parts, which
     /// disregard zoom. We use this name because WebKit has this value exposed to the web.
-    #[parse(condition = "ParserContext::in_ua_sheet")]
     Document,
     Value(NonNegativeNumberOrPercentage),
+    Calculation(CalcNode),
 }
 
 impl Zoom {
@@ -2054,6 +2054,49 @@ impl Zoom {
     #[inline]
     pub fn new_number(n: f32) -> Self {
         Self::Value(NonNegativeNumberOrPercentage::new_number(n))
+    }
+}
+
+impl SpecifiedValueInfo for Zoom {}
+
+impl Parse for Zoom {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input
+            .try_parse(|input| input.expect_ident_matching("normal"))
+            .is_ok()
+        {
+            return Ok(Self::Normal);
+        }
+        if context.in_ua_sheet()
+            && input
+                .try_parse(|input| input.expect_ident_matching("document"))
+                .is_ok()
+        {
+            return Ok(Self::Document);
+        }
+        if let Ok(value) =
+            input.try_parse(|input| NonNegativeNumberOrPercentage::parse(context, input))
+        {
+            return Ok(Self::Value(value));
+        }
+
+        let location = input.current_source_location();
+        let name = match input.next()? {
+            Token::Function(name) => name.clone(),
+            token => return Err(location.new_unexpected_token_error(token.clone())),
+        };
+        let function = CalcNode::math_function(context, &name, location)?;
+        let node = CalcNode::parse(context, input, function, AllowParse::new(CalcUnits::ALL))?;
+        let unit = node
+            .unit()
+            .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?;
+        if !unit.is_empty() && unit != CalcUnits::PERCENTAGE {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(Self::Calculation(node))
     }
 }
 

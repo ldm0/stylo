@@ -980,7 +980,6 @@ affects = "layout"
 type = "FontVariantAlternates"
 initial = "computed::FontVariantAlternates::default()"
 struct = "font"
-engine = "gecko"
 animation_type = "discrete"
 spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-alternates"
 gecko_ffi_name = "mFont.variantAlternates"
@@ -2714,7 +2713,7 @@ spec = "Non-standard (https://github.com/atanassov/css-zoom/ is the closest)"
 gecko_pref = "layout.css.zoom.enabled"
 servo_pref = "layout.css.zoom.enabled"
 affects = "layout"
-enabled_in = "chrome"
+boxed = true
 
 [border-image-outset]
 type = "NonNegativeLengthOrNumberRect"
@@ -3694,7 +3693,6 @@ keyword = { values = ["auto", "none", "normal"], gecko_constant_prefix = "NS_FON
 
 [font-variant-emoji]
 struct = "font"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-emoji"
 animation_type = "discrete"
 affects = "layout"
@@ -3705,7 +3703,6 @@ keyword = { values = ["normal", "text", "emoji", "unicode"] }
 
 [font-variant-position]
 struct = "font"
-engine = "gecko"
 spec = "https://drafts.csswg.org/css-fonts/#propdef-font-variant-position"
 animation_type = "discrete"
 affects = "layout"

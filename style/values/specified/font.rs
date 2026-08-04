@@ -1111,6 +1111,7 @@ bitflags! {
     ToResolvedValue,
     ToShmem,
 )]
+#[cfg_attr(feature = "servo", derive(Deserialize, Hash, Serialize))]
 #[repr(C, u8)]
 /// Set of variant alternates
 pub enum VariantAlternates {
@@ -1149,6 +1150,7 @@ pub enum VariantAlternates {
     ToShmem,
     ToTyped,
 )]
+#[cfg_attr(feature = "servo", derive(Deserialize, Hash, Serialize))]
 #[repr(transparent)]
 #[typed(todo_derive_fields)]
 /// List of Variant Alternates

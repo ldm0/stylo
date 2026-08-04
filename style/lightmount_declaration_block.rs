@@ -103,9 +103,6 @@ impl CssDeclarationBlock {
     }
 
     pub fn affected_names_for_property(name: &str) -> Option<Vec<String>> {
-        if let Some(names) = lightmount_cssom_supplemental_affected_names(name) {
-            return Some(names);
-        }
         let property = PropertyId::parse_enabled_for_all_content(name).ok()?;
         Some(affected_names_for_property_id(&property))
     }
@@ -279,57 +276,14 @@ fn affected_names_for_property_id(property: &PropertyId) -> Vec<String> {
 
 fn append_lightmount_cssom_affected_names(name: &str, names: &mut Vec<String>) {
     match name {
-        "animation" => {
-            for name in [
-                "animation-timeline",
-                "animation-range-start",
-                "animation-range-end",
-            ] {
-                append_unique_name(names, name);
-            }
-        },
         "border" => append_unique_name(names, "border-image"),
-        "font" => {
-            for name in [
-                "font-variant-ligatures",
-                "font-variant-caps",
-                "font-variant-alternates",
-                "font-variant-numeric",
-                "font-variant-east-asian",
-                "font-variant-position",
-                "font-variant-emoji",
-                "font-variant",
-            ] {
-                append_unique_name(names, name);
-            }
-        },
-        "font-variant" => {
-            for name in [
-                "font-variant-ligatures",
-                "font-variant-caps",
-                "font-variant-alternates",
-                "font-variant-numeric",
-                "font-variant-east-asian",
-                "font-variant-position",
-                "font-variant-emoji",
-            ] {
-                append_unique_name(names, name);
-            }
-        },
+        "font" => append_unique_name(names, "font-variant"),
         "overscroll-behavior" => {
             append_unique_name(names, "overscroll-behavior-x");
             append_unique_name(names, "overscroll-behavior-y");
         },
         _ => {},
     }
-}
-
-fn lightmount_cssom_supplemental_affected_names(name: &str) -> Option<Vec<String>> {
-    matches!(
-        name,
-        "font-variant-alternates" | "font-variant-position" | "font-variant-emoji"
-    )
-    .then(|| vec![name.to_owned()])
 }
 
 fn append_unique_name(names: &mut Vec<String>, name: &str) {
@@ -663,6 +617,70 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_owns_computed_compat_longhands_in_stylo() {
+        static_prefs::set_pref!("layout.columns.enabled", true);
+        static_prefs::set_pref!("layout.css.scroll-driven-animations.enabled", true);
+        static_prefs::set_pref!("layout.css.zoom.enabled", true);
+
+        let block = parse_declaration_block(
+            "animation-timeline: auto; animation-range-start: entry 10%; \
+             animation-range-end: exit 20%; column-span: all; column-width: 12px; \
+             font-variant-alternates: historical-forms; font-variant-emoji: emoji; \
+             font-variant-position: super; zoom: 125%;",
+        );
+
+        for (property, expected) in [
+            ("animation-timeline", "auto"),
+            ("animation-range-start", "entry 10%"),
+            ("animation-range-end", "exit 20%"),
+            ("column-span", "all"),
+            ("column-width", "12px"),
+            ("font-variant-alternates", "historical-forms"),
+            ("font-variant-emoji", "emoji"),
+            ("font-variant-position", "super"),
+            ("zoom", "125%"),
+        ] {
+            assert_eq!(
+                block.property_value(property).as_deref(),
+                Some(expected),
+                "{property} should be parsed and serialized by Stylo",
+            );
+            assert!(block.property_is_declared(property));
+        }
+
+        let dynamic_zoom = parse_declaration_block("zoom: calc(sign(1em - 1px) * 2%);");
+        assert_eq!(
+            dynamic_zoom.property_value("zoom").as_deref(),
+            Some("calc(sign(1em - 1px) * 2%)")
+        );
+
+        let variant = parse_declaration_block("font-variant: historical-forms emoji super;");
+        assert_eq!(
+            variant.property_value("font-variant-alternates").as_deref(),
+            Some("historical-forms")
+        );
+        assert_eq!(
+            variant.property_value("font-variant-emoji").as_deref(),
+            Some("emoji")
+        );
+        assert_eq!(
+            variant.property_value("font-variant-position").as_deref(),
+            Some("super")
+        );
+
+        let reset = parse_declaration_block(
+            "font-variant: historical-forms emoji super; font: italic 16px serif;",
+        );
+        for property in [
+            "font-variant-alternates",
+            "font-variant-emoji",
+            "font-variant-position",
+        ] {
+            assert_eq!(reset.property_value(property).as_deref(), Some("normal"));
+        }
+    }
+
+    #[test]
     fn declaration_block_handles_lightmount_cssom_compat_edge_values() {
         let block = parse_declaration_block(
             "text-size-adjust: calc(10% + 5%); \
@@ -871,7 +889,10 @@ mod tests {
         assert_eq!(projection.entries[0].name, "background-clip");
         assert_eq!(projection.entries[0].value, "text");
         assert_eq!(projection.stored_names, ["background-clip"]);
-        assert_eq!(block.property_value("background-clip").as_deref(), Some("text"));
+        assert_eq!(
+            block.property_value("background-clip").as_deref(),
+            Some("text")
+        );
         assert_eq!(block.css_text(), "background-clip: text;");
     }
 
@@ -908,6 +929,8 @@ mod tests {
 
     #[test]
     fn declaration_block_exposes_cssom_affected_names_metadata() {
+        static_prefs::set_pref!("layout.css.scroll-driven-animations.enabled", true);
+
         fn assert_contains(property: &str, names: &[&str]) {
             let affected = CssDeclarationBlock::affected_names_for_property(property)
                 .unwrap_or_else(|| panic!("{property} should expose affected names"));

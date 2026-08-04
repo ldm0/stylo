@@ -604,6 +604,28 @@ impl<A: Debug, B: Debug> Debug for Either<A, B> {
 #[repr(C)]
 pub struct CustomIdent(pub Atom);
 
+#[cfg(feature = "servo")]
+impl serde::Serialize for CustomIdent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&*self.0)
+    }
+}
+
+#[cfg(feature = "servo")]
+impl<'de> serde::Deserialize<'de> for CustomIdent {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value =
+            <std::borrow::Cow<'de, str> as serde::Deserialize<'de>>::deserialize(deserializer)?;
+        Ok(Self(Atom::from(&*value)))
+    }
+}
+
 impl CustomIdent {
     /// Parse a <custom-ident>
     ///
