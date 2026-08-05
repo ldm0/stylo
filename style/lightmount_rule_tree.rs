@@ -19,25 +19,23 @@ use crate::{
     custom_properties::AttrTaint,
     font_face::{DescriptorId, FontFaceRule},
     media_queries::MediaList,
-    parser::{NestingContext, Parse, ParserContext},
+    parser::{Parse, ParserContext},
     properties::{
-        parse_one_declaration_into, parse_property_declaration_list, Importance,
-        PropertyDeclarationBlock, PropertyId, SourcePropertyDeclaration,
+        parse_one_declaration_into, Importance, PropertyDeclarationBlock, PropertyId,
+        SourcePropertyDeclaration,
     },
-    selector_parser::{SelectorImpl, SelectorParser},
     shared_lock::{SharedRwLock, ToCssWithGuard},
     stylesheets::{
         font_feature_values_rule::{FFVDeclaration, PairValues, SingleValue, VectorValues},
         import_rule::{ImportLayer, ImportRule, ImportSheet, ImportSupportsCondition},
-        keyframes_rule::{Keyframe, KeyframeSelectors, KeyframesRule},
+        keyframes_rule::{Keyframe, KeyframeSelectors},
         parse_nested_rule_block, AllowImportRules, CssRule, CssRuleType, CssRuleTypes, CssRules,
         MarginRule, MarginRuleType, Namespaces, Origin, PageRule, PageSelectors, RulesMutateError,
-        StyleRule, Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
+        Stylesheet, StylesheetContents, StylesheetLoader, UrlExtraData,
     },
     values::CssUrl,
     Atom,
 };
-use selectors::parser::SelectorList;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CssStylesheetRuleText {
@@ -206,13 +204,6 @@ pub struct CssStylesheetMutationResult {
     pub first_declaration_text: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CssNestedRuleMutationResult {
-    pub stylesheet_css_text: String,
-    pub parent_rule: CssStylesheetRuleView,
-    pub rules: Vec<CssStylesheetRuleView>,
-}
-
 /// Compatibility name for the Lightmount CSSOM helper surface.
 ///
 /// The parsed object is the same Stylo stylesheet that an embedding installs
@@ -307,6 +298,28 @@ pub fn parse_font_face_cssom_descriptor_block(style_text: &str) -> Option<String
     parse_font_face_cssom_descriptor_rule(style_text)
         .ok()
         .map(|rule| rule.style_css_text())
+}
+
+/// Parse a CSSOM `CSSFontFaceRule.style` declaration block with the owning
+/// stylesheet's parser context, including CSSOM-only priority metadata.
+pub fn parse_font_face_cssom_rule_with_context(
+    context: &ParserContext,
+    descriptor_text: &str,
+) -> Result<FontFaceRule, CssRuleInsertError> {
+    let mut rule = FontFaceRule::empty(SourceLocation { line: 0, column: 0 });
+    let mut input = ParserInput::new(descriptor_text);
+    let mut input = Parser::new(&mut input);
+    {
+        let mut parser = CssomFontFaceDescriptorParser {
+            context,
+            rule: &mut rule,
+        };
+        let iter = RuleBodyParser::new(&mut input, &mut parser);
+        for declaration in iter {
+            declaration.map_err(|_| CssRuleInsertError::Syntax)?;
+        }
+    }
+    Ok(rule)
 }
 
 pub fn parse_import_rule_view(css_text: &str) -> Option<CssImportRuleView> {
@@ -1091,226 +1104,6 @@ pub fn delete_keyframe_rule(
     ))
 }
 
-pub fn set_media_rule_media_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    media_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let media_queries = mutable_media_rule_media_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_media_list_for_rule(media_text)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *media_queries.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_style_rule_declarations_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    declaration_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let block = mutable_style_rule_declaration_block_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Style)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *block.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_nested_declarations_rule_declarations_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    declaration_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let block = mutable_nested_declarations_rule_block_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Style)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *block.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_keyframe_rule_declarations_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-    index: usize,
-    declaration_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let block =
-        mutable_keyframe_rule_declaration_block_for_rule_path(rule_tree, parent_path, index)
-            .ok_or(CssRuleInsertError::IndexSize)?;
-    let parsed = parse_declaration_block_for_rule(declaration_text, CssRuleType::Keyframe)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *block.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, parent_path)
-}
-
-pub fn set_font_face_rule_descriptors_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    descriptor_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let font_face_rule = mutable_font_face_rule_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_font_face_cssom_descriptor_rule(descriptor_text)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        let rule = font_face_rule.write_with(&mut guard);
-        rule.descriptors = parsed.descriptors;
-        rule.descriptor_importance = parsed.descriptor_importance;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_page_rule_descriptors_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    descriptor_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let block = mutable_page_rule_declaration_block_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_declaration_block_for_rule(descriptor_text, CssRuleType::Page)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *block.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_page_margin_rule_descriptors_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    descriptor_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let (rule_type, block) = mutable_page_margin_rule_context_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let parsed = parse_page_margin_declaration_block_for_rule_type(rule_type, descriptor_text)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        *block.write_with(&mut guard) = parsed;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_style_rule_selector_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    selector_text: &str,
-    containing_rule_type_bits: u32,
-    parse_relative_rule_type: Option<CssRuleType>,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let style_rule = mutable_style_rule_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let selectors = parse_style_rule_selectors(
-        selector_text,
-        &stylesheet_contents(rule_tree),
-        containing_rule_type_bits,
-        parse_relative_rule_type,
-    )?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        style_rule.write_with(&mut guard).selectors = selectors;
-    }
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-pub fn set_font_face_rule_descriptor_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-    descriptor: &str,
-    value: &str,
-    important: bool,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let font_face_rule = mutable_font_face_rule_for_rule_path(rule_tree, rule_path)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let descriptor_id =
-        DescriptorId::from_ident(descriptor).map_err(|_| CssRuleInsertError::Syntax)?;
-    if value.trim().is_empty() {
-        {
-            let mut guard = rule_tree.shared_lock.write();
-            font_face_rule
-                .write_with(&mut guard)
-                .remove_cssom_descriptor(descriptor_id);
-        }
-        return nested_rule_tree_mutation_result(rule_tree, rule_path);
-    }
-    with_font_face_descriptor_context(|context| {
-        let mut input = ParserInput::new(value);
-        let mut input = Parser::new(&mut input);
-        let mut guard = rule_tree.shared_lock.write();
-        font_face_rule
-            .write_with(&mut guard)
-            .set_cssom_descriptor(descriptor_id, context, &mut input, important)
-            .map_err(|_| CssRuleInsertError::Syntax)?;
-        Ok(())
-    })?;
-    nested_rule_tree_mutation_result(rule_tree, rule_path)
-}
-
-fn parse_style_rule_selectors(
-    selector_text: &str,
-    parent_stylesheet_contents: &StylesheetContents,
-    containing_rule_type_bits: u32,
-    parse_relative_rule_type: Option<CssRuleType>,
-) -> Result<SelectorList<SelectorImpl>, CssRuleInsertError> {
-    let mut context = ParserContext::new(
-        parent_stylesheet_contents.origin,
-        &parent_stylesheet_contents.url_data,
-        None,
-        ParsingMode::DEFAULT,
-        parent_stylesheet_contents.quirks_mode,
-        Cow::Borrowed(&parent_stylesheet_contents.namespaces),
-        None,
-        None,
-        /* attr_taint */ Default::default(),
-    );
-    context.nesting_context = NestingContext::new(
-        CssRuleTypes::from_bits(containing_rule_type_bits),
-        parse_relative_rule_type,
-    );
-    let selector_parser = SelectorParser {
-        stylesheet_origin: context.stylesheet_origin,
-        namespaces: &context.namespaces,
-        url_data: context.url_data,
-        for_supports_rule: false,
-    };
-    let mut input = ParserInput::new(selector_text);
-    let mut input = Parser::new(&mut input);
-    input
-        .parse_entirely(|input| {
-            SelectorList::parse(
-                &selector_parser,
-                input,
-                context.nesting_context.parse_relative,
-            )
-        })
-        .map_err(|_| CssRuleInsertError::Syntax)
-}
-
-pub fn set_keyframe_rule_selector_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-    index: usize,
-    selector_text: &str,
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let keyframe = mutable_keyframe_for_rule_path(rule_tree, parent_path, index)
-        .ok_or(CssRuleInsertError::IndexSize)?;
-    let selector = parse_keyframe_selectors(selector_text).ok_or(CssRuleInsertError::Syntax)?;
-    {
-        let mut guard = rule_tree.shared_lock.write();
-        keyframe.write_with(&mut guard).selector = selector;
-    }
-    nested_rule_tree_mutation_result(rule_tree, parent_path)
-}
-
 pub fn normalize_keyframe_selector_text(selector_text: &str) -> Option<String> {
     parse_keyframe_selectors(selector_text).map(|selectors| selectors.to_css_string())
 }
@@ -1557,162 +1350,6 @@ fn refresh_stylesheet_rule_tree_from_css_text(
     replace_stylesheet_contents_from_css_text(rule_tree, css_text, allow_import_rules);
 }
 
-fn mutable_keyframes_rule_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<KeyframesRule>>> {
-    match rule_at_path(rule_tree, parent_path)? {
-        CssRule::Keyframes(rule) => Some(rule),
-        _ => None,
-    }
-}
-
-fn mutable_media_rule_media_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<MediaList>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::Media(rule) => Some(rule.media_queries.clone()),
-        _ => None,
-    }
-}
-
-fn mutable_font_face_rule_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<FontFaceRule>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::FontFace(rule) => Some(rule),
-        _ => None,
-    }
-}
-
-fn mutable_style_rule_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<StyleRule>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::Style(rule) => Some(rule),
-        _ => None,
-    }
-}
-
-fn mutable_page_rule_declaration_block_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::Page(rule) => {
-            let guard = rule_tree.shared_lock.read();
-            Some(rule.read_with(&guard).block.clone())
-        },
-        _ => None,
-    }
-}
-
-fn mutable_page_margin_rule_context_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<(
-    MarginRuleType,
-    Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>,
-)> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::Margin(rule) => Some((rule.rule_type, rule.block.clone())),
-        _ => None,
-    }
-}
-
-fn mutable_style_rule_declaration_block_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::Style(rule) => {
-            let guard = rule_tree.shared_lock.read();
-            Some(rule.read_with(&guard).block.clone())
-        },
-        _ => None,
-    }
-}
-
-fn mutable_nested_declarations_rule_block_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    rule_path: &[usize],
-) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
-    match rule_at_path(rule_tree, rule_path)? {
-        CssRule::NestedDeclarations(rule) => {
-            let guard = rule_tree.shared_lock.read();
-            Some(rule.read_with(&guard).block.clone())
-        },
-        _ => None,
-    }
-}
-
-fn mutable_keyframe_rule_declaration_block_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-    index: usize,
-) -> Option<Arc<crate::shared_lock::Locked<PropertyDeclarationBlock>>> {
-    let keyframe = mutable_keyframe_for_rule_path(rule_tree, parent_path, index)?;
-    let guard = rule_tree.shared_lock.read();
-    Some(keyframe.read_with(&guard).block.clone())
-}
-
-fn mutable_keyframe_for_rule_path(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-    index: usize,
-) -> Option<Arc<crate::shared_lock::Locked<Keyframe>>> {
-    let keyframes_rule = mutable_keyframes_rule_for_rule_path(rule_tree, parent_path)?;
-    let guard = rule_tree.shared_lock.read();
-    let keyframes_rule = keyframes_rule.read_with(&guard);
-    keyframes_rule.keyframes.get(index).cloned()
-}
-
-fn parse_media_list_for_rule(media_text: &str) -> Result<MediaList, CssRuleInsertError> {
-    let Some(url_data) = about_blank_url_data() else {
-        return Err(CssRuleInsertError::Syntax);
-    };
-    let context = ParserContext::new(
-        Origin::Author,
-        &url_data,
-        Some(CssRuleType::Media),
-        ParsingMode::DEFAULT,
-        QuirksMode::NoQuirks,
-        Cow::Owned(Namespaces::default()),
-        None,
-        None,
-        AttrTaint::default(),
-    );
-    let mut input = ParserInput::new(media_text);
-    let mut input = Parser::new(&mut input);
-    Ok(MediaList::parse(&context, &mut input))
-}
-
-fn parse_declaration_block_for_rule(
-    declaration_text: &str,
-    rule_type: CssRuleType,
-) -> Result<PropertyDeclarationBlock, CssRuleInsertError> {
-    let Some(url_data) = about_blank_url_data() else {
-        return Err(CssRuleInsertError::Syntax);
-    };
-    let context = ParserContext::new(
-        Origin::Author,
-        &url_data,
-        Some(rule_type),
-        ParsingMode::DEFAULT,
-        QuirksMode::NoQuirks,
-        Cow::Owned(Namespaces::default()),
-        None,
-        None,
-        AttrTaint::default(),
-    );
-    let mut input = ParserInput::new(declaration_text);
-    let mut input = Parser::new(&mut input);
-    Ok(parse_property_declaration_list(&context, &mut input, &[]))
-}
-
 fn parse_page_margin_declaration_block_for_rule_type(
     rule_type: MarginRuleType,
     declaration_text: &str,
@@ -1739,20 +1376,7 @@ fn parse_font_face_cssom_descriptor_rule(
     descriptor_text: &str,
 ) -> Result<FontFaceRule, CssRuleInsertError> {
     with_font_face_descriptor_context(|context| {
-        let mut rule = FontFaceRule::empty(SourceLocation { line: 0, column: 0 });
-        let mut input = ParserInput::new(descriptor_text);
-        let mut input = Parser::new(&mut input);
-        {
-            let mut parser = CssomFontFaceDescriptorParser {
-                context,
-                rule: &mut rule,
-            };
-            let iter = RuleBodyParser::new(&mut input, &mut parser);
-            for declaration in iter {
-                declaration.map_err(|_| CssRuleInsertError::Syntax)?;
-            }
-        }
-        Ok(rule)
+        parse_font_face_cssom_rule_with_context(context, descriptor_text)
     })
 }
 
@@ -1975,47 +1599,6 @@ fn css_rules_mutation_result(
         rules,
         first_declaration_text: None,
     }
-}
-
-fn nested_rule_tree_mutation_result(
-    rule_tree: &CssStylesheetRuleTree,
-    parent_path: &[usize],
-) -> Result<CssNestedRuleMutationResult, CssRuleInsertError> {
-    let guard = rule_tree.shared_lock.read();
-    let top_rules = rule_tree.contents.read_with(&guard).rules.read_with(&guard);
-    let parent_rule = rule_view_at_path(top_rules.0.as_slice(), parent_path, &guard)
-        .ok_or(CssRuleInsertError::HierarchyRequest)?;
-    let rules = top_rules
-        .0
-        .iter()
-        .map(|rule| stylesheet_rule_view(rule, &guard))
-        .collect::<Vec<_>>();
-    Ok(CssNestedRuleMutationResult {
-        stylesheet_css_text: css_rule_views_css_text(&rules),
-        rules: parent_rule.child_rules.clone(),
-        parent_rule,
-    })
-}
-
-fn rule_view_at_path(
-    rules: &[CssRule],
-    path: &[usize],
-    guard: &crate::shared_lock::SharedRwLockReadGuard,
-) -> Option<CssStylesheetRuleView> {
-    let (first, rest) = path.split_first()?;
-    let rule = rules.get(*first)?;
-    if rest.is_empty() {
-        return Some(stylesheet_rule_view(rule, guard));
-    }
-    rule_view_at_path(rule.children(guard), rest, guard)
-}
-
-fn css_rule_views_css_text(rules: &[CssStylesheetRuleView]) -> String {
-    rules
-        .iter()
-        .map(|rule| rule.css_text.as_str())
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 fn keyframe_rules_mutation_result(
@@ -2652,16 +2235,7 @@ mod tests {
         parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
         parse_stylesheet_rule_tree, parse_stylesheet_rule_view_for_insert,
         parse_stylesheet_rule_views, replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_font_face_rule_descriptor_in_stylesheet_rule_tree,
-        set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
-        set_keyframe_rule_declarations_in_stylesheet_rule_tree,
-        set_keyframe_rule_selector_in_stylesheet_rule_tree,
-        set_media_rule_media_in_stylesheet_rule_tree,
-        set_nested_declarations_rule_declarations_in_stylesheet_rule_tree,
-        set_page_margin_rule_descriptors_in_stylesheet_rule_tree,
-        set_page_rule_descriptors_in_stylesheet_rule_tree,
-        set_style_rule_declarations_in_stylesheet_rule_tree,
-        set_style_rule_selector_in_stylesheet_rule_tree, stylesheet_rule_tree_condition_rule_view,
+        set_font_feature_values_rule_entry, stylesheet_rule_tree_condition_rule_view,
         stylesheet_rule_tree_counter_style_rule_view, stylesheet_rule_tree_css_text,
         stylesheet_rule_tree_font_face_rule_view,
         stylesheet_rule_tree_font_feature_values_rule_view, stylesheet_rule_tree_import_rule_view,
@@ -3089,73 +2663,6 @@ mod tests {
     }
 
     #[test]
-    fn font_face_rule_tree_descriptor_mutations_preserve_priority() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@media screen { @font-face { font-family: Foo; src: local(Foo); } }",
-        );
-
-        let mutation = set_font_face_rule_descriptor_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0, 0],
-            "font-family",
-            "Bar",
-            true,
-        )
-        .expect("font-family descriptor mutation should succeed");
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            "@font-face { font-family: Bar !important; src: local(Foo); }"
-        );
-        assert_eq!(
-            mutation.parent_rule.declaration_text.as_deref(),
-            Some("font-family: Bar !important; src: local(Foo);")
-        );
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@media screen {\n  @font-face { font-family: Bar !important; src: local(Foo); }\n}"
-        );
-
-        let mutation = set_font_face_rule_descriptors_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0, 0],
-            "font-family: Baz; src: local(Baz) !important;",
-        )
-        .expect("font-face descriptor block mutation should succeed");
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            "@font-face { font-family: Baz; src: local(Baz) !important; }"
-        );
-        assert_eq!(
-            mutation.parent_rule.declaration_text.as_deref(),
-            Some("font-family: Baz; src: local(Baz) !important;")
-        );
-
-        let mutation = set_font_face_rule_descriptor_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0, 0],
-            "src",
-            "",
-            true,
-        )
-        .expect("empty value should remove descriptor");
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            "@font-face { font-family: Baz; }"
-        );
-        assert!(
-            set_font_face_rule_descriptor_in_stylesheet_rule_tree(
-                &mut rule_tree,
-                &[0, 0],
-                "font-weight",
-                "400 !important",
-                true,
-            )
-            .is_err(),
-            "single descriptor mutation keeps priority separate from value"
-        );
-    }
-
-    #[test]
     fn stylesheet_rule_views_include_font_feature_values_rules() {
         let rules = parse_stylesheet_rule_views(
             "@font-feature-values test_family { @annotation { the_first: 6; } @styleset { yo: 7; di: 10 9 4 5; } }",
@@ -3427,65 +2934,6 @@ mod tests {
         assert!(page.contains(&"bleed"));
         assert!(parse_page_descriptor_entries("marks", "crop").is_none());
         assert!(parse_page_descriptor_entries("bleed", "1mm").is_none());
-    }
-
-    #[test]
-    fn page_rule_tree_descriptor_mutation_preserves_margin_children() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            r#"@page :first { margin-top: 1px; @top-left { content: "x"; color: red; } }"#,
-        );
-        let mutation = set_page_rule_descriptors_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0],
-            "size: A4; margin: 2px 3px; bad-descriptor: 1;",
-        )
-        .expect("page descriptor block mutation should succeed");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Page);
-        let view = parse_page_rule_view(&mutation.parent_rule.css_text)
-            .expect("mutated page rule should stay parseable");
-        assert_eq!(view.selector_text, ":first");
-        assert_eq!(view.child_rules.len(), 1);
-        assert_eq!(
-            view.child_rules[0].css_text,
-            r#"@top-left { content: "x"; color: red; }"#
-        );
-        assert!(view.style_text.contains("size:"));
-        assert!(view.style_text.contains("margin"));
-        assert!(view.style_text.contains("2px"));
-        assert!(!view.style_text.contains("bad-descriptor"));
-        assert!(mutation.stylesheet_css_text.contains("@top-left"));
-    }
-
-    #[test]
-    fn page_margin_rule_tree_descriptor_mutation_preserves_parent_page() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            r#"@page :first { margin-top: 1px; @bottom-right { content: "x"; color: red; } }"#,
-        );
-        let mutation = set_page_margin_rule_descriptors_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0, 0],
-            r#"content: "y"; color: blue; margin-top: 4px; bad-descriptor: 1;"#,
-        )
-        .expect("page margin descriptor block mutation should succeed");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Margin);
-        let margin_view = parse_page_margin_rule_view(&mutation.parent_rule.css_text)
-            .expect("mutated margin rule should stay parseable");
-        assert_eq!(margin_view.name, "bottom-right");
-        assert_eq!(
-            margin_view.style_text,
-            r#"content: "y"; color: blue; margin-top: 4px;"#
-        );
-        assert!(!margin_view.style_text.contains("bad-descriptor"));
-
-        let rules = stylesheet_rule_tree_rule_views(&rule_tree);
-        let page_view = parse_page_rule_view(&rules[0].css_text)
-            .expect("parent page rule should stay parseable");
-        assert_eq!(page_view.selector_text, ":first");
-        assert_eq!(page_view.child_rules.len(), 1);
-        assert_eq!(page_view.child_rules[0], margin_view);
-        assert!(page_view.css_text.contains("margin-top: 1px"));
     }
 
     #[test]
@@ -3895,196 +3343,6 @@ mod tests {
                 9,
             ),
             Err(CssRuleInsertError::IndexSize)
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_media_rule_media_list() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@media screen { @supports (display: grid) { .one { display: grid; } } }",
-        );
-
-        let mutation = set_media_rule_media_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0],
-            "print and (min-width: 10px)",
-        )
-        .expect("media rule should update in persistent tree");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Media);
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            "@media print and (min-width: 10px) {\n  @supports (display: grid) {\n  .one { display: grid; }\n}\n}"
-        );
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@media print and (min-width: 10px) {\n  @supports (display: grid) {\n  .one { display: grid; }\n}\n}"
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_style_rule_declarations() {
-        let mut rule_tree =
-            parse_stylesheet_rule_tree(".host { color: red; & > .child { color: blue; } }");
-
-        let mutation = set_style_rule_declarations_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0],
-            "margin: 1px 2px; color: green;",
-        )
-        .expect("style rule declarations should update in persistent tree");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Style);
-        assert_eq!(mutation.parent_rule.child_rules.len(), 1);
-        assert_eq!(
-            mutation.parent_rule.child_rules[0].css_text,
-            "& > .child { color: blue; }"
-        );
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            ".host {\n  margin: 1px 2px; color: green;\n  & > .child { color: blue; }\n}"
-        );
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            ".host {\n  margin: 1px 2px; color: green;\n  & > .child { color: blue; }\n}"
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_nested_declarations() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            ".host { & .child { color: blue; } color: red; margin: 0; }",
-        );
-
-        let mutation = set_nested_declarations_rule_declarations_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0, 1],
-            "padding: 1px 2px;",
-        )
-        .expect("nested declarations should update in persistent tree");
-
-        assert_eq!(
-            mutation.parent_rule.rule_type,
-            CssRuleType::NestedDeclarations
-        );
-        assert_eq!(mutation.parent_rule.css_text, "padding: 1px 2px;");
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            ".host {\n  & .child { color: blue; }\n  padding: 1px 2px;\n}"
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_keyframe_declarations() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
-        );
-
-        let mutation = set_keyframe_rule_declarations_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0],
-            1,
-            "opacity: .5; transform: translateX(10px);",
-        )
-        .expect("keyframe declarations should update in persistent tree");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Keyframes);
-        assert_eq!(mutation.rules.len(), 2);
-        assert_eq!(mutation.rules[0].css_text, "0% { opacity: 0; }");
-        assert_eq!(
-            mutation.rules[1].css_text,
-            "100% { opacity: 0.5; transform: translateX(10px); }"
-        );
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@keyframes fade {\n0% { opacity: 0; }\n100% { opacity: 0.5; transform: translateX(10px); }\n}"
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_style_rule_selectors() {
-        let mut rule_tree =
-            parse_stylesheet_rule_tree(".one { color: red; } .host { & .child { color: blue; } }");
-
-        let mutation = set_style_rule_selector_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[0],
-            ".renamed, main > .item",
-            0,
-            None,
-        )
-        .expect("top-level style rule selector should update in persistent tree");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Style);
-        assert_eq!(
-            mutation.parent_rule.css_text,
-            ".renamed, main > .item { color: red; }"
-        );
-        assert_eq!(
-            mutation.parent_rule.selector_text.as_deref(),
-            Some(".renamed, main > .item")
-        );
-
-        let nested = set_style_rule_selector_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            &[1, 0],
-            "> .next",
-            CssRuleType::Style.bit(),
-            Some(CssRuleType::Style),
-        )
-        .expect("nested style rule selector should parse relative selector context");
-
-        assert_eq!(nested.parent_rule.rule_type, CssRuleType::Style);
-        assert_eq!(
-            nested.parent_rule.selector_text.as_deref(),
-            Some("& > .next")
-        );
-        assert_eq!(nested.parent_rule.css_text, "& > .next { color: blue; }");
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            ".renamed, main > .item { color: red; } .host {\n  & > .next { color: blue; }\n}"
-        );
-        assert_eq!(
-            set_style_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], "@bad", 0, None),
-            Err(CssRuleInsertError::Syntax)
-        );
-        assert_eq!(
-            set_style_rule_selector_in_stylesheet_rule_tree(
-                &mut rule_tree,
-                &[9],
-                ".missing",
-                0,
-                None
-            ),
-            Err(CssRuleInsertError::HierarchyRequest)
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_mutates_keyframe_selectors() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@keyframes fade { from { opacity: 0; } to { opacity: 1; } }",
-        );
-
-        let mutation =
-            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 1, "75%, to")
-                .expect("keyframe selector should update in persistent tree");
-
-        assert_eq!(mutation.parent_rule.rule_type, CssRuleType::Keyframes);
-        assert_eq!(mutation.rules.len(), 2);
-        assert_eq!(mutation.rules[0].css_text, "0% { opacity: 0; }");
-        assert_eq!(mutation.rules[1].css_text, "75%, 100% { opacity: 1; }");
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@keyframes fade {\n0% { opacity: 0; }\n75%, 100% { opacity: 1; }\n}"
-        );
-        assert_eq!(
-            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 9, "50%"),
-            Err(CssRuleInsertError::IndexSize)
-        );
-        assert_eq!(
-            set_keyframe_rule_selector_in_stylesheet_rule_tree(&mut rule_tree, &[0], 0, "body"),
-            Err(CssRuleInsertError::Syntax)
         );
     }
 
