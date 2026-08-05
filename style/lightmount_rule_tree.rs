@@ -2302,6 +2302,19 @@ fn stylesheet_rule_view(
     }
 }
 
+/// Projects one already-parsed native rule without serializing and reparsing
+/// its containing stylesheet.
+///
+/// Embedders use this to keep CSSOM wrapper identity aligned with the native
+/// rule tree. In particular, reparsing a style rule can fold a leading
+/// `NestedDeclarations` child back into the parent declaration block.
+pub fn stylesheet_rule_view_from_native(
+    rule: &CssRule,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssStylesheetRuleView {
+    stylesheet_rule_view(rule, guard)
+}
+
 fn stylesheet_rule_prelude_text(
     rule: &CssRule,
     guard: &crate::shared_lock::SharedRwLockReadGuard,
@@ -2797,7 +2810,7 @@ impl StylesheetLoader for LightmountImportLoader {
 mod tests {
     use servo_arc::Arc;
 
-    use crate::stylesheets::{AllowImportRules, DocumentStyleSheet, StylesheetInDocument};
+    use crate::stylesheets::{AllowImportRules, CssRule, DocumentStyleSheet, StylesheetInDocument};
 
     use super::{
         delete_keyframe_rule, delete_keyframe_rule_from_stylesheet_rule_tree, delete_nested_rule,
@@ -2834,7 +2847,7 @@ mod tests {
         stylesheet_rule_tree_keyframes_rule_view, stylesheet_rule_tree_layer_rule_view,
         stylesheet_rule_tree_margin_rule_view, stylesheet_rule_tree_namespace_rule_view,
         stylesheet_rule_tree_page_rule_view, stylesheet_rule_tree_property_rule_view,
-        stylesheet_rule_tree_rule_views, CssRuleInsertError,
+        stylesheet_rule_tree_rule_views, stylesheet_rule_view_from_native, CssRuleInsertError,
     };
     use crate::stylesheets::CssRuleType;
 
@@ -3064,6 +3077,40 @@ mod tests {
         );
         assert_eq!(parsed.rules[1].rule_type, CssRuleType::Style);
         assert_eq!(parsed.rules[1].selector_text.as_deref(), Some("& .child"));
+    }
+
+    #[test]
+    fn native_rule_projection_preserves_inserted_nested_declarations_identity() {
+        let rule_tree = parse_stylesheet_rule_tree(".host { & .child { color: blue; } }");
+        insert_nested_rule_into_stylesheet_rule_tree(
+            &rule_tree,
+            &[0],
+            "color: red; width: 0;",
+            0,
+            CssRuleType::Style.bit(),
+            Some(CssRuleType::Style),
+        )
+        .expect("nested declaration insertion should succeed");
+
+        let guard = rule_tree.shared_lock.read();
+        let rules = rule_tree.contents.read_with(&guard).rules.read_with(&guard);
+        let CssRule::Style(style_rule) = &rules.0[0] else {
+            panic!("top-level rule should stay a style rule");
+        };
+        let style_rule = style_rule.read_with(&guard);
+        let child_rules = style_rule
+            .rules
+            .as_ref()
+            .expect("style rule should expose nested children")
+            .read_with(&guard);
+        let view = stylesheet_rule_view_from_native(&child_rules.0[0], &guard);
+
+        assert_eq!(view.rule_type, CssRuleType::NestedDeclarations);
+        assert_eq!(
+            view.declaration_text.as_deref(),
+            Some("color: red; width: 0px;")
+        );
+        assert_eq!(view.css_text, "color: red; width: 0px;");
     }
 
     #[test]
