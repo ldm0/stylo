@@ -224,9 +224,9 @@ pub struct CssNestedRuleMutationResult {
     pub rules: Vec<CssStylesheetRuleView>,
 }
 
-#[derive(Clone)]
 pub struct CssStylesheetRuleTree {
     contents: Arc<StylesheetContents>,
+    stylesheet: Arc<Stylesheet>,
     shared_lock: SharedRwLock,
     allow_import_rules: AllowImportRules,
 }
@@ -600,6 +600,56 @@ pub fn parse_stylesheet_rule_tree(css_text: &str) -> CssStylesheetRuleTree {
 
 pub fn parse_constructed_stylesheet_rule_tree(css_text: &str) -> CssStylesheetRuleTree {
     parse_stylesheet_rule_tree_with_import_policy(css_text, AllowImportRules::No)
+}
+
+/// Parse a Lightmount CSSOM rule tree in the embedding style engine's lock and
+/// parser context.
+///
+/// The returned rule tree and [`stylesheet_rule_tree_stylesheet`] share the
+/// same `StylesheetContents`; mutating the rule tree therefore updates the
+/// stylesheet consumed by Stylo without serializing and reparsing CSS text.
+pub fn parse_stylesheet_rule_tree_with_context(
+    css_text: &str,
+    url_data: UrlExtraData,
+    origin: Origin,
+    shared_lock: SharedRwLock,
+    quirks_mode: QuirksMode,
+    allow_import_rules: AllowImportRules,
+) -> CssStylesheetRuleTree {
+    ensure_lightmount_rule_tree_prefs();
+    let import_loader = LightmountImportLoader;
+    let stylesheet_loader = match allow_import_rules {
+        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
+        AllowImportRules::No => None,
+    };
+    let contents = StylesheetContents::from_str(
+        css_text,
+        url_data,
+        origin,
+        &shared_lock,
+        stylesheet_loader,
+        None,
+        quirks_mode,
+        allow_import_rules,
+        None,
+    );
+    let stylesheet = Arc::new(Stylesheet {
+        contents: shared_lock.wrap(contents.clone()),
+        shared_lock: shared_lock.clone(),
+        media: Arc::new(shared_lock.wrap(MediaList::empty())),
+        disabled: AtomicBool::new(false),
+    });
+    CssStylesheetRuleTree {
+        contents,
+        stylesheet,
+        shared_lock,
+        allow_import_rules,
+    }
+}
+
+/// Return the Stylo stylesheet backed by the rule tree's live parsed contents.
+pub fn stylesheet_rule_tree_stylesheet(rule_tree: &CssStylesheetRuleTree) -> Arc<Stylesheet> {
+    rule_tree.stylesheet.clone()
 }
 
 pub fn stylesheet_rule_tree_css_text(rule_tree: &CssStylesheetRuleTree) -> String {
@@ -1700,37 +1750,42 @@ fn parse_stylesheet_rule_tree_with_import_policy(
     css_text: &str,
     allow_import_rules: AllowImportRules,
 ) -> CssStylesheetRuleTree {
-    ensure_lightmount_rule_tree_prefs();
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
-    let stylesheet_loader = match allow_import_rules {
-        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
-        AllowImportRules::No => None,
-    };
-    let contents = StylesheetContents::from_str(
+    parse_stylesheet_rule_tree_with_context(
         css_text,
         about_blank_url_data().expect("static about:blank URL should parse"),
         Origin::Author,
-        &shared_lock,
-        stylesheet_loader,
-        None,
+        shared_lock,
         QuirksMode::NoQuirks,
         allow_import_rules,
-        None,
-    );
-    CssStylesheetRuleTree {
-        contents,
-        shared_lock,
-        allow_import_rules,
-    }
+    )
 }
 
 fn refresh_stylesheet_rule_tree_from_css_text(
     rule_tree: &mut CssStylesheetRuleTree,
     css_text: &str,
 ) {
-    let allow_import_rules = rule_tree.allow_import_rules;
-    *rule_tree = parse_stylesheet_rule_tree_with_import_policy(css_text, allow_import_rules);
+    let import_loader = LightmountImportLoader;
+    let stylesheet_loader = match rule_tree.allow_import_rules {
+        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
+        AllowImportRules::No => None,
+    };
+    let contents = StylesheetContents::from_str(
+        css_text,
+        rule_tree.contents.url_data.clone(),
+        rule_tree.contents.origin,
+        &rule_tree.shared_lock,
+        stylesheet_loader,
+        None,
+        rule_tree.contents.quirks_mode,
+        rule_tree.allow_import_rules,
+        None,
+    );
+    {
+        let mut guard = rule_tree.shared_lock.write();
+        *rule_tree.stylesheet.contents.write_with(&mut guard) = contents.clone();
+    }
+    rule_tree.contents = contents;
 }
 
 fn mutable_child_rules_for_rule_path(
@@ -2873,10 +2928,10 @@ mod tests {
         parse_page_descriptor_entries, parse_page_margin_descriptor_block,
         parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
         parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
-        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
-        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_counter_style_rule_descriptor_in_stylesheet_rule_tree,
+        parse_stylesheet_rule_tree_with_context, parse_stylesheet_rule_view_for_insert,
+        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
+        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_counter_style_rule_descriptor_in_stylesheet_rule_tree,
         set_counter_style_rule_name_in_stylesheet_rule_tree,
         set_font_face_rule_descriptor_in_stylesheet_rule_tree,
         set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
@@ -2894,9 +2949,49 @@ mod tests {
         stylesheet_rule_tree_keyframes_rule_view, stylesheet_rule_tree_layer_rule_view,
         stylesheet_rule_tree_margin_rule_view, stylesheet_rule_tree_namespace_rule_view,
         stylesheet_rule_tree_page_rule_view, stylesheet_rule_tree_property_rule_view,
-        stylesheet_rule_tree_rule_views, CssRuleInsertError,
+        stylesheet_rule_tree_rule_views, stylesheet_rule_tree_stylesheet, CssRuleInsertError,
     };
-    use crate::stylesheets::CssRuleType;
+    use crate::{
+        context::QuirksMode,
+        servo_arc::Arc,
+        shared_lock::SharedRwLock,
+        stylesheets::{AllowImportRules, CssRuleType, Origin, StylesheetInDocument, UrlExtraData},
+    };
+
+    #[test]
+    fn contextual_rule_tree_and_stylesheet_share_contents_and_author_lock() {
+        let lock = SharedRwLock::new();
+        let base_url = url::Url::parse("https://example.test/css/site.css").unwrap();
+        let mut rule_tree = parse_stylesheet_rule_tree_with_context(
+            ".before { color: red; }",
+            UrlExtraData::from(base_url.clone()),
+            Origin::Author,
+            lock.clone(),
+            QuirksMode::Quirks,
+            AllowImportRules::No,
+        );
+        let stylesheet = stylesheet_rule_tree_stylesheet(&rule_tree);
+
+        {
+            let guard = lock.read();
+            let contents = stylesheet.contents(&guard);
+            assert!(Arc::ptr_eq(
+                &rule_tree.contents,
+                &stylesheet.contents.read_with(&guard)
+            ));
+            assert_eq!(contents.url_data.0.as_ref(), &base_url);
+            assert_eq!(contents.quirks_mode, QuirksMode::Quirks);
+        }
+
+        insert_rule_into_stylesheet_rule_tree(&mut rule_tree, ".after { color: blue; }", 1)
+            .unwrap();
+
+        let guard = lock.read();
+        assert_eq!(
+            stylesheet.contents(&guard).rules.read_with(&guard).0.len(),
+            2
+        );
+    }
 
     #[test]
     fn stylesheet_rule_texts_use_stylo_rule_parser_and_serializer() {
