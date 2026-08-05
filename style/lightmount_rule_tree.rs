@@ -2315,6 +2315,15 @@ pub fn stylesheet_rule_view_from_native(
     stylesheet_rule_view(rule, guard)
 }
 
+/// Projects one already-parsed native keyframe without serializing and
+/// reparsing its containing `@keyframes` rule.
+pub fn keyframe_rule_view_from_native(
+    rule: &Arc<crate::shared_lock::Locked<Keyframe>>,
+    guard: &crate::shared_lock::SharedRwLockReadGuard,
+) -> CssStylesheetRuleView {
+    keyframe_rule_view(rule, guard)
+}
+
 fn stylesheet_rule_prelude_text(
     rule: &CssRule,
     guard: &crate::shared_lock::SharedRwLockReadGuard,
@@ -2818,20 +2827,20 @@ mod tests {
         delete_stylesheet_rule, font_face_descriptor_names, insert_keyframe_rule,
         insert_keyframe_rule_into_stylesheet_rule_tree, insert_nested_rule,
         insert_nested_rule_into_stylesheet_rule_tree, insert_rule_into_stylesheet_rule_tree,
-        insert_stylesheet_rule, keyframe_selector_texts_match, normalize_keyframe_selector_text,
-        normalize_page_selector_text, page_descriptor_names, parse_condition_rule_view,
-        parse_constructed_stylesheet_rule_texts, parse_constructed_stylesheet_rule_tree,
-        parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
-        parse_font_face_cssom_descriptor_entry, parse_font_face_rule_view,
-        parse_font_feature_values_rule_view, parse_import_rule_view, parse_keyframes_rule_view,
-        parse_layer_rule_view, parse_namespace_rule_view, parse_nested_rule_block_views,
-        parse_page_descriptor_entries, parse_page_margin_descriptor_block,
-        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
-        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
-        parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
-        replace_keyframe_rule_in_stylesheet_rule_tree, replace_nested_rule_in_stylesheet_rule_tree,
-        replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_font_face_rule_descriptor_in_stylesheet_rule_tree,
+        insert_stylesheet_rule, keyframe_rule_view_from_native, keyframe_selector_texts_match,
+        normalize_keyframe_selector_text, normalize_page_selector_text, page_descriptor_names,
+        parse_condition_rule_view, parse_constructed_stylesheet_rule_texts,
+        parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
+        parse_font_face_cssom_descriptor_block, parse_font_face_cssom_descriptor_entry,
+        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
+        parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
+        parse_nested_rule_block_views, parse_page_descriptor_entries,
+        parse_page_margin_descriptor_block, parse_page_margin_rule_view, parse_page_rule_view,
+        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
+        parse_stylesheet_rule_tree, parse_stylesheet_rule_view_for_insert,
+        parse_stylesheet_rule_views, replace_keyframe_rule_in_stylesheet_rule_tree,
+        replace_nested_rule_in_stylesheet_rule_tree, replace_rule_in_stylesheet_rule_tree,
+        serialize_stylesheet, set_font_face_rule_descriptor_in_stylesheet_rule_tree,
         set_font_face_rule_descriptors_in_stylesheet_rule_tree, set_font_feature_values_rule_entry,
         set_keyframe_rule_declarations_in_stylesheet_rule_tree,
         set_keyframe_rule_selector_in_stylesheet_rule_tree,
@@ -3115,9 +3124,8 @@ mod tests {
 
     #[test]
     fn stylesheet_rule_views_include_keyframes_children() {
-        let rules = parse_stylesheet_rule_views(
-            "@keyframes slide { from { opacity: 0; } to { opacity: 1; } }",
-        );
+        let css_text = "@keyframes slide { from { opacity: 0; } to { opacity: 1; } }";
+        let rules = parse_stylesheet_rule_views(css_text);
 
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].rule_type, CssRuleType::Keyframes);
@@ -3134,6 +3142,18 @@ mod tests {
         assert_eq!(
             rules[0].child_rules[1].selector_text.as_deref(),
             Some("100%")
+        );
+
+        let rule_tree = parse_stylesheet_rule_tree(css_text);
+        let guard = rule_tree.shared_lock.read();
+        let stylesheet_rules = rule_tree.contents.read_with(&guard).rules.read_with(&guard);
+        let CssRule::Keyframes(keyframes) = &stylesheet_rules.0[0] else {
+            panic!("top-level rule should be a keyframes rule");
+        };
+        let keyframes = keyframes.read_with(&guard);
+        assert_eq!(
+            keyframe_rule_view_from_native(&keyframes.keyframes[1], &guard),
+            rules[0].child_rules[1]
         );
 
         let view = parse_keyframes_rule_view(
