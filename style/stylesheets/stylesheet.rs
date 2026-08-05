@@ -216,6 +216,20 @@ impl StylesheetContents {
             _forbid_construction: (),
         })
     }
+
+    pub(crate) fn clone_with_namespaces(&self, namespaces: Namespaces) -> Arc<Self> {
+        Arc::new(Self {
+            rules: self.rules.clone(),
+            origin: self.origin,
+            url_data: self.url_data.clone(),
+            namespaces,
+            quirks_mode: self.quirks_mode,
+            source_map_url: self.source_map_url.clone(),
+            source_url: self.source_url.clone(),
+            use_counters: self.use_counters.clone(),
+            _forbid_construction: (),
+        })
+    }
 }
 
 /// The structure servo uses to represent a stylesheet.

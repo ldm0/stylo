@@ -755,162 +755,34 @@ pub fn stylesheet_rule_tree_font_feature_values_rule_view(
     }
 }
 
-pub fn insert_rule_into_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    allow_import_rules: AllowImportRules,
-    rule_text: &str,
-    index: usize,
-) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
-    let import_loader = LightmountImportLoader;
-    let stylesheet_loader = match allow_import_rules {
-        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
-        AllowImportRules::No => None,
-    };
-    let contents = stylesheet_contents(rule_tree);
-    let guard = rule_tree.shared_lock.read();
-    let rules = contents.rules.read_with(&guard);
-    let parsed_rule = rules.parse_rule_for_insert(
-        &rule_tree.shared_lock,
-        rule_text,
-        &contents,
-        index,
-        CssRuleTypes::default(),
-        None,
-        stylesheet_loader,
-        allow_import_rules,
-    );
-    let rule = match parsed_rule {
-        Ok(rule) => rule,
-        Err(error) => {
-            let error = CssRuleInsertError::from(error);
-            if error == CssRuleInsertError::HierarchyRequest
-                && rule_text_is_namespace_rule(rule_text)
-                && rules
-                    .0
-                    .iter()
-                    .any(|rule| !matches!(rule, CssRule::Import(..) | CssRule::Namespace(..)))
-            {
-                return Err(CssRuleInsertError::InvalidState);
+/// Rebuild the parser namespace map after a CSSOM mutation changes a top-level
+/// `@namespace` rule.
+///
+/// The rule objects and their lock remain unchanged. This avoids serializing
+/// and reparsing the stylesheet solely to update parser context for subsequent
+/// `insertRule()` calls.
+pub fn refresh_stylesheet_namespaces_after_cssom_mutation(stylesheet: &Arc<Stylesheet>) {
+    let contents = stylesheet_contents(stylesheet);
+    let namespaces = {
+        let guard = stylesheet.shared_lock.read();
+        let rules = contents.rules.read_with(&guard);
+        let mut namespaces = Namespaces::default();
+        for rule in &rules.0 {
+            let CssRule::Namespace(rule) = rule else {
+                continue;
+            };
+            let rule = rule.as_ref();
+            if let Some(prefix) = &rule.prefix {
+                namespaces.prefixes.insert(prefix.clone(), rule.url.clone());
+            } else {
+                namespaces.default = Some(rule.url.clone());
             }
-            return Err(error);
-        },
+        }
+        namespaces
     };
-    drop(guard);
-    let refresh_namespaces = matches!(&rule, CssRule::Namespace(..));
-    {
-        let contents = stylesheet_contents(rule_tree);
-        let mut guard = rule_tree.shared_lock.write();
-        contents.rules.write_with(&mut guard).0.insert(index, rule);
-    }
-    let result =
-        stylesheet_mutation_result(&stylesheet_contents(rule_tree), &rule_tree.shared_lock);
-    if refresh_namespaces {
-        refresh_stylesheet_rule_tree_from_css_text(rule_tree, &result.css_text, allow_import_rules);
-        return Ok(stylesheet_mutation_result(
-            &stylesheet_contents(rule_tree),
-            &rule_tree.shared_lock,
-        ));
-    }
-    Ok(result)
-}
-
-pub fn delete_rule_from_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    allow_import_rules: AllowImportRules,
-    index: usize,
-) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
-    let refresh_namespaces = {
-        let contents = stylesheet_contents(rule_tree);
-        let guard = rule_tree.shared_lock.read();
-        contents
-            .rules
-            .read_with(&guard)
-            .0
-            .get(index)
-            .is_some_and(|rule| matches!(rule, CssRule::Namespace(..)))
-    };
-    {
-        let contents = stylesheet_contents(rule_tree);
-        let mut guard = rule_tree.shared_lock.write();
-        contents
-            .rules
-            .write_with(&mut guard)
-            .remove_rule(index)
-            .map_err(CssRuleInsertError::from)?;
-    }
-    let result =
-        stylesheet_mutation_result(&stylesheet_contents(rule_tree), &rule_tree.shared_lock);
-    if refresh_namespaces {
-        refresh_stylesheet_rule_tree_from_css_text(rule_tree, &result.css_text, allow_import_rules);
-        return Ok(stylesheet_mutation_result(
-            &stylesheet_contents(rule_tree),
-            &rule_tree.shared_lock,
-        ));
-    }
-    Ok(result)
-}
-
-pub fn replace_rule_in_stylesheet_rule_tree(
-    rule_tree: &CssStylesheetRuleTree,
-    allow_import_rules: AllowImportRules,
-    rule_text: &str,
-    index: usize,
-) -> Result<CssStylesheetMutationResult, CssRuleInsertError> {
-    let import_loader = LightmountImportLoader;
-    let stylesheet_loader = match allow_import_rules {
-        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
-        AllowImportRules::No => None,
-    };
-    let contents = stylesheet_contents(rule_tree);
-    let guard = rule_tree.shared_lock.read();
-    let rules = contents.rules.read_with(&guard);
-    let Some(existing_rule) = rules.0.get(index) else {
-        return Err(CssRuleInsertError::IndexSize);
-    };
-    let old_is_namespace = matches!(existing_rule, CssRule::Namespace(..));
-    let parsed_rule = rules.parse_rule_for_insert(
-        &rule_tree.shared_lock,
-        rule_text,
-        &contents,
-        index,
-        CssRuleTypes::default(),
-        None,
-        stylesheet_loader,
-        allow_import_rules,
-    );
-    let rule = match parsed_rule {
-        Ok(rule) => rule,
-        Err(error) => {
-            let error = CssRuleInsertError::from(error);
-            if error == CssRuleInsertError::HierarchyRequest
-                && rule_text_is_namespace_rule(rule_text)
-                && rules
-                    .0
-                    .iter()
-                    .any(|rule| !matches!(rule, CssRule::Import(..) | CssRule::Namespace(..)))
-            {
-                return Err(CssRuleInsertError::InvalidState);
-            }
-            return Err(error);
-        },
-    };
-    drop(guard);
-    let refresh_namespaces = old_is_namespace || matches!(&rule, CssRule::Namespace(..));
-    {
-        let contents = stylesheet_contents(rule_tree);
-        let mut guard = rule_tree.shared_lock.write();
-        contents.rules.write_with(&mut guard).0[index] = rule;
-    }
-    let result =
-        stylesheet_mutation_result(&stylesheet_contents(rule_tree), &rule_tree.shared_lock);
-    if refresh_namespaces {
-        refresh_stylesheet_rule_tree_from_css_text(rule_tree, &result.css_text, allow_import_rules);
-        return Ok(stylesheet_mutation_result(
-            &stylesheet_contents(rule_tree),
-            &rule_tree.shared_lock,
-        ));
-    }
-    Ok(result)
+    let replacement = contents.clone_with_namespaces(namespaces);
+    let mut guard = stylesheet.shared_lock.write();
+    *stylesheet.contents.write_with(&mut guard) = replacement;
 }
 
 pub fn serialize_stylesheet(css_text: &str) -> String {
@@ -1303,51 +1175,9 @@ fn parse_stylesheet_rule_tree_with_import_policy(
     ))
 }
 
-fn replace_stylesheet_contents_from_css_text(
-    stylesheet: &Stylesheet,
-    css_text: &str,
-    allow_import_rules: AllowImportRules,
-) {
-    let (url_data, origin, quirks_mode) = {
-        let guard = stylesheet.shared_lock.read();
-        let contents = stylesheet.contents.read_with(&guard);
-        (
-            contents.url_data.clone(),
-            contents.origin,
-            contents.quirks_mode,
-        )
-    };
-    let import_loader = LightmountImportLoader;
-    let stylesheet_loader = match allow_import_rules {
-        AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
-        AllowImportRules::No => None,
-    };
-    let contents = StylesheetContents::from_str(
-        css_text,
-        url_data,
-        origin,
-        &stylesheet.shared_lock,
-        stylesheet_loader,
-        None,
-        quirks_mode,
-        allow_import_rules,
-        None,
-    );
-    let mut guard = stylesheet.shared_lock.write();
-    *stylesheet.contents.write_with(&mut guard) = contents;
-}
-
 fn stylesheet_contents(stylesheet: &Stylesheet) -> Arc<StylesheetContents> {
     let guard = stylesheet.shared_lock.read();
     stylesheet.contents.read_with(&guard).clone()
-}
-
-fn refresh_stylesheet_rule_tree_from_css_text(
-    rule_tree: &CssStylesheetRuleTree,
-    css_text: &str,
-    allow_import_rules: AllowImportRules,
-) {
-    replace_stylesheet_contents_from_css_text(rule_tree, css_text, allow_import_rules);
 }
 
 fn parse_page_margin_declaration_block_for_rule_type(
@@ -2217,26 +2047,27 @@ impl StylesheetLoader for LightmountImportLoader {
 mod tests {
     use servo_arc::Arc;
 
-    use crate::stylesheets::{AllowImportRules, CssRule, DocumentStyleSheet, StylesheetInDocument};
+    use crate::stylesheets::{
+        AllowImportRules, CssRule, CssRuleTypes, DocumentStyleSheet, StylesheetInDocument,
+    };
 
     use super::{
-        delete_keyframe_rule, delete_nested_rule, delete_rule_from_stylesheet_rule_tree,
-        delete_stylesheet_rule, font_face_descriptor_names, insert_keyframe_rule,
-        insert_nested_rule, insert_rule_into_stylesheet_rule_tree, insert_stylesheet_rule,
-        keyframe_rule_view_from_native, keyframe_selector_texts_match,
+        delete_keyframe_rule, delete_nested_rule, delete_stylesheet_rule,
+        font_face_descriptor_names, insert_keyframe_rule, insert_nested_rule,
+        insert_stylesheet_rule, keyframe_rule_view_from_native, keyframe_selector_texts_match,
         normalize_keyframe_selector_text, normalize_page_selector_text, page_descriptor_names,
         parse_condition_rule_view, parse_constructed_stylesheet_rule_texts,
-        parse_constructed_stylesheet_rule_tree, parse_counter_style_rule_view,
-        parse_font_face_cssom_descriptor_block, parse_font_face_cssom_descriptor_entry,
-        parse_font_face_rule_view, parse_font_feature_values_rule_view, parse_import_rule_view,
-        parse_keyframes_rule_view, parse_layer_rule_view, parse_namespace_rule_view,
-        parse_nested_rule_block_views, parse_page_descriptor_entries,
-        parse_page_margin_descriptor_block, parse_page_margin_rule_view, parse_page_rule_view,
-        parse_property_rule_view, parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts,
-        parse_stylesheet_rule_tree, parse_stylesheet_rule_view_for_insert,
-        parse_stylesheet_rule_views, replace_rule_in_stylesheet_rule_tree, serialize_stylesheet,
-        set_font_feature_values_rule_entry, stylesheet_rule_tree_condition_rule_view,
-        stylesheet_rule_tree_counter_style_rule_view, stylesheet_rule_tree_css_text,
+        parse_counter_style_rule_view, parse_font_face_cssom_descriptor_block,
+        parse_font_face_cssom_descriptor_entry, parse_font_face_rule_view,
+        parse_font_feature_values_rule_view, parse_import_rule_view, parse_keyframes_rule_view,
+        parse_layer_rule_view, parse_namespace_rule_view, parse_nested_rule_block_views,
+        parse_page_descriptor_entries, parse_page_margin_descriptor_block,
+        parse_page_margin_rule_view, parse_page_rule_view, parse_property_rule_view,
+        parse_stylesheet_rule_for_insert, parse_stylesheet_rule_texts, parse_stylesheet_rule_tree,
+        parse_stylesheet_rule_view_for_insert, parse_stylesheet_rule_views,
+        refresh_stylesheet_namespaces_after_cssom_mutation, serialize_stylesheet,
+        set_font_feature_values_rule_entry, stylesheet_contents,
+        stylesheet_rule_tree_condition_rule_view, stylesheet_rule_tree_counter_style_rule_view,
         stylesheet_rule_tree_font_face_rule_view,
         stylesheet_rule_tree_font_feature_values_rule_view, stylesheet_rule_tree_import_rule_view,
         stylesheet_rule_tree_keyframes_rule_view, stylesheet_rule_tree_layer_rule_view,
@@ -3089,138 +2920,62 @@ mod tests {
     }
 
     #[test]
-    fn persistent_stylesheet_rule_tree_mutates_without_reparsing_rule_texts() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); .one { color: red; }",
-        );
-
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); .one { color: red; }"
-        );
-        assert_eq!(
-            insert_rule_into_stylesheet_rule_tree(
-                &mut rule_tree,
-                AllowImportRules::Yes,
-                "@namespace html url(\"http://www.w3.org/1999/xhtml\");",
-                2,
-            ),
-            Err(CssRuleInsertError::InvalidState)
-        );
-
-        let inserted = insert_rule_into_stylesheet_rule_tree(
-            &mut rule_tree,
-            AllowImportRules::Yes,
-            "@media screen { svg|path { color: blue; } }",
-            2,
-        )
-        .expect("media rule should insert into existing persistent rule tree");
-        assert_eq!(inserted.rules.len(), 3);
-        assert_eq!(inserted.rules[2].rule_type, CssRuleType::Media);
-        assert_eq!(
-            inserted.rules[2].child_rules[0].css_text,
-            "svg|path { color: blue; }"
-        );
-        assert_eq!(
-            stylesheet_rule_tree_rule_views(&rule_tree)[2].css_text,
-            "@media screen {\n  svg|path { color: blue; }\n}"
-        );
-
-        let deleted =
-            delete_rule_from_stylesheet_rule_tree(&mut rule_tree, AllowImportRules::Yes, 1)
-                .expect("style rule should delete from same persistent tree");
-        assert_eq!(deleted.rules.len(), 2);
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); @media screen {\n  svg|path { color: blue; }\n}"
-        );
-    }
-
-    #[test]
-    fn cssom_mutation_updates_the_installed_stylesheet_arc() {
-        let stylesheet = parse_constructed_stylesheet_rule_tree(".one { color: red; }");
+    fn cssom_namespace_refresh_preserves_the_installed_stylesheet_arc() {
+        let stylesheet = parse_stylesheet_rule_tree("");
         let installed = DocumentStyleSheet::new(stylesheet.clone());
+        let parsed_namespace =
+            parse_stylesheet_rule_tree("@namespace svg url(\"http://www.w3.org/2000/svg\");");
+        let namespace_rule = {
+            let guard = parsed_namespace.shared_lock.read();
+            parsed_namespace.contents(&guard).rules(&guard)[0].clone()
+        };
+        {
+            let contents = stylesheet_contents(&stylesheet);
+            let mut guard = stylesheet.shared_lock.write();
+            contents.rules.write_with(&mut guard).0.push(namespace_rule);
+        }
+        refresh_stylesheet_namespaces_after_cssom_mutation(&stylesheet);
 
         assert!(Arc::ptr_eq(&stylesheet, &installed.0));
-        insert_rule_into_stylesheet_rule_tree(
-            &stylesheet,
-            AllowImportRules::No,
-            ".two { color: blue; }",
-            1,
-        )
-        .expect("constructed stylesheet rule should insert");
-
+        let contents = stylesheet_contents(&stylesheet);
         let guard = stylesheet.shared_lock.read();
-        assert_eq!(installed.contents(&guard).rules(&guard).len(), 2);
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_refreshes_namespaces_after_insert() {
-        let mut rule_tree = parse_stylesheet_rule_tree("");
-
-        insert_rule_into_stylesheet_rule_tree(
-            &mut rule_tree,
-            AllowImportRules::Yes,
-            "@namespace svg url(\"http://www.w3.org/2000/svg\");",
-            0,
-        )
-        .expect("namespace rule should insert");
-        let inserted = insert_rule_into_stylesheet_rule_tree(
-            &mut rule_tree,
-            AllowImportRules::Yes,
-            "svg|a { color: white; }",
-            1,
-        )
-        .expect("style rule should see namespace inserted into persistent tree");
-
-        assert_eq!(inserted.rules.len(), 2);
-        assert_eq!(inserted.rules[1].css_text, "svg|a { color: white; }");
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); svg|a { color: white; }"
-        );
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_refreshes_namespaces_after_delete() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); svg|a { color: white; }",
-        );
-
-        delete_rule_from_stylesheet_rule_tree(&mut rule_tree, AllowImportRules::Yes, 1)
-            .expect("style rule should delete before namespace");
-        delete_rule_from_stylesheet_rule_tree(&mut rule_tree, AllowImportRules::Yes, 0)
-            .expect("namespace rule should delete once no style rules remain");
-
-        assert_eq!(stylesheet_rule_tree_css_text(&rule_tree), "");
-        assert_eq!(
-            insert_rule_into_stylesheet_rule_tree(
-                &mut rule_tree,
+        assert!(contents
+            .rules
+            .read_with(&guard)
+            .parse_rule_for_insert(
+                &stylesheet.shared_lock,
+                "svg|a { color: white; }",
+                &contents,
+                1,
+                CssRuleTypes::default(),
+                None,
+                None,
                 AllowImportRules::Yes,
+            )
+            .is_ok());
+        drop(guard);
+
+        {
+            let mut guard = stylesheet.shared_lock.write();
+            assert!(contents.rules.write_with(&mut guard).remove_rule(0).is_ok());
+        }
+        refresh_stylesheet_namespaces_after_cssom_mutation(&stylesheet);
+        let contents = stylesheet_contents(&stylesheet);
+        let guard = stylesheet.shared_lock.read();
+        assert!(contents
+            .rules
+            .read_with(&guard)
+            .parse_rule_for_insert(
+                &stylesheet.shared_lock,
                 "svg|a { color: blue; }",
+                &contents,
                 0,
-            ),
-            Err(CssRuleInsertError::Syntax)
-        );
-    }
-
-    #[test]
-    fn persistent_constructed_stylesheet_rule_tree_rejects_import_insert() {
-        let mut rule_tree = parse_constructed_stylesheet_rule_tree(".one { color: red; }");
-
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            ".one { color: red; }"
-        );
-        assert_eq!(
-            insert_rule_into_stylesheet_rule_tree(
-                &mut rule_tree,
-                AllowImportRules::No,
-                "@import url(\"ignored.css\");",
-                0,
-            ),
-            Err(CssRuleInsertError::Syntax)
-        );
+                CssRuleTypes::default(),
+                None,
+                None,
+                AllowImportRules::Yes,
+            )
+            .is_err());
     }
 
     #[test]
@@ -3308,42 +3063,6 @@ mod tests {
             CssRuleType::NestedDeclarations
         );
         assert_eq!(declarations.rules[0].css_text, "margin: 0px; padding: 1px;");
-    }
-
-    #[test]
-    fn persistent_stylesheet_rule_tree_replaces_top_level_style_rules() {
-        let mut rule_tree = parse_stylesheet_rule_tree(
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); .one { color: red; } .after { color: black; }",
-        );
-
-        let mutation = replace_rule_in_stylesheet_rule_tree(
-            &mut rule_tree,
-            AllowImportRules::Yes,
-            "svg|path { color: blue; & > .icon { opacity: .5; } }",
-            1,
-        )
-        .expect("style rule should replace in persistent tree");
-
-        assert_eq!(mutation.rules.len(), 3);
-        assert_eq!(mutation.rules[1].rule_type, CssRuleType::Style);
-        assert_eq!(mutation.rules[1].child_rules.len(), 1);
-        assert_eq!(
-            mutation.rules[1].child_rules[0].css_text,
-            "& > .icon { opacity: 0.5; }"
-        );
-        assert_eq!(
-            stylesheet_rule_tree_css_text(&rule_tree),
-            "@namespace svg url(\"http://www.w3.org/2000/svg\"); svg|path {\n  color: blue;\n  & > .icon { opacity: 0.5; }\n} .after { color: black; }"
-        );
-        assert_eq!(
-            replace_rule_in_stylesheet_rule_tree(
-                &mut rule_tree,
-                AllowImportRules::Yes,
-                ".missing { color: red; }",
-                9,
-            ),
-            Err(CssRuleInsertError::IndexSize)
-        );
     }
 
     #[test]
