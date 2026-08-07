@@ -13,7 +13,7 @@ use crate::shared_lock::{SharedRwLockReadGuard, ToCssWithGuard};
 use crate::values::computed::FontWeight;
 use crate::values::generics::font::FontStyle as GenericFontStyle;
 use crate::values::specified::{url::SpecifiedUrl, Angle};
-use cssparser::{Parser, RuleBodyParser, SourceLocation};
+use cssparser::{parse_important, Delimiter, Parser, RuleBodyParser, SourceLocation};
 use std::fmt::{self, Write};
 use style_traits::{CssStringWriter, CssWriter, ParseError, StyleParseErrorKind, ToCss};
 
@@ -203,6 +203,8 @@ impl ToCss for FontFaceSourceTechFlags {
 pub struct FontFaceRule {
     /// The descriptors of the @font-face rule.
     pub descriptors: Descriptors,
+    /// CSSOM priority flags for descriptors.
+    pub descriptor_importance: u64,
     /// The parser location of the rule.
     pub source_location: SourceLocation,
 }
@@ -212,9 +214,71 @@ impl FontFaceRule {
     pub fn empty(source_location: SourceLocation) -> Self {
         Self {
             descriptors: Default::default(),
+            descriptor_importance: 0,
             source_location,
         }
     }
+
+    /// Sets a descriptor from a CSSOM declaration, keeping priority outside
+    /// the parsed descriptor value.
+    pub fn set_cssom_descriptor_declaration<'i, 't>(
+        &mut self,
+        id: DescriptorId,
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<bool, ParseError<'i>> {
+        let value_changed = input.parse_until_before(Delimiter::Bang, |input| {
+            self.descriptors.set(id, context, input)
+        })?;
+        let important = input.try_parse(parse_important).is_ok();
+        input.expect_exhausted()?;
+        let priority_changed = self.set_descriptor_importance(id, important);
+        Ok(value_changed || priority_changed)
+    }
+
+    /// Serializes descriptors with CSSOM priority metadata.
+    pub fn style_css_text(&self) -> String {
+        let mut result = CssStringWriter::new();
+        let _ = self.write_descriptors_to_css(&mut CssWriter::new(&mut result));
+        result.trim_end().to_owned()
+    }
+
+    fn set_descriptor_importance(&mut self, id: DescriptorId, important: bool) -> bool {
+        let mask = descriptor_importance_mask(id);
+        let before = self.descriptor_importance;
+        if important {
+            self.descriptor_importance |= mask;
+        } else {
+            self.descriptor_importance &= !mask;
+        }
+        before != self.descriptor_importance
+    }
+
+    fn write_descriptors_to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: fmt::Write,
+    {
+        for index in 0..self.descriptors.len() {
+            let Some(id) = self.descriptors.at(index) else {
+                continue;
+            };
+            let mut value = CssStringWriter::new();
+            self.descriptors.get(id, &mut value)?;
+            dest.write_str(id.name())?;
+            dest.write_str(": ")?;
+            dest.write_str(value.trim())?;
+            if self.descriptor_importance & descriptor_importance_mask(id) != 0 {
+                dest.write_str(" !important")?;
+            }
+            dest.write_str("; ")?;
+        }
+        Ok(())
+    }
+}
+
+fn descriptor_importance_mask(id: DescriptorId) -> u64 {
+    debug_assert!(DescriptorId::COUNT <= u64::BITS as usize);
+    1u64 << (id as u8)
 }
 
 /// A POD representation for Gecko. All pointers here are non-owned and as such
@@ -570,7 +634,7 @@ impl ToCssWithGuard for FontFaceRule {
     // Serialization of FontFaceRule is not specced.
     fn to_css(&self, _guard: &SharedRwLockReadGuard, dest: &mut CssStringWriter) -> fmt::Result {
         dest.write_str("@font-face { ")?;
-        self.descriptors.to_css(&mut CssWriter::new(dest))?;
+        self.write_descriptors_to_css(&mut CssWriter::new(dest))?;
         dest.write_char('}')
     }
 }

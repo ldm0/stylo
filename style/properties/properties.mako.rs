@@ -407,6 +407,7 @@ impl NonCustomPropertyId {
     pub fn allowed_in_rule(self, rule_types: CssRuleTypes) -> bool {
         debug_assert!(
             rule_types.contains(CssRuleType::Keyframe) ||
+            rule_types.contains(CssRuleType::Margin) ||
             rule_types.contains(CssRuleType::Page) ||
             rule_types.contains(CssRuleType::Style) ||
             rule_types.contains(CssRuleType::Scope) ||
@@ -3023,7 +3024,7 @@ macro_rules! longhand_properties_idents {
 #[cfg(feature = "gecko")]
 size_of_test!(ComputedValues, 248);
 #[cfg(feature = "servo")]
-size_of_test!(ComputedValues, 240);
+size_of_test!(ComputedValues, 248);
 
 // FFI relies on this.
 size_of_test!(Option<Arc<ComputedValues>>, 8);
@@ -3096,14 +3097,21 @@ impl DescriptorId {
     /// The total number of descriptors.
     pub const COUNT: usize = ${len(descriptors)};
 
-    /// The CSS name of this descriptor.
-    pub fn name(&self) -> &'static str {
-        const NAMES: [&'static str; DescriptorId::COUNT] = [
+    /// CSS names for all descriptors.
+    pub const NAMES: [&'static str; DescriptorId::COUNT] = [
         % for descriptor in descriptors:
             "${descriptor.name}",
         % endfor
-        ];
-        NAMES[*self as usize]
+    ];
+
+    /// The CSS name of this descriptor.
+    pub fn name(&self) -> &'static str {
+        Self::NAMES[*self as usize]
+    }
+
+    /// CSS names for all descriptors in serialization order.
+    pub fn names() -> &'static [&'static str] {
+        &Self::NAMES
     }
 }
 

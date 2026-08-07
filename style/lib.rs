@@ -100,6 +100,10 @@ pub mod lightmount_invalidation;
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
 pub mod lightmount_numeric;
+/// Lightmount-facing stylesheet rule tree hooks.
+#[cfg(feature = "servo")]
+#[allow(missing_docs)]
+pub mod lightmount_rule_tree;
 /// Lightmount-facing transform parser hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]

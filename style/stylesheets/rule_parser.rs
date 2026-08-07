@@ -10,7 +10,7 @@ use crate::derives::*;
 use crate::error_reporting::ContextualParseError;
 use crate::font_face::parse_font_face_block;
 use crate::media_queries::MediaList;
-use crate::parser::{Parse, ParserContext};
+use crate::parser::{NestingContext, Parse, ParserContext};
 use crate::properties::declaration_block::{
     parse_property_declaration_list, DeclarationParserState, PropertyDeclarationBlock,
 };
@@ -31,20 +31,22 @@ use crate::stylesheets::{
     CustomMediaCondition, CustomMediaRule, DocumentRule, FontFeatureValuesRule,
     FontPaletteValuesRule, KeyframesRule, MarginRule, MarginRuleType, MediaRule, NamespaceRule,
     NestedDeclarationsRule, PageRule, PageSelectors, PositionTryRule, RulesMutateError,
-    StartingStyleRule, StyleRule, StylesheetLoader, SupportsRule, ViewTransitionRule,
+    StartingStyleRule, StyleRule, StylesheetContents, StylesheetLoader, SupportsRule,
+    ViewTransitionRule,
 };
 use crate::values::computed::font::FamilyName;
 use crate::values::{CssUrl, CustomIdent, DashedIdent, KeyframesName};
 use crate::{Atom, Namespace, Prefix};
 use cssparser::{
     match_ignore_ascii_case, AtRuleParser, BasicParseError, BasicParseErrorKind, CowRcStr,
-    DeclarationParser, Parser, ParserState, QualifiedRuleParser, RuleBodyItemParser,
+    DeclarationParser, Parser, ParserInput, ParserState, QualifiedRuleParser, RuleBodyItemParser,
     RuleBodyParser, SourcePosition,
 };
 use selectors::parser::{ParseRelative, SelectorList};
 use servo_arc::Arc;
+use std::borrow::Cow;
 use style_traits::arc_slice::ArcSlice;
-use style_traits::{ParseError, StyleParseErrorKind};
+use style_traits::{ParseError, ParsingMode, StyleParseErrorKind};
 
 /// The information we need particularly to do CSSOM insertRule stuff.
 pub struct InsertRuleContext<'a> {
@@ -235,6 +237,51 @@ pub enum State {
     Namespaces = 4,
     /// We're parsing the main body of the stylesheet.
     Body = 5,
+}
+
+pub(crate) fn parse_nested_rule_block(
+    css: &str,
+    rule_type: CssRuleType,
+    parent_stylesheet_contents: &StylesheetContents,
+    shared_lock: &SharedRwLock,
+    containing_rule_types: CssRuleTypes,
+    parse_relative_rule_type: Option<CssRuleType>,
+    wants_first_declaration_block: bool,
+) -> NestedParseResult {
+    let url_data = &parent_stylesheet_contents.url_data;
+    let namespaces = &parent_stylesheet_contents.namespaces;
+    let mut context = ParserContext::new(
+        parent_stylesheet_contents.origin,
+        url_data,
+        None,
+        ParsingMode::DEFAULT,
+        parent_stylesheet_contents.quirks_mode,
+        Cow::Borrowed(&*namespaces),
+        None,
+        None,
+        /* attr_taint */ Default::default(),
+    );
+    context.nesting_context = NestingContext::new(containing_rule_types, parse_relative_rule_type);
+
+    let mut input = ParserInput::new(css);
+    let mut input = Parser::new(&mut input);
+    let mut parser = TopLevelRuleParser {
+        context,
+        shared_lock,
+        loader: None,
+        state: State::Body,
+        dom_error: None,
+        insert_rule_context: None,
+        allow_import_rules: AllowImportRules::No,
+        declaration_parser_state: Default::default(),
+        first_declaration_block: Default::default(),
+        wants_first_declaration_block: false,
+        error_reporting_state: Default::default(),
+        rules: Default::default(),
+    };
+    parser
+        .nested()
+        .parse_nested(&mut input, rule_type, wants_first_declaration_block)
 }
 
 #[derive(Clone, Debug, MallocSizeOf, ToShmem)]
@@ -512,9 +559,9 @@ impl<'a, 'i> QualifiedRuleParser<'i> for TopLevelRuleParser<'a, 'i> {
 #[derive(Deref, DerefMut)]
 struct NestedRuleParser<'a, 'i>(TopLevelRuleParser<'a, 'i>);
 
-struct NestedParseResult {
-    first_declaration_block: PropertyDeclarationBlock,
-    rules: Vec<CssRule>,
+pub(crate) struct NestedParseResult {
+    pub(crate) first_declaration_block: PropertyDeclarationBlock,
+    pub(crate) rules: Vec<CssRule>,
 }
 
 impl<'a, 'i> NestedRuleParser<'a, 'i> {
