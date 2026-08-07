@@ -242,7 +242,7 @@ impl<'a, E: TElement> OptimizationContext<'a, E> {
 }
 
 /// Overall invalidator for handling relative selector invalidations.
-pub struct RelativeSelectorInvalidator<'a, 'b, E>
+pub struct RelativeSelectorInvalidator<'a, 'b, 'affected, E>
 where
     E: TElement + 'a,
 {
@@ -255,6 +255,8 @@ where
     pub snapshot_table: Option<&'b ServoElementSnapshotTable>,
     /// Callback to trigger when the subject element is invalidated.
     pub invalidated: fn(E, &InvalidationResult),
+    /// Optional callback to collect affected elements directly.
+    pub affected: Option<&'affected dyn Fn(E)>,
     /// The traversal map that should be used to process invalidations.
     pub sibling_traversal_map: SiblingTraversalMap<E>,
     /// Marker for 'a lifetime.
@@ -731,7 +733,7 @@ where
     }
 }
 
-impl<'a, 'b, E> RelativeSelectorInvalidator<'a, 'b, E>
+impl<'a, 'b, 'affected, E> RelativeSelectorInvalidator<'a, 'b, 'affected, E>
 where
     E: TElement + 'a,
 {
@@ -866,7 +868,7 @@ where
         // separately - It travels ancestor and/or earlier sibling direction.
         match invalidation.kind {
             RelativeDependencyInvalidationKind::Parent => {
-                element.parent_element().map(|e| {
+                if let Some(e) = element.parent_element() {
                     if !Self::in_search_direction(
                         &e,
                         ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_ANCESTOR,
@@ -874,7 +876,7 @@ where
                         return;
                     }
                     self.handle_anchor(e, invalidation.dependency, invalidation.host);
-                });
+                }
             },
             RelativeDependencyInvalidationKind::Ancestors => {
                 let mut parent = element.parent_element();
@@ -890,17 +892,15 @@ where
                 }
             },
             RelativeDependencyInvalidationKind::PrevSibling => {
-                self.sibling_traversal_map
-                    .prev_sibling_for(&element)
-                    .map(|e| {
-                        if !Self::in_search_direction(
-                            &e,
-                            ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING,
-                        ) {
-                            return;
-                        }
-                        self.handle_anchor(e, invalidation.dependency, invalidation.host);
-                    });
+                if let Some(e) = self.sibling_traversal_map.prev_sibling_for(&element) {
+                    if !Self::in_search_direction(
+                        &e,
+                        ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING,
+                    ) {
+                        return;
+                    }
+                    self.handle_anchor(e, invalidation.dependency, invalidation.host);
+                }
             },
             RelativeDependencyInvalidationKind::AncestorPrevSibling => {
                 let mut parent = element.parent_element();
@@ -911,7 +911,7 @@ where
                     ) {
                         return;
                     }
-                    par.prev_sibling_element().map(|e| {
+                    if let Some(e) = par.prev_sibling_element() {
                         if !Self::in_search_direction(
                             &e,
                             ElementSelectorFlags::RELATIVE_SELECTOR_SEARCH_DIRECTION_SIBLING,
@@ -919,7 +919,7 @@ where
                             return;
                         }
                         self.handle_anchor(e, invalidation.dependency, invalidation.host);
-                    });
+                    }
                     parent = par.parent_element();
                 }
             },
@@ -1008,6 +1008,7 @@ where
             dependency: &*outer_dependency,
             matching_context,
             traversal_map: &self.sibling_traversal_map,
+            affected: self.affected,
         };
         let result = TreeStyleInvalidator::new(element, None, &mut processor).invalidate();
         (self.invalidated)(element, &result);
@@ -1046,7 +1047,7 @@ where
 /// Blindly invalidate everything outside of a relative selector.
 /// Consider `:is(.a :has(.b) .c ~ .d) ~ .e .f`, where .b gets deleted.
 /// Since the tree mutated, we cannot rely on snapshots.
-pub struct RelativeSelectorOuterInvalidationProcessor<'a, 'b, E: TElement> {
+pub struct RelativeSelectorOuterInvalidationProcessor<'a, 'b, 'affected, E: TElement> {
     /// Element being invalidated.
     pub element: E,
     /// The current shadow host, if any.
@@ -1059,10 +1060,23 @@ pub struct RelativeSelectorOuterInvalidationProcessor<'a, 'b, E: TElement> {
     pub matching_context: MatchingContext<'a, E::Impl>,
     /// Traversal map for this invalidation.
     pub traversal_map: &'a SiblingTraversalMap<E>,
+    /// Optional callback to collect affected elements directly.
+    pub affected: Option<&'affected dyn Fn(E)>,
 }
 
-impl<'a, 'b: 'a, E: 'a> InvalidationProcessor<'b, 'a, E>
-    for RelativeSelectorOuterInvalidationProcessor<'a, 'b, E>
+impl<'a, 'b: 'a, 'affected, E: 'a> RelativeSelectorOuterInvalidationProcessor<'a, 'b, 'affected, E>
+where
+    E: TElement,
+{
+    fn note_affected(&self, element: E) {
+        if let Some(affected) = self.affected {
+            affected(element);
+        }
+    }
+}
+
+impl<'a, 'b: 'a, 'affected, E: 'a> InvalidationProcessor<'b, 'a, E>
+    for RelativeSelectorOuterInvalidationProcessor<'a, 'b, 'affected, E>
 where
     E: TElement,
 {
@@ -1183,6 +1197,7 @@ where
 
         if invalidated_self {
             self.data.hint.insert(RestyleHint::RESTYLE_SELF);
+            self.note_affected(element);
         }
         invalidated_self
     }
@@ -1208,12 +1223,16 @@ where
 
     fn invalidated_self(&mut self, element: E) {
         debug_assert_ne!(element, self.element);
-        invalidated_self(element);
+        if invalidated_self(element) {
+            self.note_affected(element);
+        }
     }
 
     fn invalidated_sibling(&mut self, element: E, of: E) {
         debug_assert_ne!(element, self.element);
-        invalidated_sibling(element, of);
+        if invalidated_sibling(element, of) {
+            self.note_affected(element);
+        }
     }
 }
 

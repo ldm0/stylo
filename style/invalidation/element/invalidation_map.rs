@@ -328,8 +328,29 @@ pub struct InvalidationMap {
     pub document_state_selectors: Vec<DocumentStateDependency>,
     /// A map of other attribute affecting selectors.
     pub other_attribute_affecting_selectors: LocalNameDependencyMap,
+    /// A map of local-name dependencies used by Lightmount's external
+    /// invalidation consumer.
+    ///
+    /// Servo's own normal restyle flow does not need this for element type
+    /// changes because element type is immutable. Lightmount consumes the
+    /// dependency map for child-list insertion/removal cache invalidation,
+    /// where the inserted/removed element's type is a useful key.
+    pub type_to_selector: LocalNameDependencyMap,
+    /// Normal dependencies for universal selectors.
+    ///
+    /// Servo's own restyle flow handles universal selector dependencies through
+    /// its broader child-list restyle ranges. Lightmount consumes invalidation
+    /// maps as an external cache-invalidation oracle, so it needs to query
+    /// universal dependencies explicitly for child-list insertion/removal.
+    pub any_to_selector: AnyDependencyMap,
     /// A map of CSS custom states
     pub custom_state_affecting_selectors: CustomStateDependencyMap,
+    /// Whether this map contains a sibling-sensitive dependency that is not
+    /// keyed by id/class/attribute/state. Normal invalidation does not need
+    /// type/universal keys for Servo's own restyle flow, but embedders that
+    /// consume dependency summaries need to know that DOM child-list mutations
+    /// still require later-sibling fallback.
+    pub unkeyed_sibling_dependency: bool,
 }
 
 /// Tree-structural pseudoclasses that we care about for (Relative selector) invalidation.
@@ -436,7 +457,10 @@ impl InvalidationMap {
             state_affecting_selectors: StateDependencyMap::new(),
             document_state_selectors: Vec::new(),
             other_attribute_affecting_selectors: LocalNameDependencyMap::default(),
+            type_to_selector: LocalNameDependencyMap::default(),
+            any_to_selector: SmallVec::default(),
             custom_state_affecting_selectors: CustomStateDependencyMap::default(),
+            unkeyed_sibling_dependency: false,
         }
     }
 
@@ -448,6 +472,11 @@ impl InvalidationMap {
                 .other_attribute_affecting_selectors
                 .iter()
                 .fold(0, |accum, (_, ref v)| accum + v.len())
+            + self
+                .type_to_selector
+                .iter()
+                .fold(0, |accum, (_, ref v)| accum + v.len())
+            + self.any_to_selector.len()
             + self
                 .id_to_selector
                 .iter()
@@ -469,7 +498,10 @@ impl InvalidationMap {
         self.state_affecting_selectors.clear();
         self.document_state_selectors.clear();
         self.other_attribute_affecting_selectors.clear();
+        self.type_to_selector.clear();
+        self.any_to_selector.clear();
         self.custom_state_affecting_selectors.clear();
+        self.unkeyed_sibling_dependency = false;
     }
 
     /// Shrink the capacity of hash maps if needed.
@@ -478,6 +510,8 @@ impl InvalidationMap {
         self.id_to_selector.shrink_if_needed();
         self.state_affecting_selectors.shrink_if_needed();
         self.other_attribute_affecting_selectors.shrink_if_needed();
+        self.type_to_selector.shrink_if_needed();
+        self.any_to_selector.shrink_to_fit();
         self.custom_state_affecting_selectors.shrink_if_needed();
     }
 }
@@ -542,6 +576,10 @@ struct PerCompoundState {
 
     /// The state this compound selector is affected by.
     element_state: ElementState,
+
+    /// Whether this compound added a dependency keyed by id/class/attribute or
+    /// state. Type and universal selectors intentionally do not set this.
+    added_entry: bool,
 }
 
 impl PerCompoundState {
@@ -549,6 +587,7 @@ impl PerCompoundState {
         Self {
             offset,
             element_state: ElementState::empty(),
+            added_entry: false,
         }
     }
 }
@@ -583,12 +622,11 @@ trait Collector {
     fn this_scope_dependencies(&mut self) -> &mut Option<Vec<Dependency>>;
     fn update_states(&mut self, element_state: ElementState, document_state: DocumentState);
 
-    // In normal invalidations, type-based dependencies don't need to be explicitly tracked;
-    // elements don't change their types, and mutations cause invalidations to go descendant
-    // (Where they are about to be styled anyway), and/or later-sibling direction (Where they
-    // siblings after inserted/removed elements get restyled anyway).
-    // However, for relative selectors, a DOM mutation can affect and arbitrary ancestor and/or
-    // earlier siblings, so we need to keep track of them.
+    // Servo's normal invalidation doesn't need type-based dependencies for its
+    // own restyle flow because elements don't change type, and child-list
+    // mutations already restyle descendant / later-sibling ranges. Lightmount's
+    // external cache invalidation consumes this map directly, so it tracks
+    // normal type dependencies too.
     fn type_map(&mut self) -> &mut LocalNameDependencyMap {
         unreachable!();
     }
@@ -680,7 +718,10 @@ fn add_local_name(
 }
 
 fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Result<(), AllocErr> {
-    collector.update_states(pc.state_flag(), pc.document_state_flag());
+    collector.update_states(
+        lightmount_state_flag_for_pseudo_class(pc),
+        pc.document_state_flag(),
+    );
 
     let attr_name = match *pc {
         #[cfg(feature = "gecko")]
@@ -692,6 +733,10 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
             return add_attr_dependency(local_name!("size"), collector);
         },
         NonTSPseudoClass::Lang(..) => local_name!("lang"),
+        NonTSPseudoClass::Dir(..) => local_name!("dir"),
+        NonTSPseudoClass::AnyLink | NonTSPseudoClass::Link | NonTSPseudoClass::Visited => {
+            local_name!("href")
+        },
         NonTSPseudoClass::CustomState(ref name) => {
             return add_custom_state_dependency(name.0.clone(), collector);
         },
@@ -699,6 +744,20 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
     };
 
     add_attr_dependency(attr_name, collector)
+}
+
+fn lightmount_state_flag_for_pseudo_class(pc: &NonTSPseudoClass) -> ElementState {
+    match *pc {
+        NonTSPseudoClass::Checked => ElementState::CHECKED,
+        NonTSPseudoClass::Default => ElementState::DEFAULT,
+        NonTSPseudoClass::InRange => ElementState::INRANGE,
+        NonTSPseudoClass::Indeterminate => ElementState::INDETERMINATE,
+        NonTSPseudoClass::Invalid => ElementState::INVALID,
+        NonTSPseudoClass::OutOfRange => ElementState::OUTOFRANGE,
+        NonTSPseudoClass::PlaceholderShown => ElementState::PLACEHOLDER_SHOWN,
+        NonTSPseudoClass::Valid => ElementState::VALID,
+        _ => pc.state_flag(),
+    }
 }
 
 fn add_pseudo_class_dependency<C: Collector>(
@@ -936,13 +995,13 @@ impl<'a, 'b, 'c> Collector for SelectorDependencyCollector<'a, 'b, 'c> {
     }
 
     fn type_map(&mut self) -> &mut LocalNameDependencyMap {
-        debug_assert!(
-            self.relative_inner_collector.is_some(),
-            "Asking for relative selector invalidation outside of relative selector"
-        );
-        &mut self
-            .additional_relative_selector_invalidation_map
-            .type_to_selector
+        if self.relative_inner_collector.is_none() {
+            &mut self.map.type_to_selector
+        } else {
+            &mut self
+                .additional_relative_selector_invalidation_map
+                .type_to_selector
+        }
     }
 
     fn ts_state_map(&mut self) -> &mut TSStateDependencyMap {
@@ -956,13 +1015,13 @@ impl<'a, 'b, 'c> Collector for SelectorDependencyCollector<'a, 'b, 'c> {
     }
 
     fn any_vec(&mut self) -> &mut AnyDependencyMap {
-        debug_assert!(
-            self.relative_inner_collector.is_some(),
-            "Asking for relative selector invalidation outside of relative selector"
-        );
-        &mut self
-            .additional_relative_selector_invalidation_map
-            .any_to_selector
+        if self.relative_inner_collector.is_none() {
+            &mut self.map.any_to_selector
+        } else {
+            &mut self
+                .additional_relative_selector_invalidation_map
+                .any_to_selector
+        }
     }
 }
 
@@ -1002,6 +1061,8 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
                 return false;
             }
 
+            self.note_unkeyed_sibling_dependency_if_needed();
+
             if let Some(state) = self
                 .relative_inner_collector
                 .as_ref()
@@ -1031,6 +1092,60 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
             }
             index += 1; // account for the combinator
         }
+    }
+}
+
+impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
+    fn note_unkeyed_sibling_dependency_if_needed(&mut self) {
+        if self.relative_inner_collector.is_some() || self.compound_state.added_entry {
+            return;
+        }
+        let dependency = self.dependency();
+        if lightmount_dependency_is_sibling_sensitive(&dependency) {
+            if !self.note_type_sibling_dependency_if_possible(dependency.clone())
+                && self.alloc_error.is_none()
+            {
+                self.note_universal_sibling_dependency(dependency);
+            }
+        }
+    }
+
+    fn note_universal_sibling_dependency(&mut self, dependency: Dependency) {
+        if let Err(err) = self.any_vec().try_reserve(1) {
+            *self.alloc_error = Some(err.into());
+            return;
+        }
+        self.any_vec().push(dependency);
+    }
+
+    fn note_type_sibling_dependency_if_possible(&mut self, dependency: Dependency) -> bool {
+        let mut local_names = SmallVec::<[LocalName; 2]>::new();
+        for ss in self.selector.iter_from(self.compound_state.offset) {
+            if let Component::LocalName(ref name) = ss {
+                local_names.push(name.name.clone());
+                if name.name != name.lower_name {
+                    local_names.push(name.lower_name.clone());
+                }
+                break;
+            }
+        }
+        if local_names.is_empty() {
+            return false;
+        }
+        for local_name in local_names {
+            if let Err(err) = add_local_name(local_name, dependency.clone(), self.type_map()) {
+                *self.alloc_error = Some(err);
+                return false;
+            }
+        }
+        true
+    }
+}
+
+fn lightmount_dependency_is_sibling_sensitive(dependency: &Dependency) -> bool {
+    match dependency.invalidation_kind() {
+        DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Siblings) => true,
+        _ => dependency.right_combinator_is_next_sibling(),
     }
 }
 
@@ -1159,6 +1274,7 @@ impl<'a, 'b, 'c> SelectorVisitor for SelectorDependencyCollector<'a, 'b, 'c> {
         match on_simple_selector(s, self.quirks_mode, self) {
             Ok(result) => {
                 if let ComponentVisitResult::Handled(state) = result {
+                    self.compound_state.added_entry = true;
                     if let Some(inner_collector_state) = self.relative_inner_collector.as_mut() {
                         inner_collector_state.relative_compound_state.added_entry = true;
                         inner_collector_state
@@ -1182,6 +1298,7 @@ impl<'a, 'b, 'c> SelectorVisitor for SelectorDependencyCollector<'a, 'b, 'c> {
         local_name: &LocalName,
         local_name_lower: &LocalName,
     ) -> bool {
+        self.compound_state.added_entry = true;
         if let Some(state) = self.relative_inner_collector.as_mut() {
             state.relative_compound_state.added_entry = true;
         }

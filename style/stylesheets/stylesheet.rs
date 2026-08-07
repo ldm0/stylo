@@ -285,8 +285,27 @@ impl StylesheetInDocument for Stylesheet {
 
 /// A simple wrapper over an `Arc<Stylesheet>`, with pointer comparison, and
 /// suitable for its use in a `StylesheetSet`.
-#[derive(Clone, Debug, MallocSizeOf)]
-pub struct DocumentStyleSheet(#[ignore_malloc_size_of = "Arc"] pub Arc<Stylesheet>);
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "servo", derive(MallocSizeOf))]
+pub struct DocumentStyleSheet(
+    #[cfg_attr(feature = "servo", ignore_malloc_size_of = "Arc")] pub Arc<Stylesheet>,
+    pub Option<ImplicitScopeRoot>,
+);
+
+impl DocumentStyleSheet {
+    /// Create a document stylesheet without an implicit scope root.
+    pub fn new(stylesheet: Arc<Stylesheet>) -> Self {
+        Self(stylesheet, None)
+    }
+
+    /// Create a document stylesheet with the embedding-provided implicit scope root.
+    pub fn with_implicit_scope_root(
+        stylesheet: Arc<Stylesheet>,
+        implicit_scope_root: ImplicitScopeRoot,
+    ) -> Self {
+        Self(stylesheet, Some(implicit_scope_root))
+    }
+}
 
 impl PartialEq for DocumentStyleSheet {
     fn eq(&self, other: &Self) -> bool {
@@ -309,7 +328,7 @@ impl StylesheetInDocument for DocumentStyleSheet {
     }
 
     fn implicit_scope_root(&self) -> Option<ImplicitScopeRoot> {
-        None
+        self.1
     }
 }
 

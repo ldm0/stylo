@@ -26,6 +26,12 @@ use crate::invalidation::media_queries::{
     EffectiveMediaQueryResults, MediaListKey, ToMediaListKey,
 };
 use crate::invalidation::stylesheets::{RuleChangeKind, StylesheetInvalidationSet};
+use crate::lightmount_invalidation::{
+    lightmount_dependency_summary_for_invalidation_map,
+    lightmount_dependency_summary_for_relative_invalidation_map,
+    LightmountChildListStructuralBoundaryDependencySummary,
+    LightmountDependencyInvalidationSummary,
+};
 #[cfg(feature = "gecko")]
 use crate::properties::StyleBuilder;
 use crate::properties::{
@@ -60,10 +66,10 @@ use crate::stylesheets::scope_rule::{
 };
 use crate::stylesheets::UrlExtraData;
 use crate::stylesheets::{
-    CounterStyleRule, CssRule, CssRuleRef, EffectiveRulesIterator, FontFaceRule,
-    FontFeatureValuesRule, FontPaletteValuesRule, Origin, OriginSet, PagePseudoClassFlags,
-    PageRule, PerOrigin, PerOriginIter, PositionTryRule, StylesheetContents, StylesheetInDocument,
-    ViewTransitionRule,
+    AllRules, CounterStyleRule, CssRule, CssRuleRef, EffectiveRules, FontFaceRule,
+    FontFeatureValuesRule, FontPaletteValuesRule, NestedRuleIterationCondition, Origin, OriginSet,
+    PagePseudoClassFlags, PageRule, PerOrigin, PerOriginIter, PositionTryRule, RulesIterator,
+    StylesheetContents, StylesheetInDocument, ViewTransitionRule,
 };
 use crate::stylesheets::{CustomMediaEvaluator, CustomMediaMap};
 #[cfg(feature = "gecko")]
@@ -1567,6 +1573,10 @@ impl Stylist {
         };
 
         let mut declarations = ApplicableDeclarationList::new();
+        let exact_pseudo_matching = |candidate: &PseudoElement| candidate == pseudo;
+        let matching_fn = matching_fn.or(Some(
+            &exact_pseudo_matching as &dyn Fn(&PseudoElement) -> bool,
+        ));
         let mut matching_context = MatchingContext::<'_, E::Impl>::new(
             MatchingMode::ForStatelessPseudoElement,
             None,
@@ -2092,7 +2102,76 @@ pub enum RegisterCustomPropertyResult {
     InitialValueNotComputationallyIndependent,
 }
 
+struct ParsedCustomPropertyRegistration {
+    syntax: Descriptor,
+    initial_value: Option<Arc<SpecifiedValue>>,
+}
+
+fn parse_custom_property_registration_fields(
+    url_data: &UrlExtraData,
+    syntax: &str,
+    initial_value: Option<&str>,
+) -> Result<ParsedCustomPropertyRegistration, RegisterCustomPropertyResult> {
+    use RegisterCustomPropertyResult::*;
+
+    let syntax = Descriptor::from_str(syntax, /* preserve_specified = */ false)
+        .map_err(|_| InvalidSyntax)?;
+
+    let initial_value = match initial_value {
+        Some(value) => {
+            let mut input = ParserInput::new(value);
+            let parsed = Parser::new(&mut input)
+                .parse_entirely(|input| {
+                    input.skip_whitespace();
+                    SpecifiedValue::parse(input, None, url_data).map(Arc::new)
+                })
+                .ok();
+            if parsed.is_none() {
+                return Err(InvalidInitialValue);
+            }
+            parsed
+        },
+        None => None,
+    };
+
+    if let Err(error) =
+        PropertyRegistration::validate_initial_value(&syntax, initial_value.as_deref())
+    {
+        return Err(match error {
+            PropertyRegistrationError::InitialValueNotComputationallyIndependent => {
+                InitialValueNotComputationallyIndependent
+            },
+            PropertyRegistrationError::InvalidInitialValue => InvalidInitialValue,
+            PropertyRegistrationError::NoInitialValue => NoInitialValue,
+        });
+    }
+
+    Ok(ParsedCustomPropertyRegistration {
+        syntax,
+        initial_value,
+    })
+}
+
 impl Stylist {
+    /// Validates a script custom-property registration without mutating the
+    /// script registry.
+    pub fn validate_custom_property_registration(
+        url_data: &UrlExtraData,
+        name: &str,
+        syntax: &str,
+        initial_value: Option<&str>,
+    ) -> RegisterCustomPropertyResult {
+        use RegisterCustomPropertyResult::*;
+
+        if parse_name(name).is_err() {
+            return InvalidName;
+        }
+
+        parse_custom_property_registration_fields(url_data, syntax, initial_value)
+            .map(|_| SuccessfullyRegistered)
+            .unwrap_or_else(|error| error)
+    }
+
     /// <https://drafts.css-houdini.org/css-properties-values-api-1/#the-registerproperty-function>
     pub fn register_custom_property(
         &mut self,
@@ -2114,40 +2193,13 @@ impl Stylist {
         if self.custom_property_script_registry().get(&name).is_some() {
             return AlreadyRegistered;
         }
-        // Attempt to consume a syntax definition from syntax. If it returns failure, throw a
-        // SyntaxError. Otherwise, let syntax definition be the returned syntax definition.
-        let Ok(syntax) = Descriptor::from_str(syntax, /* preserve_specified = */ false) else {
-            return InvalidSyntax;
+        let ParsedCustomPropertyRegistration {
+            syntax,
+            initial_value,
+        } = match parse_custom_property_registration_fields(url_data, syntax, initial_value) {
+            Ok(parsed) => parsed,
+            Err(result) => return result,
         };
-
-        let initial_value = match initial_value {
-            Some(value) => {
-                let mut input = ParserInput::new(value);
-                let parsed = Parser::new(&mut input)
-                    .parse_entirely(|input| {
-                        input.skip_whitespace();
-                        SpecifiedValue::parse(input, None, url_data).map(Arc::new)
-                    })
-                    .ok();
-                if parsed.is_none() {
-                    return InvalidInitialValue;
-                }
-                parsed
-            },
-            None => None,
-        };
-
-        if let Err(error) =
-            PropertyRegistration::validate_initial_value(&syntax, initial_value.as_deref())
-        {
-            return match error {
-                PropertyRegistrationError::InitialValueNotComputationallyIndependent => {
-                    InitialValueNotComputationallyIndependent
-                },
-                PropertyRegistrationError::InvalidInitialValue => InvalidInitialValue,
-                PropertyRegistrationError::NoInitialValue => NoInitialValue,
-            };
-        }
 
         let property_registration = PropertyRegistration {
             name: PropertyRuleName(name),
@@ -2562,6 +2614,10 @@ struct StylistSelectorVisitor<'a> {
     /// Whether the selector needs revalidation for the style sharing cache.
     needs_revalidation: &'a mut bool,
 
+    /// Whether the selector depends on child-list structural state such as
+    /// :empty, :first-child, or :nth-child().
+    has_child_list_structural_dependency: &'a mut bool,
+
     /// Flags for which selector list-containing components the visitor is
     /// inside of, if any
     in_selector_list_of: SelectorListKind,
@@ -2624,6 +2680,162 @@ fn component_needs_revalidation(
         | Component::Has(_) => true,
         Component::NonTSPseudoClass(ref p) => p.needs_cache_revalidation(),
         _ => false,
+    }
+}
+
+fn component_has_child_list_structural_dependency(c: &Component<SelectorImpl>) -> bool {
+    matches!(
+        c,
+        Component::Empty | Component::Nth(_) | Component::NthOf(_)
+    )
+}
+
+#[derive(Clone)]
+enum LightmountStructuralBoundaryKey {
+    Id(Atom),
+    Class(Atom),
+    Attribute(LocalName),
+    Type(LocalName),
+    Universal,
+}
+
+impl LightmountStructuralBoundaryKey {
+    fn specificity(&self) -> u8 {
+        match self {
+            Self::Universal => 0,
+            Self::Type(_) => 1,
+            Self::Attribute(_) => 2,
+            Self::Class(_) => 3,
+            Self::Id(_) => 4,
+        }
+    }
+
+    fn note_in(self, summary: &mut LightmountChildListStructuralBoundaryDependencySummary) {
+        match self {
+            Self::Id(id) => summary.note_id_dependency(id),
+            Self::Class(class) => summary.note_class_dependency(class),
+            Self::Attribute(attribute) => summary.note_attribute_dependency(attribute),
+            Self::Type(local_name) => summary.note_type_dependency(local_name),
+            Self::Universal => summary.note_universal_dependency(),
+        }
+    }
+}
+
+fn lightmount_structural_boundary_key_for_compound(
+    components: &[&Component<SelectorImpl>],
+) -> LightmountStructuralBoundaryKey {
+    let mut selected = LightmountStructuralBoundaryKey::Universal;
+    for component in components {
+        let candidate = match component {
+            Component::ID(id) => LightmountStructuralBoundaryKey::Id(id.0.clone()),
+            Component::Class(class) => LightmountStructuralBoundaryKey::Class(class.0.clone()),
+            Component::AttributeInNoNamespaceExists {
+                local_name_lower, ..
+            } => LightmountStructuralBoundaryKey::Attribute(local_name_lower.clone()),
+            Component::AttributeInNoNamespace { local_name, .. } => {
+                LightmountStructuralBoundaryKey::Attribute(local_name.clone())
+            },
+            Component::AttributeOther(attribute) => {
+                LightmountStructuralBoundaryKey::Attribute(attribute.local_name.clone())
+            },
+            Component::LocalName(local_name) => {
+                LightmountStructuralBoundaryKey::Type(local_name.lower_name.clone())
+            },
+            _ => continue,
+        };
+        if candidate.specificity() >= selected.specificity() {
+            selected = candidate;
+        }
+    }
+    selected
+}
+
+fn lightmount_selector_has_nested_child_list_structural_dependency(
+    selector: &Selector<SelectorImpl>,
+) -> bool {
+    let mut iter = selector.iter();
+    loop {
+        for component in &mut iter {
+            if component_has_child_list_structural_dependency(component)
+                || lightmount_component_has_nested_child_list_structural_dependency(component)
+            {
+                return true;
+            }
+        }
+        if iter.next_sequence().is_none() {
+            return false;
+        }
+    }
+}
+
+fn lightmount_component_has_nested_child_list_structural_dependency(
+    component: &Component<SelectorImpl>,
+) -> bool {
+    match component {
+        Component::Negation(selectors) | Component::Is(selectors) | Component::Where(selectors) => {
+            selectors
+                .slice()
+                .iter()
+                .any(lightmount_selector_has_nested_child_list_structural_dependency)
+        },
+        Component::Slotted(selector)
+        | Component::Host(Some(selector))
+        | Component::HostContext(selector) => {
+            lightmount_selector_has_nested_child_list_structural_dependency(selector)
+        },
+        Component::Has(selectors) => selectors.iter().any(|selector| {
+            lightmount_selector_has_nested_child_list_structural_dependency(&selector.selector)
+        }),
+        _ => false,
+    }
+}
+
+fn lightmount_note_child_list_structural_boundary_dependencies(
+    selector: &Selector<SelectorImpl>,
+    summary: &mut LightmountChildListStructuralBoundaryDependencySummary,
+) {
+    let mut iter = selector.iter();
+    let mut compounds = Vec::new();
+    loop {
+        let components = (&mut iter).collect::<Vec<_>>();
+        let combinator_to_left = iter.next_sequence();
+        compounds.push((components, combinator_to_left));
+        if combinator_to_left.is_none() {
+            break;
+        }
+    }
+
+    for (index, (components, combinator_to_left)) in compounds.iter().enumerate() {
+        if components
+            .iter()
+            .any(|component| matches!(component, Component::Empty))
+        {
+            lightmount_structural_boundary_key_for_compound(components).note_in(summary);
+        }
+        if components
+            .iter()
+            .any(|component| matches!(component, Component::Nth(_) | Component::NthOf(_)))
+        {
+            if *combinator_to_left == Some(Combinator::Child) {
+                compounds
+                    .get(index + 1)
+                    .map(|(parent_components, _)| {
+                        lightmount_structural_boundary_key_for_compound(parent_components)
+                    })
+                    .unwrap_or(LightmountStructuralBoundaryKey::Universal)
+                    .note_in(summary);
+            } else {
+                summary.note_universal_dependency();
+            }
+        }
+        if components.iter().any(|component| {
+            lightmount_component_has_nested_child_list_structural_dependency(component)
+        }) {
+            // Nested selector-list structural state can change direction and
+            // scope (notably through :has()). Keep this branch conservative
+            // until its boundary relation is represented explicitly.
+            summary.note_universal_dependency();
+        }
     }
 }
 
@@ -2710,6 +2922,8 @@ impl<'a> SelectorVisitor for StylistSelectorVisitor<'a> {
     fn visit_simple_selector(&mut self, s: &Component<SelectorImpl>) -> bool {
         *self.needs_revalidation = *self.needs_revalidation
             || component_needs_revalidation(s, self.passed_rightmost_selector);
+        *self.has_child_list_structural_dependency = *self.has_child_list_structural_dependency
+            || component_has_child_list_structural_dependency(s);
 
         match *s {
             Component::NonTSPseudoClass(NonTSPseudoClass::CustomState(ref name)) => {
@@ -3293,6 +3507,15 @@ pub struct CascadeData {
 
     additional_relative_selector_invalidation_map: AdditionalRelativeSelectorInvalidationMap,
 
+    /// Whether any selector in this cascade data depends on child-list
+    /// structural state, such as :empty or :nth-child().
+    has_child_list_structural_dependency: bool,
+
+    /// Selector-derived keys for boundaries whose children can affect
+    /// tree-structural selector matching.
+    lightmount_child_list_structural_boundary_dependencies:
+        LightmountChildListStructuralBoundaryDependencySummary,
+
     /// The attribute local names that appear in attribute selectors.  Used
     /// to avoid taking element snapshots when an irrelevant attribute changes.
     /// (We don't bother storing the namespace, since namespaced attributes are
@@ -3426,6 +3649,9 @@ impl CascadeData {
             relative_selector_invalidation_map: InvalidationMap::new(),
             additional_relative_selector_invalidation_map:
                 AdditionalRelativeSelectorInvalidationMap::new(),
+            has_child_list_structural_dependency: false,
+            lightmount_child_list_structural_boundary_dependencies:
+                LightmountChildListStructuralBoundaryDependencySummary::default(),
             nth_of_mapped_ids: PrecomputedHashSet::default(),
             nth_of_class_dependencies: PrecomputedHashSet::default(),
             nth_of_attribute_dependencies: PrecomputedHashSet::default(),
@@ -3537,6 +3763,49 @@ impl CascadeData {
     #[inline]
     pub fn has_state_dependency(&self, state: ElementState) -> bool {
         self.state_dependencies.intersects(state)
+    }
+
+    /// Returns whether any selector in this cascade data depends on child-list
+    /// structural state, such as :empty or :nth-child().
+    #[inline]
+    pub fn has_child_list_structural_dependency(&self) -> bool {
+        self.has_child_list_structural_dependency
+    }
+
+    /// Returns selector-derived child-list structural boundary keys for
+    /// Lightmount source dependency planning.
+    #[inline]
+    pub(crate) fn lightmount_child_list_structural_boundary_dependency_summary(
+        &self,
+    ) -> &LightmountChildListStructuralBoundaryDependencySummary {
+        &self.lightmount_child_list_structural_boundary_dependencies
+    }
+
+    /// Returns keyed selector dependency query data for Lightmount style
+    /// invalidation.
+    pub(crate) fn lightmount_dependency_invalidation_summary(
+        &self,
+    ) -> LightmountDependencyInvalidationSummary {
+        let mut summary =
+            lightmount_dependency_summary_for_invalidation_map(&self.invalidation_map);
+        summary.extend(lightmount_dependency_summary_for_invalidation_map(
+            &self.relative_selector_invalidation_map,
+        ));
+        summary.extend(lightmount_dependency_summary_for_relative_invalidation_map(
+            &self.additional_relative_selector_invalidation_map,
+        ));
+        for class in &self.nth_of_class_dependencies {
+            summary.note_nth_of_class_dependency(class.clone());
+        }
+        for id in &self.nth_of_mapped_ids {
+            summary.note_nth_of_id_dependency(id.clone());
+        }
+        for attribute in &self.nth_of_attribute_dependencies {
+            summary.note_nth_of_attribute_dependency(attribute.clone());
+        }
+        summary.note_nth_of_state_dependency(self.nth_of_state_dependencies);
+        summary.note_unrepresented_state_dependencies(self.state_dependencies);
+        summary
     }
 
     /// Returns whether the given Custom State is relied upon by a selector
@@ -3914,8 +4183,10 @@ impl CascadeData {
                     None,
                 )?;
                 let mut needs_revalidation = false;
+                let mut has_child_list_structural_dependency = false;
                 let mut visitor = StylistSelectorVisitor {
                     needs_revalidation: &mut needs_revalidation,
+                    has_child_list_structural_dependency: &mut has_child_list_structural_dependency,
                     passed_rightmost_selector: false,
                     in_selector_list_of: SelectorListKind::default(),
                     mapped_ids: &mut self.mapped_ids,
@@ -3929,6 +4200,13 @@ impl CascadeData {
                     document_state_dependencies: &mut self.document_state_dependencies,
                 };
                 rule.selector.visit(&mut visitor);
+                self.has_child_list_structural_dependency |= has_child_list_structural_dependency;
+                if has_child_list_structural_dependency {
+                    lightmount_note_child_list_structural_boundary_dependencies(
+                        &rule.selector,
+                        &mut self.lightmount_child_list_structural_boundary_dependencies,
+                    );
+                }
 
                 if needs_revalidation {
                     self.selectors_for_cache_revalidation.insert(
@@ -4013,7 +4291,7 @@ impl CascadeData {
         Ok(())
     }
 
-    fn add_rule_list<S>(
+    fn add_rule_list<C, S>(
         &mut self,
         rules: std::slice::Iter<CssRule>,
         device: &Device,
@@ -4027,6 +4305,7 @@ impl CascadeData {
         mut difference: Option<&mut CascadeDataDifference>,
     ) -> Result<(), AllocErr>
     where
+        C: NestedRuleIterationCondition + 'static,
         S: StylesheetInDocument + 'static,
     {
         for rule in rules {
@@ -4192,7 +4471,7 @@ impl CascadeData {
                 // effective.
                 if cfg!(debug_assertions) {
                     let mut effective = false;
-                    let children = EffectiveRulesIterator::<&CustomMediaMap>::children(
+                    let children = RulesIterator::<C, &CustomMediaMap>::children(
                         rule,
                         device,
                         quirks_mode,
@@ -4207,7 +4486,7 @@ impl CascadeData {
             }
 
             let mut effective = false;
-            let children = EffectiveRulesIterator::<&CustomMediaMap>::children(
+            let children = RulesIterator::<C, &CustomMediaMap>::children(
                 rule,
                 device,
                 quirks_mode,
@@ -4422,7 +4701,7 @@ impl CascadeData {
             }
 
             if !children.is_empty() {
-                self.add_rule_list(
+                self.add_rule_list::<C, S>(
                     children.iter(),
                     device,
                     quirks_mode,
@@ -4443,8 +4722,11 @@ impl CascadeData {
                 let cur_scope = &self.scope_conditions[scope_idx.0 as usize];
                 if let Some(cond) = cur_scope.condition.as_ref() {
                     let mut _unused = false;
+                    let mut has_child_list_structural_dependency = false;
                     let visitor = StylistSelectorVisitor {
                         needs_revalidation: &mut _unused,
+                        has_child_list_structural_dependency:
+                            &mut has_child_list_structural_dependency,
                         passed_rightmost_selector: true,
                         in_selector_list_of: SelectorListKind::default(),
                         mapped_ids: &mut self.mapped_ids,
@@ -4468,6 +4750,12 @@ impl CascadeData {
                         &mut self.relative_selector_invalidation_map,
                         &mut self.additional_relative_selector_invalidation_map,
                     )?;
+                    self.has_child_list_structural_dependency |=
+                        has_child_list_structural_dependency;
+                    if has_child_list_structural_dependency {
+                        self.lightmount_child_list_structural_boundary_dependencies
+                            .note_universal_dependency();
+                    }
 
                     containing_rule_state
                         .containing_scope_rule_state
@@ -4509,7 +4797,7 @@ impl CascadeData {
         }
 
         let mut state = ContainingRuleState::default();
-        self.add_rule_list(
+        self.add_rule_list::<EffectiveRules, S>(
             contents.rules(guard).iter(),
             device,
             quirks_mode,
@@ -4520,6 +4808,45 @@ impl CascadeData {
             &mut state,
             precomputed_pseudo_element_decls.as_deref_mut(),
             difference.as_deref_mut(),
+        )?;
+
+        Ok(())
+    }
+
+    /// Adds every style rule in a stylesheet to this cascade data, ignoring
+    /// device-dependent nested-rule filtering.
+    ///
+    /// This is intended for Lightmount source metadata extraction. It builds
+    /// conservative invalidation summaries from selector syntax without tying
+    /// those summaries to a particular viewport, media type, or color scheme.
+    pub fn add_stylesheet_for_lightmount_source_metadata<S>(
+        &mut self,
+        device: &Device,
+        quirks_mode: QuirksMode,
+        stylesheet: &S,
+        sheet_index: usize,
+        guard: &SharedRwLockReadGuard,
+    ) -> Result<(), AllocErr>
+    where
+        S: StylesheetInDocument + 'static,
+    {
+        if !stylesheet.enabled() {
+            return Ok(());
+        }
+
+        let contents = stylesheet.contents(guard);
+        let mut state = ContainingRuleState::default();
+        self.add_rule_list::<AllRules, S>(
+            contents.rules(guard).iter(),
+            device,
+            quirks_mode,
+            stylesheet,
+            sheet_index,
+            guard,
+            SheetRebuildKind::Full,
+            &mut state,
+            None,
+            None,
         )?;
 
         Ok(())
@@ -4718,6 +5045,9 @@ impl CascadeData {
         self.invalidation_map.clear();
         self.relative_selector_invalidation_map.clear();
         self.additional_relative_selector_invalidation_map.clear();
+        self.has_child_list_structural_dependency = false;
+        self.lightmount_child_list_structural_boundary_dependencies =
+            LightmountChildListStructuralBoundaryDependencySummary::default();
         self.attribute_dependencies.clear();
         self.nth_of_attribute_dependencies.clear();
         self.nth_of_custom_state_dependencies.clear();
@@ -4974,9 +5304,11 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
     let mut state_dependencies = ElementState::empty();
     let mut nth_of_state_dependencies = ElementState::empty();
     let mut document_state_dependencies = DocumentState::empty();
+    let mut has_child_list_structural_dependency = false;
     let mut visitor = StylistSelectorVisitor {
         passed_rightmost_selector: false,
         needs_revalidation: &mut needs_revalidation,
+        has_child_list_structural_dependency: &mut has_child_list_structural_dependency,
         in_selector_list_of: SelectorListKind::default(),
         mapped_ids: &mut mapped_ids,
         nth_of_mapped_ids: &mut nth_of_mapped_ids,
@@ -4990,4 +5322,128 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
     };
     s.visit(&mut visitor);
     needs_revalidation
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lightmount_invalidation::LightmountStyleInvalidationQuery;
+    use crate::selector_parser::SelectorParser;
+
+    fn url_data() -> UrlExtraData {
+        UrlExtraData::from(url::Url::parse("https://example.test/").unwrap())
+    }
+
+    fn structural_boundary_summary_for_selector(
+        selector_text: &str,
+    ) -> LightmountChildListStructuralBoundaryDependencySummary {
+        let selectors =
+            SelectorParser::parse_author_origin_no_namespace(selector_text, &url_data())
+                .expect("selector should parse");
+        let mut summary = LightmountChildListStructuralBoundaryDependencySummary::default();
+        for selector in selectors.slice() {
+            lightmount_note_child_list_structural_boundary_dependencies(selector, &mut summary);
+        }
+        summary
+    }
+
+    #[test]
+    fn lightmount_structural_boundary_summary_keys_selector_relationships() {
+        let details = structural_boundary_summary_for_selector("details > summary:first-of-type");
+        assert!(details.matches_query(LightmountStyleInvalidationQuery::Type("details")));
+        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("summary")));
+        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("section")));
+
+        let empty = structural_boundary_summary_for_selector("section:empty");
+        assert!(empty.matches_query(LightmountStyleInvalidationQuery::Type("section")));
+        assert!(!empty.matches_query(LightmountStyleInvalidationQuery::Universal));
+
+        let keyed_nth = structural_boundary_summary_for_selector(".items > .item:last-child");
+        assert!(keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("items")));
+        assert!(!keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("item")));
+
+        let unscoped_nth = structural_boundary_summary_for_selector(".item:last-child");
+        assert!(unscoped_nth.matches_query(LightmountStyleInvalidationQuery::Universal));
+    }
+
+    fn assert_registration_valid(syntax: &str, initial_value: Option<&str>) {
+        assert!(
+            matches!(
+                Stylist::validate_custom_property_registration(
+                    &url_data(),
+                    "--registered",
+                    syntax,
+                    initial_value,
+                ),
+                RegisterCustomPropertyResult::SuccessfullyRegistered
+            ),
+            "{syntax:?} / {initial_value:?} should be valid",
+        );
+    }
+
+    fn assert_registration_invalid(syntax: &str, initial_value: Option<&str>) {
+        assert!(
+            !matches!(
+                Stylist::validate_custom_property_registration(
+                    &url_data(),
+                    "--registered",
+                    syntax,
+                    initial_value,
+                ),
+                RegisterCustomPropertyResult::SuccessfullyRegistered
+            ),
+            "{syntax:?} / {initial_value:?} should be invalid",
+        );
+    }
+
+    #[test]
+    fn script_registered_property_validation_matches_wpt_universal_syntax() {
+        assert_registration_valid("*", Some("default"));
+
+        for invalid in [
+            ")",
+            "([)]",
+            "whee!",
+            "\"\n",
+            "url(moo '')",
+            "semi;colon",
+            "var(invalid var ref)",
+            "var(--foo)",
+        ] {
+            assert_registration_invalid("*", Some(invalid));
+        }
+    }
+
+    #[test]
+    fn script_registered_property_validation_rejects_dependent_initial_lengths() {
+        for invalid in [
+            ("<length>", "calc(5px + 10%)"),
+            ("<length>", "10em"),
+            ("<length>", "calc(4px + 3em)"),
+            ("<length>", "calc(4px + calc(8 * 2em))"),
+            ("<length>+", "calc(2ex + 16px)"),
+            ("<length>+", "10px calc(20px + 4rem)"),
+            ("<length-percentage>", "calc(2px + 10% + 7ex)"),
+        ] {
+            assert_registration_invalid(invalid.0, Some(invalid.1));
+        }
+    }
+
+    #[test]
+    fn script_registered_property_validation_rejects_type_specific_invalid_values() {
+        for invalid in [
+            ("<angle>", "0"),
+            ("<resolution>", "-5.3dpcm"),
+            ("<transform-function>", "scale()"),
+            ("<transform-list>", "scale()"),
+            ("<image>", "none"),
+        ] {
+            assert_registration_invalid(invalid.0, Some(invalid.1));
+        }
+    }
+
+    #[test]
+    fn script_registered_property_validation_accepts_light_dark_image() {
+        assert_registration_valid("<image>", Some("light-dark(none, none)"));
+    }
 }

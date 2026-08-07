@@ -15,56 +15,62 @@ use crate::invalidation::element::element_wrapper::ElementSnapshot;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::{ComputedValues, PropertyFlags};
 use crate::selector_parser::AttrValue as SelectorAttrValue;
-use crate::selector_parser::{PseudoElementCascadeType, SelectorParser};
-use crate::values::{AtomIdent, AtomString};
+use crate::selector_parser::{Direction, PseudoElementCascadeType, SelectorParser};
+use crate::values::{AtomIdent, AtomString, CSSInteger};
 use crate::{Atom, CaseSensitivityExt, LocalName, Namespace, Prefix};
 use cssparser::{
     match_ignore_ascii_case, serialize_identifier, CowRcStr, Parser as CssParser, SourceLocation,
     ToCss,
 };
-use dom::{DocumentState, ElementState};
+use dom::{DocumentState, ElementState, HEADING_LEVEL_OFFSET};
 use rustc_hash::FxHashMap;
 use selectors::attr::{AttrSelectorOperation, CaseSensitivity, NamespaceConstraint};
 use selectors::parser::SelectorParseErrorKind;
 use selectors::visitor::SelectorVisitor;
 use std::fmt;
-use std::mem;
 use std::ops::{Deref, DerefMut};
 use style_traits::{ParseError, StyleParseErrorKind};
 
 /// A pseudo-element, both public and private.
 ///
 /// NB: If you add to this list, be sure to update `each_simple_pseudo_element` too.
-#[derive(
-    Clone, Copy, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, ToShmem,
-)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, MallocSizeOf, PartialEq, Serialize, ToShmem)]
 #[allow(missing_docs)]
-#[repr(usize)]
 pub enum PseudoElement {
     // Eager pseudos. Keep these first so that eager_index() works.
-    After = 0,
+    After,
     Before,
     Selection,
+    Checkmark,
     // If/when :first-letter is added, update is_first_letter accordingly.
-
-    // If/when :first-line is added, update is_first_line accordingly.
 
     // If/when ::first-letter or ::first-line are added, adjust our
     // property_restriction implementation to do property filtering for them.
     // Also, make sure the UA sheet has the !important rules some of the
     // APPLIES_TO_PLACEHOLDER properties expect!
     FirstLetter,
+    FirstLine,
 
     // Non-eager pseudos.
     Backdrop,
     DetailsContent,
+    GrammarError,
+    Highlight(AtomIdent),
     Marker,
+    SpellingError,
+    ViewTransition,
+    ViewTransitionGroup(AtomIdent),
+    ViewTransitionImagePair(AtomIdent),
+    ViewTransitionOld(AtomIdent),
+    ViewTransitionNew(AtomIdent),
 
     // Implemented pseudos. These pseudo elements are representing the
     // elements within an UA shadow DOM, and matching the elements with
     // their appropriate styles.
     ColorSwatch,
     FileSelectorButton,
+    Picker,
+    PickerIcon,
     Placeholder,
     SliderFill,
     SliderThumb,
@@ -84,7 +90,7 @@ pub enum PseudoElement {
 }
 
 /// The count of all pseudo-elements.
-pub const PSEUDO_COUNT: usize = PseudoElement::ServoTableWrapper as usize + 1;
+pub const PSEUDO_COUNT: usize = 33;
 
 impl ToCss for PseudoElement {
     fn to_css<W>(&self, dest: &mut W) -> fmt::Result
@@ -92,69 +98,158 @@ impl ToCss for PseudoElement {
         W: fmt::Write,
     {
         use self::PseudoElement::*;
-        dest.write_str(match *self {
-            After => "::after",
-            Before => "::before",
-            Selection => "::selection",
-            FirstLetter => "::first-letter",
-            Backdrop => "::backdrop",
-            DetailsContent => "::details-content",
-            Marker => "::marker",
-            ColorSwatch => "::color-swatch",
-            FileSelectorButton => "::file-selector-button",
-            Placeholder => "::placeholder",
-            SliderFill => "::slider-fill",
-            SliderTrack => "::slider-track",
-            SliderThumb => "::slider-thumb",
-            ServoTextControlInnerContainer => "::-servo-text-control-inner-container",
-            ServoTextControlInnerEditor => "::-servo-text-control-inner-editor",
-            ServoAnonymousBox => "::-servo-anonymous-box",
-            ServoAnonymousTable => "::-servo-anonymous-table",
-            ServoAnonymousTableCell => "::-servo-anonymous-table-cell",
-            ServoAnonymousTableRow => "::-servo-anonymous-table-row",
-            ServoTableGrid => "::-servo-table-grid",
-            ServoTableWrapper => "::-servo-table-wrapper",
-        })
+        match self {
+            After => dest.write_str("::after"),
+            Before => dest.write_str("::before"),
+            Selection => dest.write_str("::selection"),
+            Checkmark => dest.write_str("::checkmark"),
+            FirstLetter => dest.write_str("::first-letter"),
+            FirstLine => dest.write_str("::first-line"),
+            Backdrop => dest.write_str("::backdrop"),
+            DetailsContent => dest.write_str("::details-content"),
+            GrammarError => dest.write_str("::grammar-error"),
+            Highlight(name) => {
+                dest.write_str("::highlight(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            Marker => dest.write_str("::marker"),
+            SpellingError => dest.write_str("::spelling-error"),
+            ViewTransition => dest.write_str("::view-transition"),
+            ViewTransitionGroup(name) => {
+                dest.write_str("::view-transition-group(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionImagePair(name) => {
+                dest.write_str("::view-transition-image-pair(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionOld(name) => {
+                dest.write_str("::view-transition-old(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ViewTransitionNew(name) => {
+                dest.write_str("::view-transition-new(")?;
+                serialize_identifier(name, dest)?;
+                dest.write_char(')')
+            },
+            ColorSwatch => dest.write_str("::color-swatch"),
+            FileSelectorButton => dest.write_str("::file-selector-button"),
+            Picker => dest.write_str("::picker(select)"),
+            PickerIcon => dest.write_str("::picker-icon"),
+            Placeholder => dest.write_str("::placeholder"),
+            SliderFill => dest.write_str("::slider-fill"),
+            SliderTrack => dest.write_str("::slider-track"),
+            SliderThumb => dest.write_str("::slider-thumb"),
+            ServoTextControlInnerContainer => {
+                dest.write_str("::-servo-text-control-inner-container")
+            },
+            ServoTextControlInnerEditor => dest.write_str("::-servo-text-control-inner-editor"),
+            ServoAnonymousBox => dest.write_str("::-servo-anonymous-box"),
+            ServoAnonymousTable => dest.write_str("::-servo-anonymous-table"),
+            ServoAnonymousTableCell => dest.write_str("::-servo-anonymous-table-cell"),
+            ServoAnonymousTableRow => dest.write_str("::-servo-anonymous-table-row"),
+            ServoTableGrid => dest.write_str("::-servo-table-grid"),
+            ServoTableWrapper => dest.write_str("::-servo-table-wrapper"),
+        }
     }
 }
 
 impl ::selectors::parser::PseudoElement for PseudoElement {
     type Impl = SelectorImpl;
 
+    fn accepts_state_pseudo_classes(&self) -> bool {
+        matches!(self, Self::DetailsContent | Self::Picker)
+    }
+
+    fn valid_after_before_or_after(&self) -> bool {
+        matches!(self, Self::Marker)
+    }
+
     fn parses_as_element_backed(&self) -> bool {
-        matches!(self, Self::DetailsContent)
+        matches!(
+            self,
+            Self::DetailsContent
+                | Self::Picker
+                | Self::ViewTransitionGroup(_)
+                | Self::ViewTransitionImagePair(_)
+                | Self::ViewTransitionOld(_)
+                | Self::ViewTransitionNew(_)
+        )
     }
 }
 
 /// The number of eager pseudo-elements. Keep this in sync with cascade_type.
-pub const EAGER_PSEUDO_COUNT: usize = 4;
+pub const EAGER_PSEUDO_COUNT: usize = 6;
 
 impl PseudoElement {
     /// Gets the canonical index of this eagerly-cascaded pseudo-element.
     #[inline]
     pub fn eager_index(&self) -> usize {
         debug_assert!(self.is_eager());
-        self.clone() as usize
+        self.index()
     }
 
     /// An index for this pseudo-element to be indexed in an enumerated array.
     #[inline]
     pub fn index(&self) -> usize {
-        self.clone() as usize
+        match self {
+            PseudoElement::After => 0,
+            PseudoElement::Before => 1,
+            PseudoElement::Selection => 2,
+            PseudoElement::Checkmark => 3,
+            PseudoElement::FirstLetter => 4,
+            PseudoElement::FirstLine => 5,
+            PseudoElement::Backdrop => 6,
+            PseudoElement::DetailsContent => 7,
+            PseudoElement::GrammarError => 8,
+            PseudoElement::Highlight(_) => 9,
+            PseudoElement::Marker => 10,
+            PseudoElement::SpellingError => 11,
+            PseudoElement::ViewTransition => 12,
+            PseudoElement::ViewTransitionGroup(_) => 13,
+            PseudoElement::ViewTransitionImagePair(_) => 14,
+            PseudoElement::ViewTransitionOld(_) => 15,
+            PseudoElement::ViewTransitionNew(_) => 16,
+            PseudoElement::ColorSwatch => 17,
+            PseudoElement::FileSelectorButton => 18,
+            PseudoElement::Picker => 19,
+            PseudoElement::PickerIcon => 20,
+            PseudoElement::Placeholder => 21,
+            PseudoElement::SliderFill => 22,
+            PseudoElement::SliderThumb => 23,
+            PseudoElement::SliderTrack => 24,
+            PseudoElement::ServoTextControlInnerContainer => 25,
+            PseudoElement::ServoTextControlInnerEditor => 26,
+            PseudoElement::ServoAnonymousBox => 27,
+            PseudoElement::ServoAnonymousTable => 28,
+            PseudoElement::ServoAnonymousTableCell => 29,
+            PseudoElement::ServoAnonymousTableRow => 30,
+            PseudoElement::ServoTableGrid => 31,
+            PseudoElement::ServoTableWrapper => 32,
+        }
     }
 
     /// An array of `None`, one per pseudo-element.
     pub fn pseudo_none_array<T>() -> [Option<T>; PSEUDO_COUNT] {
-        Default::default()
+        std::array::from_fn(|_| None)
     }
 
     /// Creates a pseudo-element from an eager index.
     #[inline]
     pub fn from_eager_index(i: usize) -> Self {
-        assert!(i < EAGER_PSEUDO_COUNT);
-        let result: PseudoElement = unsafe { mem::transmute(i) };
-        debug_assert!(result.is_eager());
-        result
+        match i {
+            0 => PseudoElement::After,
+            1 => PseudoElement::Before,
+            2 => PseudoElement::Selection,
+            3 => PseudoElement::Checkmark,
+            4 => PseudoElement::FirstLetter,
+            5 => PseudoElement::FirstLine,
+            _ => panic!("invalid eager pseudo-element index {i}"),
+        }
     }
 
     /// Whether the current pseudo element is ::before or ::after.
@@ -172,44 +267,44 @@ impl PseudoElement {
     /// Whether this pseudo-element is the ::marker pseudo.
     #[inline]
     pub fn is_marker(&self) -> bool {
-        *self == PseudoElement::Marker
+        matches!(self, PseudoElement::Marker)
     }
 
     /// Whether this pseudo-element is the ::selection pseudo.
     #[inline]
     pub fn is_selection(&self) -> bool {
-        *self == PseudoElement::Selection
+        matches!(self, PseudoElement::Selection)
     }
 
     /// Whether this pseudo-element is the ::before pseudo.
     #[inline]
     pub fn is_before(&self) -> bool {
-        *self == PseudoElement::Before
+        matches!(self, PseudoElement::Before)
     }
 
     /// Whether this pseudo-element is the ::after pseudo.
     #[inline]
     pub fn is_after(&self) -> bool {
-        *self == PseudoElement::After
+        matches!(self, PseudoElement::After)
     }
 
     /// Whether the current pseudo element is :first-letter
     #[inline]
     pub fn is_first_letter(&self) -> bool {
-        *self == PseudoElement::FirstLetter
+        matches!(self, PseudoElement::FirstLetter)
     }
 
     /// Whether the current pseudo element is :first-line
     #[inline]
     pub fn is_first_line(&self) -> bool {
-        false
+        matches!(self, PseudoElement::FirstLine)
     }
 
     /// Whether this pseudo-element is representing the color swatch
     /// inside an `<input>` element.
     #[inline]
     pub fn is_color_swatch(&self) -> bool {
-        *self == PseudoElement::ColorSwatch
+        matches!(self, PseudoElement::ColorSwatch)
     }
 
     /// Whether this pseudo-element is eagerly-cascaded.
@@ -251,16 +346,28 @@ impl PseudoElement {
     /// `EMPTY_PSEUDO_ARRAY` in `style/data.rs`
     #[inline]
     pub fn cascade_type(&self) -> PseudoElementCascadeType {
-        match *self {
+        match self {
             PseudoElement::After
             | PseudoElement::Before
+            | PseudoElement::Checkmark
             | PseudoElement::FirstLetter
+            | PseudoElement::FirstLine
             | PseudoElement::Selection => PseudoElementCascadeType::Eager,
             PseudoElement::Backdrop
             | PseudoElement::ColorSwatch
             | PseudoElement::FileSelectorButton
+            | PseudoElement::GrammarError
+            | PseudoElement::Highlight(_)
+            | PseudoElement::Picker
+            | PseudoElement::PickerIcon
             | PseudoElement::Marker
             | PseudoElement::Placeholder
+            | PseudoElement::SpellingError
+            | PseudoElement::ViewTransition
+            | PseudoElement::ViewTransitionGroup(_)
+            | PseudoElement::ViewTransitionImagePair(_)
+            | PseudoElement::ViewTransitionOld(_)
+            | PseudoElement::ViewTransitionNew(_)
             | PseudoElement::DetailsContent
             | PseudoElement::SliderFill
             | PseudoElement::SliderThumb
@@ -292,6 +399,7 @@ impl PseudoElement {
     pub fn property_restriction(&self) -> Option<PropertyFlags> {
         Some(match self {
             PseudoElement::FirstLetter => PropertyFlags::APPLIES_TO_FIRST_LETTER,
+            PseudoElement::FirstLine => PropertyFlags::APPLIES_TO_FIRST_LINE,
             PseudoElement::Marker if static_prefs::pref!("layout.css.marker.restricted") => {
                 PropertyFlags::APPLIES_TO_MARKER
             },
@@ -316,7 +424,7 @@ impl PseudoElement {
 
     /// Whether this pseudo-element is the ::highlight pseudo.
     pub fn is_highlight(&self) -> bool {
-        false
+        matches!(self, PseudoElement::Highlight(_))
     }
 
     /// Whether this pseudo-element is the ::target-text pseudo.
@@ -344,6 +452,11 @@ impl PseudoElement {
                 Self::Placeholder
                     | Self::ColorSwatch
                     | Self::FileSelectorButton
+                    | Self::Picker
+                    | Self::ViewTransitionGroup(_)
+                    | Self::ViewTransitionImagePair(_)
+                    | Self::ViewTransitionOld(_)
+                    | Self::ViewTransitionNew(_)
                     | Self::SliderFill
                     | Self::SliderThumb
                     | Self::SliderTrack
@@ -359,6 +472,26 @@ pub type Lang = Box<str>;
 /// The type used to store the state argument to the `:state` pseudo-class.
 #[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToCss, ToShmem)]
 pub struct CustomState(pub AtomIdent);
+
+/// The properties that comprise a `:heading()` pseudo-class.
+#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
+pub struct HeadingSelectorData(pub Box<[CSSInteger]>);
+
+impl HeadingSelectorData {
+    /// Matches the heading level packed into `ElementState` against this selector.
+    pub fn matches_state(&self, state: ElementState) -> bool {
+        let bits = state.intersection(ElementState::HEADING_LEVEL_BITS).bits();
+        if bits == 0 {
+            return false;
+        }
+        if self.0.is_empty() {
+            return true;
+        }
+        let level = (bits >> HEADING_LEVEL_OFFSET) as CSSInteger;
+        debug_assert!(level > 0 && level < 16);
+        self.0.iter().any(|item| *item == level)
+    }
+}
 
 /// A non tree-structural pseudo-class.
 /// See https://drafts.csswg.org/selectors-4/#structural-pseudos
@@ -379,25 +512,33 @@ pub enum NonTSPseudoClass {
     FocusWithin,
     FocusVisible,
     Fullscreen,
+    /// The `:heading` and `:heading()` pseudo-classes.
+    Heading(HeadingSelectorData),
     Hover,
     InRange,
     Indeterminate,
     Invalid,
     Lang(Lang),
+    /// The `:dir` pseudo-class.
+    Dir(Direction),
     Link,
     Modal,
+    Muted,
     MozMeterOptimum,
     MozMeterSubOptimum,
     MozMeterSubSubOptimum,
     Open,
     Optional,
     OutOfRange,
+    Paused,
     PlaceholderShown,
+    Playing,
     PopoverOpen,
     ReadOnly,
     ReadWrite,
     Required,
     ServoNonZeroBorder,
+    Seeking,
     Target,
     UserInvalid,
     UserValid,
@@ -440,6 +581,27 @@ impl ToCss for NonTSPseudoClass {
             serialize_identifier(lang, dest)?;
             return dest.write_char(')');
         }
+        if let Dir(ref dir) = *self {
+            dest.write_str(":dir(")?;
+            style_traits::ToCss::to_css(dir, &mut style_traits::CssWriter::new(dest))?;
+            return dest.write_char(')');
+        }
+        if let Heading(ref levels) = *self {
+            dest.write_str(":heading")?;
+            if levels.0.is_empty() {
+                return Ok(());
+            }
+            dest.write_char('(')?;
+            let mut first = true;
+            for item in levels.0.iter() {
+                if !first {
+                    dest.write_str(", ")?;
+                }
+                first = false;
+                ToCss::to_css(item, dest)?;
+            }
+            return dest.write_char(')');
+        }
 
         dest.write_str(match *self {
             Self::Active => ":active",
@@ -465,24 +627,28 @@ impl ToCss for NonTSPseudoClass {
             Self::Invalid => ":invalid",
             Self::Link => ":link",
             Self::Modal => ":modal",
+            Self::Muted => ":muted",
             Self::MozMeterOptimum => ":-moz-meter-optimum",
             Self::MozMeterSubOptimum => ":-moz-meter-sub-optimum",
             Self::MozMeterSubSubOptimum => ":-moz-meter-sub-sub-optimum",
             Self::Open => ":open",
             Self::Optional => ":optional",
             Self::OutOfRange => ":out-of-range",
+            Self::Paused => ":paused",
             Self::PlaceholderShown => ":placeholder-shown",
+            Self::Playing => ":playing",
             Self::PopoverOpen => ":popover-open",
             Self::ReadOnly => ":read-only",
             Self::ReadWrite => ":read-write",
             Self::Required => ":required",
             Self::ServoNonZeroBorder => ":-servo-nonzero-border",
+            Self::Seeking => ":seeking",
             Self::Target => ":target",
             Self::UserInvalid => ":user-invalid",
             Self::UserValid => ":user-valid",
             Self::Valid => ":valid",
             Self::Visited => ":visited",
-            Self::Lang(_) => unreachable!(),
+            Self::Lang(_) | Self::Dir(_) | Self::Heading(_) => unreachable!(),
         })
     }
 }
@@ -504,23 +670,28 @@ impl NonTSPseudoClass {
             Self::FocusVisible => ElementState::FOCUSRING,
             Self::FocusWithin => ElementState::FOCUS_WITHIN,
             Self::Fullscreen => ElementState::FULLSCREEN,
+            Self::Heading(_) => ElementState::HEADING_LEVEL_BITS,
             Self::Hover => ElementState::HOVER,
             Self::InRange => ElementState::INRANGE,
             Self::Indeterminate => ElementState::INDETERMINATE,
             Self::Invalid => ElementState::INVALID,
+            Self::Dir(ref dir) => dir.element_state(),
             Self::Link => ElementState::UNVISITED,
             Self::Modal => ElementState::MODAL,
+            Self::Muted => ElementState::MUTED,
             Self::MozMeterOptimum => ElementState::OPTIMUM,
             Self::MozMeterSubOptimum => ElementState::SUB_OPTIMUM,
             Self::MozMeterSubSubOptimum => ElementState::SUB_SUB_OPTIMUM,
             Self::Open => ElementState::OPEN,
             Self::Optional => ElementState::OPTIONAL_,
             Self::OutOfRange => ElementState::OUTOFRANGE,
+            Self::Paused | Self::Playing => ElementState::PAUSED,
             Self::PlaceholderShown => ElementState::PLACEHOLDER_SHOWN,
             Self::PopoverOpen => ElementState::POPOVER_OPEN,
             Self::ReadOnly => ElementState::READONLY,
             Self::ReadWrite => ElementState::READWRITE,
             Self::Required => ElementState::REQUIRED,
+            Self::Seeking => ElementState::SEEKING,
             Self::Target => ElementState::URLTARGET,
             Self::UserInvalid => ElementState::USER_INVALID,
             Self::UserValid => ElementState::USER_VALID,
@@ -583,18 +754,13 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
     type Error = StyleParseErrorKind<'i>;
 
     #[inline]
-    fn parse_nth_child_of(&self) -> bool {
-        false
-    }
-
-    #[inline]
     fn parse_is_and_where(&self) -> bool {
         true
     }
 
     #[inline]
     fn parse_has(&self) -> bool {
-        false
+        true
     }
 
     #[inline]
@@ -630,19 +796,25 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "focus-visible" => NonTSPseudoClass::FocusVisible,
             "focus-within" => NonTSPseudoClass::FocusWithin,
             "fullscreen" => NonTSPseudoClass::Fullscreen,
+            "heading" => NonTSPseudoClass::Heading(HeadingSelectorData(Box::new([]))),
             "hover" => NonTSPseudoClass::Hover,
+            "in-range" => NonTSPseudoClass::InRange,
             "indeterminate" => NonTSPseudoClass::Indeterminate,
             "invalid" => NonTSPseudoClass::Invalid,
             "link" => NonTSPseudoClass::Link,
             "modal" => NonTSPseudoClass::Modal,
+            "muted" => NonTSPseudoClass::Muted,
             "open" => NonTSPseudoClass::Open,
             "optional" => NonTSPseudoClass::Optional,
             "out-of-range" => NonTSPseudoClass::OutOfRange,
+            "paused" => NonTSPseudoClass::Paused,
             "placeholder-shown" => NonTSPseudoClass::PlaceholderShown,
+            "playing" => NonTSPseudoClass::Playing,
             "popover-open" => NonTSPseudoClass::PopoverOpen,
             "read-only" => NonTSPseudoClass::ReadOnly,
             "read-write" => NonTSPseudoClass::ReadWrite,
             "required" => NonTSPseudoClass::Required,
+            "seeking" => NonTSPseudoClass::Seeking,
             "target" => NonTSPseudoClass::Target,
             "user-invalid" => NonTSPseudoClass::UserInvalid,
             "user-valid" => NonTSPseudoClass::UserValid,
@@ -669,15 +841,25 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         &self,
         name: CowRcStr<'i>,
         parser: &mut CssParser<'i, 't>,
-        after_part: bool,
+        _after_part: bool,
     ) -> Result<NonTSPseudoClass, ParseError<'i>> {
         let pseudo_class = match_ignore_ascii_case! { &name,
-            "lang" if !after_part => {
+            "lang" => {
                 NonTSPseudoClass::Lang(parser.expect_ident_or_string()?.as_ref().into())
+            },
+            "dir" => {
+                NonTSPseudoClass::Dir(Direction::parse(parser)?)
             },
             "state" => {
                 let result = AtomIdent::from(parser.expect_ident()?.as_ref());
                 NonTSPseudoClass::CustomState(CustomState(result))
+            },
+            "heading" => {
+                let result = parser.parse_comma_separated(|input| Ok(input.expect_integer()?))?;
+                if result.is_empty() {
+                    return Err(parser.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+                }
+                NonTSPseudoClass::Heading(HeadingSelectorData(result.into_boxed_slice()))
             },
             _ => return Err(parser.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone()))),
         };
@@ -696,12 +878,18 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "after" => After,
             "backdrop" => Backdrop,
             "selection" => Selection,
+            "checkmark" => Checkmark,
             "file-selector-button" => FileSelectorButton,
             "first-letter" => FirstLetter,
+            "first-line" => FirstLine,
+            "grammar-error" => GrammarError,
             "marker" => Marker,
             "details-content" => DetailsContent,
             "color-swatch" => ColorSwatch,
+            "picker-icon" => PickerIcon,
             "placeholder" => Placeholder,
+            "spelling-error" => SpellingError,
+            "view-transition" => ViewTransition,
             "-servo-text-control-inner-container" => {
                 if !self.in_user_agent_stylesheet() {
                     return Err(location.new_custom_error(SelectorParseErrorKind::UnexpectedIdent(name.clone())))
@@ -758,6 +946,57 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
         };
 
         Ok(pseudo_element)
+    }
+
+    fn parse_functional_pseudo_element<'t>(
+        &self,
+        name: CowRcStr<'i>,
+        parser: &mut CssParser<'i, 't>,
+    ) -> Result<PseudoElement, ParseError<'i>> {
+        match_ignore_ascii_case! { &name,
+            "highlight" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::Highlight(name));
+                }
+            },
+            "picker" => {
+                let picker_element = parser.expect_ident()?.as_ref();
+                if picker_element.eq_ignore_ascii_case("select") && parser.is_exhausted() {
+                    return Ok(PseudoElement::Picker);
+                }
+            },
+            "view-transition-group" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionGroup(name));
+                }
+            },
+            "view-transition-image-pair" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionImagePair(name));
+                }
+            },
+            "view-transition-old" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionOld(name));
+                }
+            },
+            "view-transition-new" => {
+                let name = AtomIdent::from(parser.expect_ident()?.as_ref());
+                if parser.is_exhausted() {
+                    return Ok(PseudoElement::ViewTransitionNew(name));
+                }
+            },
+            _ => {},
+        }
+        Err(
+            parser.new_custom_error(SelectorParseErrorKind::UnsupportedPseudoClassOrElement(
+                name,
+            )),
+        )
     }
 
     fn default_namespace(&self) -> Option<Namespace> {
@@ -826,6 +1065,8 @@ impl DerefMut for SnapshotMap {
 pub struct ServoElementSnapshot {
     /// The stored state of the element.
     pub state: Option<ElementState>,
+    /// The stored custom states of the element.
+    pub custom_states: Option<Vec<AtomIdent>>,
     /// The set of stored attributes and its values.
     pub attrs: Option<Vec<(AttrIdentifier, AttrValue)>>,
     /// The set of changed attributes and its values.
@@ -947,20 +1188,28 @@ impl ElementSnapshot for ServoElementSnapshot {
     /// Returns true if the snapshot has stored state for custom states
     #[inline]
     fn has_custom_states(&self) -> bool {
-        false
+        self.custom_states.is_some()
     }
 
     /// Returns true if the snapshot has a given CustomState
     #[inline]
-    fn has_custom_state(&self, _state: &AtomIdent) -> bool {
-        false
+    fn has_custom_state(&self, state: &AtomIdent) -> bool {
+        self.custom_states
+            .as_ref()
+            .is_some_and(|states| states.iter().any(|candidate| candidate == state))
     }
 
     #[inline]
-    fn each_custom_state<F>(&self, mut _callback: F)
+    fn each_custom_state<F>(&self, mut callback: F)
     where
         F: FnMut(&AtomIdent),
     {
+        let Some(states) = &self.custom_states else {
+            return;
+        };
+        for state in states {
+            callback(state);
+        }
     }
 }
 

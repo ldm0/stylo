@@ -9,6 +9,7 @@
 <% from data import PropertyRestrictions, to_camel_case, RULE_VALUES, SYSTEM_FONT_LONGHANDS, PRIORITARY_PROPERTIES, PRIORITARY_PROPERTY_DEPENDENCIES %>
 
 use servo_arc::{Arc, UniqueArc};
+use std::fmt::Write;
 use std::{ops, ptr, fmt, mem};
 
 #[cfg(feature = "servo")] use euclid::SideOffsets2D;
@@ -1643,7 +1644,7 @@ impl ComputedValues {
     /// Returns the pseudo-element that this style represents.
     #[cfg(feature = "servo")]
     pub fn pseudo(&self) -> Option<PseudoElement> {
-        self.pseudo
+        self.pseudo.clone()
     }
 
     /// Returns true if this is the style for a pseudo-element.
@@ -1725,6 +1726,151 @@ impl ComputedValues {
             }
             % endfor
         }
+    }
+
+    /// Writes the (resolved or computed) value of the given property as a string in `dest`.
+    pub fn computed_or_resolved_property_value(
+        &self,
+        property_id: PropertyId,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        match property_id {
+            PropertyId::Custom(name) => {
+                let Some(value) = self
+                    .custom_properties
+                    .inherited
+                    .get(&name)
+                    .or_else(|| self.custom_properties.non_inherited.get(&name))
+                else {
+                    return Ok(());
+                };
+                if let Some(c) = context {
+                    c.for_property = PropertyId::Custom(name);
+                    c.current_longhand = None;
+                    return value
+                        .clone()
+                        .to_resolved_value(c)
+                        .to_css(&mut CssWriter::new(dest));
+                }
+                value.to_css(&mut CssWriter::new(dest))
+            },
+            PropertyId::NonCustom(id) => match id.longhand_or_shorthand() {
+                Ok(longhand) => self.computed_or_resolved_value(longhand, context, dest),
+                Err(shorthand) => {
+                    if let Some(c) = context.as_deref_mut() {
+                        c.for_property = PropertyId::NonCustom(id);
+                    }
+                    self.computed_or_resolved_shorthand_value(shorthand, context, dest)
+                },
+            },
+        }
+    }
+
+    fn computed_or_resolved_shorthand_value(
+        &self,
+        shorthand: ShorthandId,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        if shorthand == ShorthandId::TextDecoration {
+            return self.computed_or_resolved_text_decoration_shorthand_value(context, dest);
+        }
+        if shorthand == ShorthandId::WhiteSpace {
+            return self.computed_or_resolved_white_space_shorthand_value(context, dest);
+        }
+
+        let mut values = Vec::new();
+        for longhand in shorthand.longhands() {
+            let mut value = String::new();
+            self.computed_or_resolved_value(longhand, context.as_deref_mut(), &mut value)?;
+            if value.is_empty() {
+                return Ok(());
+            }
+            values.push(value);
+        }
+
+        match shorthand {
+            % for shorthand in data.shorthands:
+            % if shorthand.kind == "four_sides":
+            ShorthandId::${shorthand.camel_case} => {
+                serialize_four_sides_shorthand_values(&values, dest)
+            },
+            % elif shorthand.kind == "two_properties":
+            ShorthandId::${shorthand.camel_case} => {
+                serialize_two_property_shorthand_values(&values, dest)
+            },
+            % endif
+            % endfor
+            _ => Ok(()),
+        }
+    }
+
+    fn computed_or_resolved_text_decoration_shorthand_value(
+        &self,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        let color = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::TextDecorationColor);
+                self.clone_text_decoration_color().to_resolved_value(context)
+            },
+            None => self.clone_text_decoration_color(),
+        };
+        let text_decoration_color =
+            longhands::text_decoration_color::SpecifiedValue::from_computed_value(&color);
+        let text_decoration_line =
+            longhands::text_decoration_line::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_line(),
+            );
+        let text_decoration_style =
+            longhands::text_decoration_style::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_style(),
+            );
+        let text_decoration_thickness =
+            longhands::text_decoration_thickness::SpecifiedValue::from_computed_value(
+                &self.clone_text_decoration_thickness(),
+            );
+        let longhands = shorthands::text_decoration::LonghandsToSerialize {
+            text_decoration_color: &text_decoration_color,
+            text_decoration_line: &text_decoration_line,
+            text_decoration_style: &text_decoration_style,
+            text_decoration_thickness: &text_decoration_thickness,
+        };
+        longhands.to_css(&mut CssWriter::new(dest))
+    }
+
+    fn computed_or_resolved_white_space_shorthand_value(
+        &self,
+        mut context: Option<&mut resolved::Context>,
+        dest: &mut CssStringWriter,
+    ) -> fmt::Result {
+        let text_wrap_mode = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::TextWrapMode);
+                self.clone_text_wrap_mode().to_resolved_value(context)
+            },
+            None => self.clone_text_wrap_mode(),
+        };
+        let white_space_collapse = match context.as_deref_mut() {
+            Some(context) => {
+                context.current_longhand = Some(LonghandId::WhiteSpaceCollapse);
+                self.clone_white_space_collapse().to_resolved_value(context)
+            },
+            None => self.clone_white_space_collapse(),
+        };
+        let text_wrap_mode =
+            longhands::text_wrap_mode::SpecifiedValue::from_computed_value(&text_wrap_mode);
+        let white_space_collapse =
+            longhands::white_space_collapse::SpecifiedValue::from_computed_value(
+                &white_space_collapse,
+            );
+        let longhands = shorthands::white_space::LonghandsToSerialize {
+            text_wrap_mode: &text_wrap_mode,
+            white_space_collapse: &white_space_collapse,
+        };
+        longhands.to_css(&mut CssWriter::new(dest))
     }
 
     /// Returns the computed value of the given longhand as a
@@ -1833,6 +1979,46 @@ impl ComputedValues {
     pub fn transition_properties<'a>(&'a self) -> TransitionPropertyIterator<'a> {
         TransitionPropertyIterator::from_style(self)
     }
+}
+
+fn serialize_four_sides_shorthand_values(
+    values: &[String],
+    dest: &mut CssStringWriter,
+) -> fmt::Result {
+    if values.len() != 4 {
+        return Ok(());
+    }
+    dest.write_str(&values[0])?;
+    if values[1] == values[0] && values[2] == values[0] && values[3] == values[0] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[1])?;
+    if values[2] == values[0] && values[3] == values[1] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[2])?;
+    if values[3] == values[1] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[3])
+}
+
+fn serialize_two_property_shorthand_values(
+    values: &[String],
+    dest: &mut CssStringWriter,
+) -> fmt::Result {
+    if values.len() != 2 {
+        return Ok(());
+    }
+    dest.write_str(&values[0])?;
+    if values[1] == values[0] {
+        return Ok(());
+    }
+    dest.write_char(' ')?;
+    dest.write_str(&values[1])
 }
 
 #[cfg(feature = "servo")]
@@ -2510,7 +2696,7 @@ impl<'a> StyleBuilder<'a> {
 
     /// Returns whether we're a pseudo-elements style.
     pub fn is_pseudo_element(&self) -> bool {
-        self.pseudo.map_or(false, |p| !p.is_anon_box())
+        self.pseudo.as_ref().map_or(false, |p| !p.is_anon_box())
     }
 
     /// Returns the style we're getting reset properties from.
@@ -2837,7 +3023,7 @@ macro_rules! longhand_properties_idents {
 #[cfg(feature = "gecko")]
 size_of_test!(ComputedValues, 248);
 #[cfg(feature = "servo")]
-size_of_test!(ComputedValues, 232);
+size_of_test!(ComputedValues, 240);
 
 // FFI relies on this.
 size_of_test!(Option<Arc<ComputedValues>>, 8);

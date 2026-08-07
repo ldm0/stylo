@@ -712,14 +712,14 @@ trait PrivateMatchMethods: TElement {
             context,
             old_values.as_deref(),
             new_values,
-            pseudo_element,
+            pseudo_element.clone(),
         );
 
         let might_need_transitions_update = self.might_need_transitions_update(
             context,
             old_values.as_deref(),
             new_values,
-            pseudo_element,
+            pseudo_element.clone(),
         );
 
         let mut after_change_style = None;

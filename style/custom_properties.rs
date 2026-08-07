@@ -1195,6 +1195,25 @@ fn parse_declaration_value_block<'i, 't>(
                                 name.as_ref()
                             });
 
+                        // Indexed environment variables accept one or more non-negative
+                        // integer indices between their name and optional fallback.
+                        if substitution_kind == SubstitutionFunctionKind::Env {
+                            loop {
+                                let state = input.state();
+                                match input.next() {
+                                    Ok(&Token::Number {
+                                        has_sign: false,
+                                        int_value: Some(index),
+                                        ..
+                                    }) if index >= 0 => {},
+                                    _ => {
+                                        input.reset(&state);
+                                        break;
+                                    },
+                                }
+                            }
+                        }
+
                         let attribute_kind = if substitution_kind == SubstitutionFunctionKind::Attr
                         {
                             parse_attr_type(input)

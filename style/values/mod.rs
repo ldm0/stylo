@@ -266,6 +266,28 @@ impl<Set: string_cache::StaticAtomSet> PartialEq for GenericAtomIdent<Set> {
 }
 
 #[cfg(feature = "servo")]
+impl<Set: string_cache::StaticAtomSet> serde::Serialize for GenericAtomIdent<Set> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&*self.0)
+    }
+}
+
+#[cfg(feature = "servo")]
+impl<'de, Set: string_cache::StaticAtomSet> serde::Deserialize<'de> for GenericAtomIdent<Set> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value =
+            <std::borrow::Cow<'de, str> as serde::Deserialize<'de>>::deserialize(deserializer)?;
+        Ok(Self(string_cache::Atom::from(&*value)))
+    }
+}
+
+#[cfg(feature = "servo")]
 impl<Set: string_cache::StaticAtomSet> Clone for GenericAtomIdent<Set> {
     fn clone(&self) -> Self {
         Self(self.0.clone())

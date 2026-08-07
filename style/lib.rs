@@ -86,6 +86,8 @@ pub mod font_metrics;
 pub mod gecko_bindings;
 pub mod global_style_data;
 pub mod invalidation;
+/// Lightmount-facing selector invalidation hooks.
+pub mod lightmount_invalidation;
 #[allow(missing_docs)] // TODO.
 pub mod logical_geometry;
 pub mod matching;

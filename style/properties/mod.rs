@@ -1476,7 +1476,7 @@ pub struct SourcePropertyDeclaration {
 #[cfg(feature = "gecko")]
 size_of_test!(SourcePropertyDeclaration, 632);
 #[cfg(feature = "servo")]
-size_of_test!(SourcePropertyDeclaration, 568);
+size_of_test!(SourcePropertyDeclaration, 600);
 
 impl SourcePropertyDeclaration {
     /// Create one with a single PropertyDeclaration.

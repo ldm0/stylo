@@ -5,7 +5,9 @@
 //! Specified types for counter properties.
 
 use crate::counter_style::CounterStyle;
+use crate::derives::*;
 use crate::parser::{Parse, ParserContext};
+use crate::values::computed::{Context, ToComputedValue};
 use crate::values::generics::counters as generics;
 use crate::values::generics::counters::CounterPair;
 use crate::values::specified::image::Image;
@@ -14,7 +16,8 @@ use crate::values::specified::Integer;
 use crate::values::CustomIdent;
 use cssparser::{match_ignore_ascii_case, Parser, Token};
 use selectors::parser::SelectorParseErrorKind;
-use style_traits::{ParseError, StyleParseErrorKind};
+use std::fmt::{self, Write};
+use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
 
 #[derive(PartialEq)]
 enum CounterType {
@@ -144,6 +147,87 @@ pub type Content = generics::GenericContent<Image>;
 
 /// The specified value for a content item in the `content` property.
 pub type ContentItem = generics::GenericContentItem<Image>;
+
+/// A value for the `bookmark-level` property.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToShmem, ToTyped)]
+#[repr(C, u8)]
+#[typed(todo_derive_fields)]
+pub enum BookmarkLevel {
+    /// `none`
+    None,
+    /// A positive integer outline level.
+    Level(Integer),
+}
+
+impl Parse for BookmarkLevel {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::None);
+        }
+        Ok(Self::Level(Integer::parse_positive(context, input)?))
+    }
+}
+
+impl ToCss for BookmarkLevel {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::None => dest.write_str("none"),
+            Self::Level(ref level) => level.to_css(dest),
+        }
+    }
+}
+
+impl ToComputedValue for BookmarkLevel {
+    type ComputedValue = Self;
+
+    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
+        self.clone()
+    }
+
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        computed.clone()
+    }
+}
+
+impl crate::values::resolved::ToResolvedValue for BookmarkLevel {
+    type ResolvedValue = Self;
+
+    fn to_resolved_value(self, _: &crate::values::resolved::Context) -> Self::ResolvedValue {
+        self
+    }
+
+    fn from_resolved_value(resolved: Self::ResolvedValue) -> Self {
+        resolved
+    }
+}
+
+/// A value for the `bookmark-state` property.
+#[derive(
+    Clone,
+    Debug,
+    MallocSizeOf,
+    Parse,
+    PartialEq,
+    SpecifiedValueInfo,
+    ToComputedValue,
+    ToCss,
+    ToResolvedValue,
+    ToShmem,
+    ToTyped,
+)]
+#[repr(u8)]
+pub enum BookmarkState {
+    /// `open`
+    Open,
+    /// `closed`
+    Closed,
+}
 
 impl Content {
     fn parse_counter_style(context: &ParserContext, input: &mut Parser) -> CounterStyle {

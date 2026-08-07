@@ -10,17 +10,20 @@ use crate::properties::longhands::writing_mode::computed_value::T as SpecifiedWr
 use crate::values::computed;
 use crate::values::computed::text::TextEmphasisStyle as ComputedTextEmphasisStyle;
 use crate::values::computed::{Context, ToComputedValue};
+use crate::values::generics::calc::CalcUnits;
 use crate::values::generics::text::{
     GenericHyphenateLimitChars, GenericInitialLetter, GenericTextDecorationInset,
     GenericTextDecorationLength, GenericTextIndent,
 };
 use crate::values::generics::NumberOrAuto;
+use crate::values::specified::calc::CalcNode;
 use crate::values::specified::length::{Length, LengthPercentage};
-use crate::values::specified::{AllowQuirks, Integer, Number};
+use crate::values::specified::{AllowQuirks, Integer, NonNegativePercentage, Number};
 use crate::Zero;
-use cssparser::Parser;
+use cssparser::{Parser, Token};
 use icu_segmenter::GraphemeClusterSegmenter;
 use std::fmt::{self, Write};
+use style_traits::values::specified::AllowedNumericType;
 use style_traits::values::SequenceWriter;
 use style_traits::{CssWriter, ParseError, StyleParseErrorKind, ToCss};
 use style_traits::{KeywordsCollectFn, SpecifiedValueInfo};
@@ -123,6 +126,103 @@ pub enum HyphenateCharacter {
     Auto,
     /// `<string>`
     String(crate::OwnedStr),
+}
+
+/// A value for the `text-size-adjust` property.
+#[derive(Clone, Debug, MallocSizeOf, PartialEq, SpecifiedValueInfo, ToShmem, ToTyped)]
+#[repr(C, u8)]
+#[typed(todo_derive_fields)]
+pub enum TextSizeAdjust {
+    /// `auto`
+    Auto,
+    /// `none`
+    None,
+    /// A non-negative percentage that can be resolved at parse time.
+    Percentage(NonNegativePercentage),
+    /// A validated percentage calculation that needs element context.
+    Dynamic(crate::OwnedStr),
+}
+
+impl TextSizeAdjust {
+    /// Returns the initial value.
+    pub fn auto() -> Self {
+        Self::Auto
+    }
+}
+
+impl Parse for TextSizeAdjust {
+    fn parse<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+    ) -> Result<Self, ParseError<'i>> {
+        if input.try_parse(|i| i.expect_ident_matching("auto")).is_ok() {
+            return Ok(Self::Auto);
+        }
+        if input.try_parse(|i| i.expect_ident_matching("none")).is_ok() {
+            return Ok(Self::None);
+        }
+        if let Ok(percentage) = input.try_parse(|i| NonNegativePercentage::parse(context, i)) {
+            return Ok(Self::Percentage(percentage));
+        }
+
+        let start = input.position();
+        let location = input.current_source_location();
+        let Token::Function(ref name) = *input.next()? else {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        };
+        let function = CalcNode::math_function(context, name, location)?;
+        let calc =
+            CalcNode::parse_percentage(context, input, AllowedNumericType::NonNegative, function)?;
+        if calc
+            .node
+            .unit()
+            .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?
+            != CalcUnits::PERCENTAGE
+        {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(Self::Dynamic(
+            input.slice_from(start).trim().to_owned().into(),
+        ))
+    }
+}
+
+impl ToCss for TextSizeAdjust {
+    fn to_css<W>(&self, dest: &mut CssWriter<W>) -> fmt::Result
+    where
+        W: Write,
+    {
+        match *self {
+            Self::Auto => dest.write_str("auto"),
+            Self::None => dest.write_str("none"),
+            Self::Percentage(ref percentage) => percentage.to_css(dest),
+            Self::Dynamic(ref value) => dest.write_str(value),
+        }
+    }
+}
+
+impl ToComputedValue for TextSizeAdjust {
+    type ComputedValue = Self;
+
+    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
+        self.clone()
+    }
+
+    fn from_computed_value(computed: &Self::ComputedValue) -> Self {
+        computed.clone()
+    }
+}
+
+impl crate::values::resolved::ToResolvedValue for TextSizeAdjust {
+    type ResolvedValue = Self;
+
+    fn to_resolved_value(self, _: &crate::values::resolved::Context) -> Self::ResolvedValue {
+        self
+    }
+
+    fn from_resolved_value(resolved: Self::ResolvedValue) -> Self {
+        resolved
+    }
 }
 
 /// A value for the `hyphenate-limit-chars` property.

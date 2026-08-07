@@ -716,9 +716,9 @@ where
             Component::AttributeOther(ref attr_selector) => attr_selector.size_of(ops),
             Component::Negation(ref components) => components.unconditional_size_of(ops),
             Component::NonTSPseudoClass(ref pseudo) => (*pseudo).size_of(ops),
-            Component::Slotted(ref selector) | Component::Host(Some(ref selector)) => {
-                selector.unconditional_size_of(ops)
-            },
+            Component::Slotted(ref selector)
+            | Component::Host(Some(ref selector))
+            | Component::HostContext(ref selector) => selector.unconditional_size_of(ops),
             Component::Is(ref list) | Component::Where(ref list) => list.unconditional_size_of(ops),
             Component::Has(ref relative_selectors) => relative_selectors.size_of(ops),
             Component::NthOf(ref nth_of_data) => nth_of_data.size_of(ops),

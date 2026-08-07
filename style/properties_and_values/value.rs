@@ -531,9 +531,9 @@ impl<'a> Parser<'a> {
             DataType::Color => {
                 SpecifiedValueComponent::Color(specified::Color::parse(context, input)?)
             },
-            DataType::Image => {
-                SpecifiedValueComponent::Image(specified::Image::parse_forbid_none(context, input)?)
-            },
+            DataType::Image => SpecifiedValueComponent::Image(
+                specified::Image::parse_for_registered_custom_property(context, input)?,
+            ),
             DataType::Url => {
                 SpecifiedValueComponent::Url(specified::url::SpecifiedUrl::parse(context, input)?)
             },

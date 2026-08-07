@@ -202,14 +202,13 @@ spec="https://drafts.csswg.org/css-overflow/#propdef-overflow"
 kind = "two_properties"
 
 [overscroll-behavior]
-servo_pref = "layout.unimplemented"
 sub_properties = ["overscroll-behavior-x", "overscroll-behavior-y"]
 spec = "https://wicg.github.io/overscroll-behavior/#overscroll-behavior-properties"
 kind = "two_properties"
 
 [container]
-engine = "gecko"
 sub_properties = ["container-name", "container-type"]
+servo_pref = "layout.container-queries.enabled"
 spec = "https://drafts.csswg.org/css-contain-3/#container-shorthand"
 
 [vertical-align]
@@ -217,19 +216,16 @@ sub_properties = ["alignment-baseline", "baseline-shift", "baseline-source"]
 spec = "https://drafts.csswg.org/css-inline-3/#transverse-alignment"
 
 [page-break-before]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-before"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
 
 [page-break-after]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-after"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
 
 [page-break-inside]
-engine = "gecko"
 flags = "IS_LEGACY_SHORTHAND"
 sub_properties = ["break-inside"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
@@ -360,7 +356,7 @@ spec = "https://drafts.csswg.org/css-transitions/#propdef-transition"
 extra_prefixes = ["moz:layout.css.prefixes.transitions", "webkit"]
 
 [animation]
-sub_properties = ["animation-name", "animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-timeline", "animation-range-start", "animation-range-end"]
+sub_properties = ["animation-duration", "animation-timing-function", "animation-delay", "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state", "animation-name", "animation-timeline", "animation-range-start", "animation-range-end"]
 spec = "https://drafts.csswg.org/css-animations/#propdef-animation"
 extra_prefixes = ["moz:layout.css.prefixes.animations", "webkit"]
 rule_types_allowed = ["style"]
@@ -378,9 +374,9 @@ spec = "https://drafts.csswg.org/scroll-animations-1/#view-timeline-shorthand"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
 
 [animation-range]
-engine = "gecko"
 sub_properties = ["animation-range-start", "animation-range-end"]
 spec = "https://drafts.csswg.org/scroll-animations-1/#animation-range"
+servo_pref = "layout.css.scroll-driven-animations.enabled"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
 
 [list-style]
@@ -495,6 +491,7 @@ sub_properties = [
   "font-variant-alternates",
   "font-variant-caps",
   "font-variant-east-asian",
+  "font-variant-emoji",
   "font-variant-ligatures",
   "font-variant-numeric",
   "font-variant-position",
@@ -511,7 +508,6 @@ sub_properties = [
 ]
 extra_gecko_sub_properties = [
   "font-size-adjust",
-  "font-variant-emoji",
 ]
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font"
 derive_value_info = false
@@ -521,11 +517,11 @@ sub_properties = [
     "font-variant-alternates",
     "font-variant-caps",
     "font-variant-east-asian",
+    "font-variant-emoji",
     "font-variant-ligatures",
     "font-variant-numeric",
     "font-variant-position"
 ]
-extra_gecko_sub_properties = ["font-variant-emoji"]
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font-variant"
 
 [font-synthesis]

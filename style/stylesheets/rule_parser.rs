@@ -355,7 +355,7 @@ impl<'a, 'i> AtRuleParser<'i> for TopLevelRuleParser<'a, 'i> {
                 let url_string = input.expect_url_or_string()?.as_ref().to_owned();
                 let url = CssUrl::new_from_untainted_string(url_string, &self.context, CorsMode::None);
 
-                let (layer, supports) = ImportRule::parse_layer_and_supports(input, &mut self.context);
+                let (layer, supports) = ImportRule::parse_layer_and_supports(input, &mut self.context)?;
 
                 let media = MediaList::parse(&mut self.context, input);
                 let media = Arc::new(self.shared_lock.wrap(media));
@@ -719,14 +719,8 @@ impl<'a, 'i> AtRuleParser<'i> for NestedRuleParser<'a, 'i> {
             "font-face" => {
                 AtRulePrelude::FontFace
             },
-            "container" if cfg!(feature = "gecko") => {
-                let conditions = input.parse_comma_separated(|input| {
-                    ContainerCondition::parse(&self.context, input)
-                })?;
-                // Container rules must have at least one condition.
-                debug_assert!(!conditions.is_empty());
-                let conditions = ArcSlice::from_iter(conditions.into_iter());
-                AtRulePrelude::Container(conditions)
+            "container" if static_prefs::pref!("layout.container-queries.enabled") => {
+                AtRulePrelude::Container(ContainerConditions::parse(&self.context, input)?.0)
             },
             "layer" => {
                 let names = input.try_parse(|input| {
@@ -744,7 +738,7 @@ impl<'a, 'i> AtRuleParser<'i> for NestedRuleParser<'a, 'i> {
                 let name = DashedIdent::parse(&self.context, input)?;
                 AtRulePrelude::FontPaletteValues(name)
             },
-            "counter-style" if cfg!(feature = "gecko") => {
+            "counter-style" => {
                 let name = parse_counter_style_name_definition(input)?;
                 AtRulePrelude::CounterStyle(name)
             },
@@ -764,7 +758,7 @@ impl<'a, 'i> AtRuleParser<'i> for NestedRuleParser<'a, 'i> {
                 let name = KeyframesName::parse(&self.context, input)?;
                 AtRulePrelude::Keyframes(name, prefix)
             },
-            "page" if cfg!(feature = "gecko") => {
+            "page" => {
                 AtRulePrelude::Page(
                     input.try_parse(|i| PageSelectors::parse(&self.context, i)).unwrap_or_default()
                 )

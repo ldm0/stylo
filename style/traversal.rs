@@ -334,7 +334,11 @@ where
         element,
         context,
         rule_inclusion,
-        PseudoElementResolution::Force,
+        if pseudo.is_some() {
+            PseudoElementResolution::Force
+        } else {
+            PseudoElementResolution::IfApplicable
+        },
     )
     .resolve_style(style.as_deref(), layout_parent_style.as_deref())
     .into();

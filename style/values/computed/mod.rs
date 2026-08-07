@@ -69,7 +69,9 @@ pub use self::color::{
 };
 pub use self::column::ColumnCount;
 pub use self::corner_shape::{CornerShape, CornerShapeRect};
-pub use self::counters::{Content, ContentItem, CounterIncrement, CounterReset, CounterSet};
+pub use self::counters::{
+    BookmarkLevel, BookmarkState, Content, ContentItem, CounterIncrement, CounterReset, CounterSet,
+};
 pub use self::easing::TimingFunction;
 pub use self::effects::{BoxShadow, Filter, SimpleShadow};
 pub use self::flex::FlexBasis;
@@ -120,7 +122,7 @@ pub use self::text::{TextAlign, TextAlignLast, TextEmphasisPosition, TextEmphasi
 pub use self::text::{TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};
 pub use self::text::{
-    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextJustify,
+    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextJustify, TextSizeAdjust,
 };
 pub use self::time::Time;
 pub use self::transform::{Rotate, Scale, Transform, TransformBox, TransformOperation};

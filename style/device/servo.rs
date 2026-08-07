@@ -13,7 +13,7 @@ use crate::media_queries::MediaType;
 use crate::properties::style_structs::Font;
 use crate::properties::ComputedValues;
 use crate::queries::values::PrefersColorScheme;
-use crate::servo::media_features::PointerCapabilities;
+use crate::servo::media_features::{PointerCapabilities, PrefersContrast};
 use crate::values::computed::font::GenericFontFamily;
 use crate::values::computed::{
     CSSPixelLength, Length, LineHeight, LinkParameters, NonNegativeLength,
@@ -53,6 +53,33 @@ pub trait FontMetricsProvider: Debug + Sync {
     fn base_size_for_generic(&self, generic: GenericFontFamily) -> Length;
 }
 
+/// Servo media feature values supplied by the embedding runtime.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ServoMediaFeaturePreferences {
+    /// Whether the user prefers reduced motion.
+    pub prefers_reduced_motion: bool,
+    /// Whether the user prefers reduced data usage.
+    pub prefers_reduced_data: bool,
+    /// Whether the user prefers reduced transparency.
+    pub prefers_reduced_transparency: bool,
+    /// The user's contrast preference.
+    pub prefers_contrast: PrefersContrast,
+    /// The current forced colors state.
+    pub forced_colors: ForcedColors,
+}
+
+impl Default for ServoMediaFeaturePreferences {
+    fn default() -> Self {
+        Self {
+            prefers_reduced_motion: false,
+            prefers_reduced_data: false,
+            prefers_reduced_transparency: false,
+            prefers_contrast: PrefersContrast::NoPreference,
+            forced_colors: ForcedColors::None,
+        }
+    }
+}
+
 #[derive(Debug, MallocSizeOf)]
 pub(super) struct ExtraDeviceData {
     /// The current media type used by de device.
@@ -75,6 +102,9 @@ pub(super) struct ExtraDeviceData {
     /// The union of the capabilities of all pointer inputs
     #[ignore_malloc_size_of = "Pure stack type"]
     all_pointer_capabilities: PointerCapabilities,
+    /// Additional user and emulation media feature preferences.
+    #[ignore_malloc_size_of = "Pure stack type"]
+    media_feature_preferences: ServoMediaFeaturePreferences,
     /// An implementation of a trait which implements support for querying font metrics.
     #[ignore_malloc_size_of = "Owned by embedder"]
     font_metrics_provider: Box<dyn FontMetricsProvider>,
@@ -121,6 +151,7 @@ impl Device {
                 prefers_color_scheme,
                 primary_pointer_capabilities,
                 all_pointer_capabilities,
+                media_feature_preferences: ServoMediaFeaturePreferences::default(),
                 font_metrics_provider,
             },
         }
@@ -278,7 +309,7 @@ impl Device {
 
     /// Returns whether document colors are enabled.
     pub fn forced_colors(&self) -> ForcedColors {
-        ForcedColors::None
+        self.extra.media_feature_preferences.forced_colors
     }
 
     /// Returns the default background color.
@@ -303,6 +334,20 @@ impl Device {
     /// Returns the color scheme of this [`Device`].
     pub fn color_scheme(&self) -> PrefersColorScheme {
         self.extra.prefers_color_scheme
+    }
+
+    /// Returns the current media feature preferences.
+    pub fn media_feature_preferences(&self) -> ServoMediaFeaturePreferences {
+        self.extra.media_feature_preferences
+    }
+
+    /// Set the current media feature preferences.
+    ///
+    /// Note that this does not update any associated `Stylist`. For this you must call
+    /// `Stylist::media_features_change_changed_style` and
+    /// `Stylist::force_stylesheet_origins_dirty`.
+    pub fn set_media_feature_preferences(&mut self, preferences: ServoMediaFeaturePreferences) {
+        self.extra.media_feature_preferences = preferences;
     }
 
     /// Set the [`PointerCapbabilities`] value for the primary pointer on this [`Device`]

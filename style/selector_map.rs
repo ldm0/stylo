@@ -764,6 +764,7 @@ fn specific_bucket_for<'a>(
         // match the slotted <span>.
         Component::Slotted(ref selector) => find_bucket(selector.iter(), disjoint_buckets),
         Component::Host(Some(ref selector)) => find_bucket(selector.iter(), disjoint_buckets),
+        Component::HostContext(..) => Bucket::Universal,
         Component::Is(ref list) | Component::Where(ref list) => {
             if list.len() == 1 {
                 find_bucket(list.slice()[0].iter(), disjoint_buckets)

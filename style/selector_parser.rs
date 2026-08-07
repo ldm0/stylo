@@ -214,7 +214,7 @@ impl<T> PerPseudoElementMap<T> {
 /// Values for the :dir() pseudo class
 ///
 /// "ltr" and "rtl" values are normalized to lowercase.
-#[derive(Clone, Debug, Eq, MallocSizeOf, PartialEq, ToShmem)]
+#[derive(Clone, Debug, Eq, Hash, MallocSizeOf, PartialEq, ToShmem)]
 pub struct Direction(pub Atom);
 
 /// Horizontal values for the :dir() pseudo class
@@ -278,29 +278,44 @@ mod tests {
         map.set(&PseudoElement::After, 3);
         assert_eq!(map.get(&PseudoElement::After), Some(3).as_ref());
 
-        assert_eq!(map.get(&PseudoElement::MozRubyText), None);
-        map.set(&PseudoElement::MozRubyText, 8);
-        assert_eq!(map.get(&PseudoElement::MozRubyText), Some(8).as_ref());
+        assert_eq!(map.get(&PseudoElement::Marker), None);
+        map.set(&PseudoElement::Marker, 8);
+        assert_eq!(map.get(&PseudoElement::Marker), Some(8).as_ref());
 
         assert_eq!(
-            map.get_or_insert_with(&PseudoElement::MozRubyText, || { 10 }),
+            map.get_or_insert_with(&PseudoElement::Marker, || { 10 }),
             &8
         );
-        map.set(&PseudoElement::MozRubyText, 9);
-        assert_eq!(map.get(&PseudoElement::MozRubyText), Some(9).as_ref());
+        map.set(&PseudoElement::Marker, 9);
+        assert_eq!(map.get(&PseudoElement::Marker), Some(9).as_ref());
 
         assert_eq!(
-            map.get_or_insert_with(&PseudoElement::FirstLine, || { 10 }),
+            map.get_or_insert_with(&PseudoElement::FirstLetter, || { 10 }),
             &10
         );
-        assert_eq!(map.get(&PseudoElement::FirstLine), Some(10).as_ref());
+        assert_eq!(map.get(&PseudoElement::FirstLetter), Some(10).as_ref());
     }
 
     #[test]
     fn can_iter() {
         let mut map = <PerPseudoElementMap<i32>>::default();
         map.set(&PseudoElement::After, 3);
-        map.set(&PseudoElement::MozRubyText, 8);
+        map.set(&PseudoElement::Marker, 8);
         assert_eq!(map.iter().cloned().collect::<Vec<_>>(), vec![3, 8]);
+    }
+
+    #[test]
+    fn servo_parser_accepts_details_content_selector_continuations() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        let parse =
+            |selector| SelectorParser::parse_author_origin_no_namespace(selector, &url_data);
+
+        assert!(parse("::details-content::first-line").is_ok());
+        assert!(parse("::details-content:hover").is_ok());
+        assert!(parse("::details-content:lang(en)").is_ok());
+
+        assert!(parse("::details-content:nth-of-type(slot)").is_err());
+        assert!(parse("::details-content:has(a)").is_err());
+        assert!(parse("::details-content::part(a)").is_err());
     }
 }

@@ -193,7 +193,7 @@ where
 }
 
 /// Sets the appropriate hint after invalidating the style of a sibling.
-pub fn invalidated_sibling<E>(element: E, of: E)
+pub fn invalidated_sibling<E>(element: E, of: E) -> bool
 where
     E: TElement,
 {
@@ -203,7 +203,7 @@ where
         "Should be siblings"
     );
     if !invalidated_self(element) {
-        return;
+        return false;
     }
     if element.traversal_parent() != of.traversal_parent() {
         let parent = element.as_node().parent_element_or_host();
@@ -215,6 +215,7 @@ where
             propagate_dirty_bit_up_to(e, element)
         }
     }
+    true
 }
 
 impl<'a, 'b: 'a, E: 'a> InvalidationProcessor<'a, 'a, E>
