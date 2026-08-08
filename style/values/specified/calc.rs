@@ -24,7 +24,7 @@ use crate::values::specified::length::NoCalcLength;
 use crate::values::specified::{
     NoCalcAngle, NoCalcNumber, NoCalcPercentage, NoCalcResolution, NoCalcTime, TreeCountingFunction,
 };
-use crate::values::DashedIdent;
+use crate::values::{CSSFloat, DashedIdent};
 use cssparser::{match_ignore_ascii_case, CowRcStr, Parser, Token};
 use debug_unreachable::debug_unreachable;
 use smallvec::SmallVec;
@@ -820,6 +820,17 @@ pub enum CalcNodeParseInPlaceOperations {
 /// A calc node representation for specified values.
 pub type CalcNode = generic::GenericCalcNode<Leaf>;
 impl CalcNode {
+    /// Returns whether this expression contains any font-relative length.
+    pub fn has_font_relative_length(&self) -> bool {
+        let mut found = false;
+        let _ = self.map_leaves(|leaf| {
+            found |=
+                matches!(leaf, Leaf::Length(length) if length.length_unit().is_font_relative());
+            leaf.clone()
+        });
+        found
+    }
+
     /// Tries to parse a single element in the expression, that is, a
     /// `<length>`, `<angle>`, `<time>`, `<percentage>`, `<resolution>`, etc.
     ///
@@ -1439,6 +1450,35 @@ impl CalcNode {
         }
     }
 
+    /// Resolves a number expression against computed length context.
+    pub fn to_number_with_context(&self, context: &computed::Context) -> Result<CSSFloat, ()> {
+        use crate::values::computed::calc::ComputedLeaf;
+
+        let mut unsupported = false;
+        let node = self.map_leaves(|leaf| match leaf {
+            Leaf::Number(number) => ComputedLeaf::Number(number.value()),
+            Leaf::Percentage(percentage) => {
+                ComputedLeaf::Percentage(crate::values::computed::Percentage(percentage.get()))
+            },
+            Leaf::Length(length) => ComputedLeaf::Length(length.to_computed_value(context)),
+            Leaf::Angle(..)
+            | Leaf::Time(..)
+            | Leaf::Resolution(..)
+            | Leaf::ColorComponent(..)
+            | Leaf::TreeCountingFunction(..) => {
+                unsupported = true;
+                ComputedLeaf::Number(0.0)
+            },
+        });
+        if unsupported {
+            return Err(());
+        }
+        match node.resolve()? {
+            ComputedLeaf::Number(number) => Ok(number),
+            _ => Err(()),
+        }
+    }
+
     /// Given a function name, and the location from where the token came from,
     /// return a mathematical function corresponding to that name or an error.
     #[inline]
@@ -1520,6 +1560,28 @@ impl CalcNode {
         )?
         .into_length_or_percentage(clamping_mode)
         .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+    }
+
+    /// Convenience parsing function for `<number>`.
+    pub fn parse_number_node<'i, 't>(
+        context: &ParserContext,
+        input: &mut Parser<'i, 't>,
+        function: MathFunction,
+    ) -> Result<Self, ParseError<'i>> {
+        let node = Self::parse(
+            context,
+            input,
+            function,
+            CalcParseFlags::new(CalcUnits::ALL),
+        )?;
+        if node
+            .unit()
+            .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))?
+            != CalcUnits::empty()
+        {
+            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        }
+        Ok(node)
     }
 
     /// Convenience parsing function for `<number>`.
