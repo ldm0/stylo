@@ -411,7 +411,6 @@ impl generic::CalcNodeLeaf for Leaf {
     fn new_angle_from_radians(radians: f32) -> Self {
         Self::Angle(NoCalcAngle::from_degrees(radians.to_degrees()))
     }
-
     fn new_number(value: f32) -> Self {
         Self::Number(NoCalcNumber::new(value))
     }
@@ -1275,6 +1274,10 @@ impl CalcNode {
                         right: &CalcNode,
                         in_place_operations: CalcNodeParseInPlaceOperations,
                     ) -> InPlaceDivisionResult {
+                        match right.unit() {
+                            Ok(unit) if unit.is_empty() => {},
+                            _ => return InPlaceDivisionResult::Invalid,
+                        }
                         if in_place_operations == CalcNodeParseInPlaceOperations::No {
                             return InPlaceDivisionResult::Unchanged;
                         }
@@ -1287,21 +1290,14 @@ impl CalcNode {
                                     }
                                     return InPlaceDivisionResult::Merged;
                                 }
-                            } else {
-                                // Unresolved components that are numbers are valid denominators,
-                                // but they can't resolve right now.
-                                return if resolved.unit().is_empty() {
-                                    InPlaceDivisionResult::Unchanged
-                                } else {
-                                    InPlaceDivisionResult::Invalid
-                                };
                             }
                         }
                         InPlaceDivisionResult::Unchanged
                     }
 
-                    // The right hand side of a division *must* be a number, so if we can
-                    // already resolve it, then merge it with the last node on the product list.
+                    // If the right hand side is already a number, merge it with the last node on
+                    // the product list. Otherwise keep unresolved number-like denominators as
+                    // inverted nodes so tree-counting math can resolve them later.
                     // We can unwrap here, becuase we start the function by adding a node to
                     // the list.
                     match try_division_in_place(
@@ -1590,5 +1586,45 @@ impl CalcNode {
         )?
         .into_resolution()
         .map_err(|()| input.new_custom_error(StyleParseErrorKind::UnspecifiedError))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::QuirksMode;
+    use crate::custom_properties::AttrTaint;
+    use crate::stylesheets::{CssRuleType, Origin, UrlExtraData};
+    use crate::values::specified::LengthPercentage;
+    use cssparser::{Parser, ParserInput};
+    use style_traits::ParsingMode;
+
+    fn length_percentage_parses(value: &str) -> bool {
+        let url_data = UrlExtraData::from(url::Url::parse("about:blank").unwrap());
+        let context = ParserContext::new(
+            Origin::Author,
+            &url_data,
+            Some(CssRuleType::Style),
+            ParsingMode::DEFAULT,
+            QuirksMode::NoQuirks,
+            /* namespaces = */ Default::default(),
+            None,
+            None,
+            AttrTaint::default(),
+        );
+        let mut input = ParserInput::new(value);
+        let mut parser = Parser::new(&mut input);
+        parser
+            .parse_entirely(|input| LengthPercentage::parse(&context, input))
+            .is_ok()
+    }
+
+    #[test]
+    fn web_exposed_calc_division_requires_number_denominator() {
+        assert!(length_percentage_parses("calc(5px / 2)"));
+        assert!(length_percentage_parses("calc((10% + 1em) * 0.5)"));
+        assert!(!length_percentage_parses("calc(5px / 1px)"));
+        assert!(!length_percentage_parses("calc(5px * 10lh / 1px)"));
+        assert!(!length_percentage_parses("calc(1em / 1rem * 1px)"));
     }
 }

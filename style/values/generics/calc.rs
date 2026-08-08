@@ -442,6 +442,145 @@ impl CalcUnits {
     }
 }
 
+fn product_unit<L: CalcNodeLeaf>(children: &[CalcNode<L>]) -> Result<CalcUnits, ()> {
+    let mut length_like_exponent = 0i8;
+    let mut positive_length_like_units = CalcUnits::empty();
+    let mut other_exponents = [
+        (CalcUnits::ANGLE, 0i8),
+        (CalcUnits::TIME, 0i8),
+        (CalcUnits::RESOLUTION, 0i8),
+    ];
+
+    for child in children {
+        accumulate_product_unit(
+            child,
+            1,
+            &mut length_like_exponent,
+            &mut positive_length_like_units,
+            &mut other_exponents,
+        )?;
+    }
+
+    let mut result = CalcUnits::empty();
+    match length_like_exponent {
+        0 => {},
+        1 => {
+            result |= positive_length_like_units;
+        },
+        _ => return Err(()),
+    }
+
+    for (unit, exponent) in other_exponents {
+        match exponent {
+            0 => {},
+            1 => result |= unit,
+            _ => return Err(()),
+        }
+    }
+
+    if result.intersects(CalcUnits::LENGTH_PERCENTAGE) {
+        let mut non_length_like = result;
+        non_length_like.remove(CalcUnits::LENGTH_PERCENTAGE);
+        if !non_length_like.is_empty() {
+            return Err(());
+        }
+        return Ok(result);
+    }
+
+    result.is_single_unit().then_some(result).ok_or(())
+}
+
+fn accumulate_product_unit<L: CalcNodeLeaf>(
+    child: &CalcNode<L>,
+    sign: i8,
+    length_like_exponent: &mut i8,
+    positive_length_like_units: &mut CalcUnits,
+    other_exponents: &mut [(CalcUnits, i8); 3],
+) -> Result<(), ()> {
+    if let CalcNode::Invert(child) = child {
+        return accumulate_product_unit(
+            child,
+            -sign,
+            length_like_exponent,
+            positive_length_like_units,
+            other_exponents,
+        );
+    }
+
+    let unit = child.unit()?;
+    if unit.is_empty() {
+        return Ok(());
+    }
+
+    if unit.intersects(CalcUnits::LENGTH_PERCENTAGE) {
+        *length_like_exponent += sign;
+        if sign > 0 {
+            *positive_length_like_units |= unit & CalcUnits::LENGTH_PERCENTAGE;
+        }
+    }
+
+    let mut remaining = unit;
+    remaining.remove(CalcUnits::LENGTH_PERCENTAGE);
+    for (flag, exponent) in other_exponents {
+        if remaining.intersects(*flag) {
+            *exponent += sign;
+            remaining.remove(*flag);
+        }
+    }
+    remaining.is_empty().then_some(()).ok_or(())
+}
+
+fn resolve_product<L, F>(children: &[CalcNode<L>], leaf_to_output_fn: &mut F) -> Result<L, ()>
+where
+    L: CalcNodeLeaf,
+    F: FnMut(&L) -> Result<L, ()>,
+{
+    let mut scalar = 1.0;
+    let mut numerators = Vec::new();
+    let mut denominators = Vec::new();
+
+    for child in children {
+        let (inverted, child) = match child {
+            CalcNode::Invert(child) => (true, child.as_ref()),
+            child => (false, child),
+        };
+        let value = child.resolve_internal(leaf_to_output_fn)?;
+        if let Some(number) = value.as_number() {
+            if inverted {
+                scalar /= number;
+            } else {
+                scalar *= number;
+            }
+        } else if inverted {
+            denominators.push(value);
+        } else {
+            numerators.push(value);
+        }
+    }
+
+    for denominator in denominators {
+        let denominator_value = denominator.unitless_value().ok_or(())?;
+        if denominator_value == 0.0 {
+            return Err(());
+        }
+        let index = numerators
+            .iter()
+            .position(|numerator| numerator.is_same_unit_as(&denominator))
+            .ok_or(())?;
+        let numerator = numerators.swap_remove(index);
+        scalar *= numerator.unitless_value().ok_or(())? / denominator_value;
+    }
+
+    let Some(mut result) = numerators.pop() else {
+        return Ok(L::new_number(scalar));
+    };
+    if !numerators.is_empty() {
+        return Err(());
+    }
+    result.map(|value| value * scalar)?;
+    Ok(result)
+}
+
 /// For percentage resolution, sometimes we can't assume that the percentage basis is positive (so
 /// we don't know whether a percentage is larger than another).
 pub enum PositivePercentageBasis {
@@ -651,28 +790,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 }
                 unit
             },
-            CalcNode::Product(children) => {
-                // Only one node is allowed to have a unit, the rest must be numbers.
-                let mut unit = None;
-                for child in children.iter() {
-                    let child_unit = child.unit()?;
-                    if child_unit.is_empty() {
-                        // Numbers are always allowed in a product, so continue with the next.
-                        continue;
-                    }
-
-                    if unit.is_some() {
-                        // We already have a unit for the node, so another unit node is invalid.
-                        return Err(());
-                    }
-
-                    // We have the unit for the node.
-                    unit = Some(child_unit);
-                }
-                // We only keep track of specified units, so if we end up with a None and no failure
-                // so far, then we have a number.
-                unit.unwrap_or(CalcUnits::empty())
-            },
+            CalcNode::Product(children) => product_unit(children)?,
             CalcNode::MinMax(children, _) | CalcNode::Hypot(children) => {
                 let mut unit = children.first().unwrap().unit()?;
                 for child in children.iter().skip(1) {
@@ -1234,35 +1352,7 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
 
                 Ok(result)
             },
-            Self::Product(children) => {
-                let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
-
-                for child in children.iter().skip(1) {
-                    let right = child.resolve_internal(leaf_to_output_fn)?;
-                    // Mutliply only allowed when either side is a number.
-                    match result.as_number() {
-                        Some(left) => {
-                            // Left side is a number, so we use the right node as the result.
-                            result = right;
-                            result.map(|v| v * left)?;
-                        },
-                        None => {
-                            // Left side is not a number, so check if the right side is.
-                            match right.as_number() {
-                                Some(right) => {
-                                    result.map(|v| v * right)?;
-                                },
-                                None => {
-                                    // Multiplying with both sides having units.
-                                    return Err(());
-                                },
-                            }
-                        },
-                    }
-                }
-
-                Ok(result)
-            },
+            Self::Product(children) => resolve_product(children, leaf_to_output_fn),
             Self::MinMax(children, op) => {
                 let mut result = children[0].resolve_internal(leaf_to_output_fn)?;
 
@@ -1662,6 +1752,23 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
         })
     }
 
+    fn canonicalize_negative_minmax_sum_child(&mut self) {
+        let Self::MinMax(ref children, _) = *self else {
+            return;
+        };
+
+        if !children
+            .iter()
+            .all(|child| child.is_negative_leaf().unwrap_or(false))
+        {
+            return;
+        }
+
+        let mut negated = mem::replace(self, Self::dummy());
+        negated.negate();
+        *self = Self::Negate(Box::new(negated));
+    }
+
     /// Visits all the nodes in this calculation tree recursively, starting by
     /// the leaves and bubbling all the way up.
     ///
@@ -2049,6 +2156,10 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                 // a is removed.
                 children.dedup_by(|a, b| b.try_sum_in_place(a).is_ok());
 
+                for child in &mut children {
+                    child.canonicalize_negative_minmax_sum_child();
+                }
+
                 let updated_children_len = children.len();
                 if updated_children_len == 1 {
                     // If only one children remains, lift it up, and carry on.
@@ -2113,8 +2224,11 @@ impl<L: CalcNodeLeaf> CalcNode<L> {
                     replace_self_with!(&mut children[0]);
                     return SimplificationResult::Simplified;
                 } else {
-                    // Else put our simplified children back.
-                    *children_slot = children.into_boxed_slice().into();
+                    let mut product = Self::Product(children.into_boxed_slice().into());
+                    if let Ok(resolved) = product.resolve() {
+                        product = Self::Leaf(resolved);
+                    }
+                    replace_self_with!(&mut product);
                 }
                 return SimplificationResult::Unchanged;
             },
@@ -2924,6 +3038,173 @@ impl<'a, L: CalcNodeLeaf> ToTyped for CalcNodeWithLevel<'a, L> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::typed_om::{ToTyped, TypedValue};
+    use std::fmt;
+    use style_traits::{CssWriter, ToCss};
+    use thin_vec::ThinVec;
+
+    #[derive(Clone, Debug, PartialEq)]
+    enum TestLeaf {
+        Number(f32),
+        Length(f32),
+        Percentage(f32),
+        Angle(f32),
+        Time(f32),
+    }
+
+    impl ToCss for TestLeaf {
+        fn to_css<W>(&self, _dest: &mut CssWriter<W>) -> fmt::Result
+        where
+            W: fmt::Write,
+        {
+            Ok(())
+        }
+    }
+
+    impl ToTyped for TestLeaf {
+        fn to_typed(&self, _dest: &mut ThinVec<TypedValue>) -> Result<(), ()> {
+            Err(())
+        }
+    }
+
+    impl CalcNodeLeaf for TestLeaf {
+        fn unit(&self) -> CalcUnits {
+            match self {
+                Self::Number(_) => CalcUnits::empty(),
+                Self::Length(_) => CalcUnits::LENGTH,
+                Self::Percentage(_) => CalcUnits::PERCENTAGE,
+                Self::Angle(_) => CalcUnits::ANGLE,
+                Self::Time(_) => CalcUnits::TIME,
+            }
+        }
+
+        fn unitless_value(&self) -> Option<f32> {
+            Some(match *self {
+                Self::Number(value)
+                | Self::Length(value)
+                | Self::Percentage(value)
+                | Self::Angle(value)
+                | Self::Time(value) => value,
+            })
+        }
+
+        fn new_number(value: f32) -> Self {
+            Self::Number(value)
+        }
+
+        fn as_number(&self) -> Option<f32> {
+            match *self {
+                Self::Number(value) => Some(value),
+                _ => None,
+            }
+        }
+
+        fn as_angle_radians(&self) -> Option<f32> {
+            match *self {
+                Self::Angle(value) => Some(value),
+                _ => None,
+            }
+        }
+
+        fn new_angle_from_radians(radians: f32) -> Self {
+            Self::Angle(radians)
+        }
+
+        fn compare(
+            &self,
+            other: &Self,
+            _base_is_positive: PositivePercentageBasis,
+        ) -> Option<std::cmp::Ordering> {
+            if !self.is_same_unit_as(other) {
+                return None;
+            }
+            self.unitless_value()?.partial_cmp(&other.unitless_value()?)
+        }
+
+        fn try_sum_in_place(&mut self, other: &Self) -> Result<(), ()> {
+            *self = self.try_op(other, |left, right| left + right)?;
+            Ok(())
+        }
+
+        fn try_product_in_place(&mut self, other: &mut Self) -> bool {
+            match (self.as_number(), other.as_number()) {
+                (Some(left), Some(right)) => {
+                    *self = Self::Number(left * right);
+                    true
+                },
+                (Some(left), None) => {
+                    other.map(|value| value * left).ok();
+                    std::mem::swap(self, other);
+                    true
+                },
+                (None, Some(right)) => self.map(|value| value * right).is_ok(),
+                (None, None) => false,
+            }
+        }
+
+        fn try_op<O>(&self, other: &Self, op: O) -> Result<Self, ()>
+        where
+            O: Fn(f32, f32) -> f32,
+        {
+            if !self.is_same_unit_as(other) {
+                return Err(());
+            }
+            Ok(match self {
+                Self::Number(left) => Self::Number(op(*left, other.unitless_value().unwrap())),
+                Self::Length(left) => Self::Length(op(*left, other.unitless_value().unwrap())),
+                Self::Percentage(left) => {
+                    Self::Percentage(op(*left, other.unitless_value().unwrap()))
+                },
+                Self::Angle(left) => Self::Angle(op(*left, other.unitless_value().unwrap())),
+                Self::Time(left) => Self::Time(op(*left, other.unitless_value().unwrap())),
+            })
+        }
+
+        fn map(&mut self, mut op: impl FnMut(f32) -> f32) -> Result<(), ()> {
+            match self {
+                Self::Number(value)
+                | Self::Length(value)
+                | Self::Percentage(value)
+                | Self::Angle(value)
+                | Self::Time(value) => *value = op(*value),
+            }
+            Ok(())
+        }
+
+        fn simplify(&mut self) -> SimplificationResult {
+            SimplificationResult::Unchanged
+        }
+
+        fn sort_key(&self) -> SortKey {
+            match self {
+                Self::Number(_) => SortKey::Number,
+                Self::Length(_) => SortKey::Px,
+                Self::Percentage(_) => SortKey::Percentage,
+                Self::Angle(_) => SortKey::Deg,
+                Self::Time(_) => SortKey::S,
+            }
+        }
+    }
+
+    fn leaf(leaf: TestLeaf) -> CalcNode<TestLeaf> {
+        CalcNode::Leaf(leaf)
+    }
+
+    fn product(children: Vec<CalcNode<TestLeaf>>) -> CalcNode<TestLeaf> {
+        CalcNode::Product(children.into_boxed_slice().into())
+    }
+
+    fn sum(children: Vec<CalcNode<TestLeaf>>) -> CalcNode<TestLeaf> {
+        CalcNode::Sum(children.into_boxed_slice().into())
+    }
+
+    fn minmax(children: Vec<CalcNode<TestLeaf>>, op: MinMaxOp) -> CalcNode<TestLeaf> {
+        CalcNode::MinMax(children.into_boxed_slice().into(), op)
+    }
+
+    fn invert(child: CalcNode<TestLeaf>) -> CalcNode<TestLeaf> {
+        CalcNode::Invert(Box::new(child))
+    }
 
     #[test]
     fn can_sum_with_checks() {
@@ -2946,6 +3227,85 @@ mod tests {
         assert!(!CalcUnits::ANGLE.can_sum_with(CalcUnits::ANGLE | CalcUnits::TIME));
         assert!(
             !(CalcUnits::ANGLE | CalcUnits::TIME).can_sum_with(CalcUnits::ANGLE | CalcUnits::TIME)
+        );
+    }
+
+    #[test]
+    fn product_units_allow_basic_dimension_cancellation() {
+        let length_product = product(vec![
+            leaf(TestLeaf::Length(5.0)),
+            leaf(TestLeaf::Length(200.0)),
+            invert(leaf(TestLeaf::Length(1.0))),
+        ]);
+        assert!(length_product.unit().unwrap() == CalcUnits::LENGTH);
+        assert_eq!(length_product.resolve().unwrap(), TestLeaf::Length(1000.0));
+
+        let percentage_product = product(vec![
+            leaf(TestLeaf::Percentage(0.2)),
+            leaf(TestLeaf::Length(8.0)),
+            invert(leaf(TestLeaf::Length(1.0))),
+        ]);
+        assert!(percentage_product
+            .unit()
+            .unwrap()
+            .can_sum_with(CalcUnits::PERCENTAGE));
+        assert_eq!(
+            percentage_product.resolve().unwrap(),
+            TestLeaf::Percentage(1.6)
+        );
+
+        let mut simplified_length_product = length_product;
+        simplified_length_product.simplify_and_sort();
+        assert_eq!(simplified_length_product, leaf(TestLeaf::Length(1000.0)));
+
+        let mut simplified_percentage_product = percentage_product;
+        simplified_percentage_product.simplify_and_sort();
+        assert_eq!(
+            simplified_percentage_product,
+            leaf(TestLeaf::Percentage(1.6))
+        );
+
+        let invalid_product = product(vec![
+            leaf(TestLeaf::Length(5.0)),
+            leaf(TestLeaf::Length(10.0)),
+        ]);
+        assert!(invalid_product.unit().is_err());
+        assert!(invalid_product.resolve().is_err());
+
+        let invalid_denominator = product(vec![
+            leaf(TestLeaf::Length(5.0)),
+            invert(leaf(TestLeaf::Time(1.0))),
+        ]);
+        assert!(invalid_denominator.unit().is_err());
+    }
+
+    #[test]
+    fn sum_canonicalizes_negative_minmax_as_subtraction() {
+        let mut node = sum(vec![
+            leaf(TestLeaf::Length(10.0)),
+            minmax(
+                vec![
+                    leaf(TestLeaf::Percentage(-0.2)),
+                    leaf(TestLeaf::Length(-20.0)),
+                ],
+                MinMaxOp::Max,
+            ),
+        ]);
+
+        node.simplify_and_sort();
+
+        assert_eq!(
+            node,
+            sum(vec![
+                leaf(TestLeaf::Length(10.0)),
+                CalcNode::Negate(Box::new(minmax(
+                    vec![
+                        leaf(TestLeaf::Percentage(0.2)),
+                        leaf(TestLeaf::Length(20.0)),
+                    ],
+                    MinMaxOp::Min,
+                ))),
+            ])
         );
     }
 }
