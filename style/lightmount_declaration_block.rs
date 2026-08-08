@@ -857,6 +857,46 @@ mod tests {
     }
 
     #[test]
+    fn declaration_block_uses_stylo_easing_range_semantics() {
+        static_prefs::set_pref!("layout.css.tree-counting-functions.enabled", true);
+
+        for value in [
+            "steps(calc(1), jump-none)",
+            "steps(calc(-10), start)",
+            "steps(calc(2 * sibling-index()), jump-none)",
+            "cubic-bezier(calc(-2), calc(0.7 / 2), calc(1.5), calc(0))",
+            "cubic-bezier(0, sibling-index(), 1, sign(2em - 20px))",
+        ] {
+            let mut block = parse_declaration_block("");
+            let projection =
+                block.set_property_with_projection("animation-timing-function", value, false);
+            assert_ne!(
+                projection.set_result,
+                CssSetResult::ParseError,
+                "valid easing value was rejected: {value}"
+            );
+            assert!(block.property_is_declared("animation-timing-function"));
+        }
+
+        let mut block = parse_declaration_block("");
+        let projection = block.set_property_with_projection(
+            "animation-timing-function",
+            "steps(calc(0/0), jump-none)",
+            false,
+        );
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert!(block.is_empty());
+
+        let projection = block.set_property_with_projection(
+            "animation-timing-function",
+            "cubic-bezier(-0.1, 0.1, 0.5, 0.9)",
+            false,
+        );
+        assert_eq!(projection.set_result, CssSetResult::ParseError);
+        assert!(block.is_empty());
+    }
+
+    #[test]
     fn declaration_block_animation_longhands_keep_write_order() {
         let mut block = parse_declaration_block("");
         set_projection_entries(&mut block, "animation-name", "fade", false);

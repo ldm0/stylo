@@ -222,7 +222,9 @@ impl Number {
     pub fn resolve(&self) -> Option<f32> {
         match self.0.unpack() {
             Unpacked::Inline((), f) => Some(NoCalcNumber(f).get()),
-            Unpacked::Boxed(ref calc) => calc.as_number().map(|n| n.get()),
+            Unpacked::Boxed(ref calc) => {
+                calc.as_number().map(|n| calc.clamping_mode.clamp(n.get()))
+            },
         }
     }
 
@@ -438,10 +440,20 @@ impl Integer {
         Some(match self.0.unpack() {
             Unpacked::Inline((), v) => v,
             Unpacked::Boxed(ref calc) => {
-                let value = calc.as_number()?.get();
+                let value = calc.clamping_mode.clamp(calc.as_number()?.get());
                 (value + 0.5).floor() as CSSInteger
             },
         })
+    }
+
+    /// Returns whether a parse-time-resolvable calculation produces NaN before range clamping.
+    pub(crate) fn resolved_calc_is_nan(&self) -> bool {
+        match self.0.unpack() {
+            Unpacked::Inline(..) => false,
+            Unpacked::Boxed(ref calc) => calc
+                .as_number()
+                .is_some_and(|number| number.value().is_nan()),
+        }
     }
 
     /// Makes sure this number matches the clamping, or errors otherwise.

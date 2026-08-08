@@ -189,7 +189,7 @@ impl IntermediateComputedKeyframe {
         // back to the one defined global for the animation.
         let guard = &context.guards.author;
         if let Some(timing_function) = step.get_animation_timing_function(&guard) {
-            self.timing_function = Some(timing_function.to_computed_value_without_context());
+            self.timing_function = timing_function.to_computed_value_without_context();
         }
 
         let block = match step.value {

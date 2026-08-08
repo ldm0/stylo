@@ -9,10 +9,12 @@ use crate::values::computed::easing::TimingFunction as ComputedTimingFunction;
 use crate::values::computed::{Context, ToComputedValue};
 use crate::values::generics::easing::TimingFunction as GenericTimingFunction;
 use crate::values::generics::easing::{StepPosition, TimingKeyword};
+use crate::values::specified::number::parse_number_with_clamping_mode;
 use crate::values::specified::percentage::ToPercentage;
 use crate::values::specified::{AnimationName, Integer, Number, Percentage};
 use cssparser::{match_ignore_ascii_case, Delimiter, Parser, Token};
 use selectors::parser::SelectorParseErrorKind;
+use style_traits::values::specified::AllowedNumericType;
 use style_traits::{ParseError, StyleParseErrorKind};
 
 /// A specified timing function.
@@ -56,25 +58,13 @@ impl TimingFunction {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Self, ParseError<'i>> {
-        let x1 = Number::parse(context, input)?;
+        let x1 = parse_number_with_clamping_mode(context, input, AllowedNumericType::ZeroToOne)?;
         input.expect_comma()?;
         let y1 = Number::parse(context, input)?;
         input.expect_comma()?;
-        let x2 = Number::parse(context, input)?;
+        let x2 = parse_number_with_clamping_mode(context, input, AllowedNumericType::ZeroToOne)?;
         input.expect_comma()?;
         let y2 = Number::parse(context, input)?;
-
-        // TODO(Bug 2037743) - Enable calc()-expressions that can only be resolved at
-        // computed value time (due to relative lengths, sibling-index(), etc.).
-        if let (Some(x1), Some(_), Some(x2), Some(_)) =
-            (x1.resolve(), y1.resolve(), x2.resolve(), y2.resolve())
-        {
-            if x1 < 0.0 || x1 > 1.0 || x2 < 0.0 || x2 > 1.0 {
-                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-            }
-        } else {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
-        }
 
         Ok(GenericTimingFunction::CubicBezier { x1, y1, x2, y2 })
     }
@@ -91,21 +81,11 @@ impl TimingFunction {
             })
             .unwrap_or(StepPosition::End);
 
-        // TODO(Bug 2037743) - Enable calc()-expressions that can only be resolved at
-        // computed value time (due to relative lengths, sibling-index(), etc.).
-        let num_steps = match steps.resolve() {
-            Some(v) => v,
-            None => return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError)),
-        };
-
         // jump-none accepts a positive integer greater than 1.
-        // FIXME(emilio): The spec asks us to avoid rejecting it at parse
-        // time except until computed value time.
-        //
-        // It's not totally clear it's worth it though, and no other browser
-        // does this.
-        if position == StepPosition::JumpNone && num_steps <= 1 {
-            return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+        if position == StepPosition::JumpNone {
+            if steps.get().is_some_and(|steps| steps <= 1) || steps.resolved_calc_is_nan() {
+                return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
+            }
         }
         Ok(GenericTimingFunction::Steps(steps, position))
     }
@@ -187,34 +167,55 @@ impl TimingFunction {
 // value of TimingFunction.
 impl TimingFunction {
     /// Generate the ComputedTimingFunction without Context.
-    pub fn to_computed_value_without_context(&self) -> ComputedTimingFunction {
-        match &self {
+    pub fn to_computed_value_without_context(&self) -> Option<ComputedTimingFunction> {
+        Some(match &self {
             GenericTimingFunction::Steps(steps, pos) => {
-                // Resolvable value was enforced at parse time
-                GenericTimingFunction::Steps(steps.resolve().unwrap(), *pos)
+                let mut steps = steps.resolve()?;
+                if *pos == StepPosition::JumpNone {
+                    steps = steps.max(2);
+                }
+                GenericTimingFunction::Steps(steps, *pos)
             },
             GenericTimingFunction::CubicBezier { x1, y1, x2, y2 } => {
-                // Resolvable value was enforced at parse time
                 GenericTimingFunction::CubicBezier {
-                    x1: x1.resolve().unwrap(),
-                    y1: y1.resolve().unwrap(),
-                    x2: x2.resolve().unwrap(),
-                    y2: y2.resolve().unwrap(),
+                    x1: x1.resolve()?,
+                    y1: y1.resolve()?,
+                    x2: x2.resolve()?,
+                    y2: y2.resolve()?,
                 }
             },
             GenericTimingFunction::Keyword(keyword) => GenericTimingFunction::Keyword(*keyword),
             GenericTimingFunction::LinearFunction(function) => {
-                // Resolvable value was enforced at parse time
                 GenericTimingFunction::LinearFunction(function.clone())
             },
-        }
+        })
     }
 }
 
 impl ToComputedValue for TimingFunction {
     type ComputedValue = ComputedTimingFunction;
-    fn to_computed_value(&self, _: &Context) -> Self::ComputedValue {
-        self.to_computed_value_without_context()
+    fn to_computed_value(&self, context: &Context) -> Self::ComputedValue {
+        match self {
+            GenericTimingFunction::Steps(steps, pos) => {
+                let mut steps = steps.to_computed_value(context);
+                if *pos == StepPosition::JumpNone {
+                    steps = steps.max(2);
+                }
+                GenericTimingFunction::Steps(steps, *pos)
+            },
+            GenericTimingFunction::CubicBezier { x1, y1, x2, y2 } => {
+                GenericTimingFunction::CubicBezier {
+                    x1: x1.to_computed_value(context),
+                    y1: y1.to_computed_value(context),
+                    x2: x2.to_computed_value(context),
+                    y2: y2.to_computed_value(context),
+                }
+            },
+            GenericTimingFunction::Keyword(keyword) => GenericTimingFunction::Keyword(*keyword),
+            GenericTimingFunction::LinearFunction(function) => {
+                GenericTimingFunction::LinearFunction(function.clone())
+            },
+        }
     }
 
     fn from_computed_value(computed: &Self::ComputedValue) -> Self {
