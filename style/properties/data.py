@@ -142,6 +142,7 @@ VISITED_DEPENDENT_PROPERTIES = set(
         "text-decoration-color",
         "fill",
         "stroke",
+        "accent-color",
         "caret-color",
         "background-color",
         "border-top-color",

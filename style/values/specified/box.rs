@@ -1064,6 +1064,7 @@ pub enum OverscrollBehavior {
     Auto,
     Contain,
     None,
+    Chain,
 }
 
 #[allow(missing_docs)]
