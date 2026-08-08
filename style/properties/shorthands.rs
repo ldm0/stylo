@@ -3220,9 +3220,9 @@ pub mod text_decoration {
     pub use crate::properties::generated::shorthands::text_decoration::*;
 
     use super::*;
-    use crate::properties::longhands::text_decoration_thickness;
     use crate::properties::longhands::{
         text_decoration_color, text_decoration_line, text_decoration_style,
+        text_decoration_thickness,
     };
 
     pub fn parse_value<'i, 't>(
@@ -3249,12 +3249,12 @@ pub mod text_decoration {
             return Err(input.new_custom_error(StyleParseErrorKind::UnspecifiedError));
         }
 
-        return Ok(expanded! {
+        Ok(expanded! {
             text_decoration_line: unwrap_or_initial!(text_decoration_line, line),
             text_decoration_style: unwrap_or_initial!(text_decoration_style, style),
             text_decoration_color: unwrap_or_initial!(text_decoration_color, color),
             text_decoration_thickness: unwrap_or_initial!(text_decoration_thickness, thickness),
-        });
+        })
     }
 
     impl<'a> ToCss for LonghandsToSerialize<'a> {

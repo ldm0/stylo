@@ -15,6 +15,9 @@ pub use crate::values::specified::{DProperty, MozContextProperties, SVGPaintOrde
 /// Computed SVG Paint value
 pub type SVGPaint = generic::GenericSVGPaint<Color, ComputedUrl>;
 
+/// Computed text decoration fill/stroke paint value.
+pub type TextDecorationPaint = generic::GenericTextDecorationPaint<Color, ComputedUrl>;
+
 /// Computed SVG Paint Kind value
 pub type SVGPaintKind = generic::GenericSVGPaintKind<Color, ComputedUrl>;
 
@@ -24,6 +27,14 @@ impl SVGPaint {
         kind: generic::SVGPaintKind::Color(Color::BLACK),
         fallback: generic::SVGPaintFallback::Unset,
     };
+}
+
+impl TextDecorationPaint {
+    /// The `match-text` initial value.
+    #[inline]
+    pub fn match_text() -> Self {
+        generic::TextDecorationPaint::MatchText
+    }
 }
 
 /// <length> | <percentage> | <number> | context-value

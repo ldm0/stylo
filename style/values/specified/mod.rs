@@ -99,7 +99,7 @@ pub use self::ratio::Ratio;
 pub use self::rect::NonNegativeLengthOrNumberRect;
 pub use self::resolution::{NoCalcResolution, Resolution};
 pub use self::svg::{DProperty, MozContextProperties};
-pub use self::svg::{SVGLength, SVGOpacity, SVGPaint};
+pub use self::svg::{SVGLength, SVGOpacity, SVGPaint, TextDecorationPaint};
 pub use self::svg::{SVGPaintOrder, SVGStrokeDashArray, SVGWidth, VectorEffect};
 pub use self::svg_path::SVGPathData;
 pub use self::text::RubyPosition;
@@ -110,8 +110,8 @@ pub use self::text::{TextAlignKeyword, TextDecorationLine, TextOverflow, WordSpa
 pub use self::text::{TextAlignLast, TextAutospace, TextUnderlinePosition};
 pub use self::text::{TextBoxEdge, TextBoxTrim};
 pub use self::text::{
-    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextJustify, TextSizeAdjust,
-    TextTransform,
+    TextDecorationInset, TextDecorationLength, TextDecorationSkipInk, TextDecorationSkipSpaces,
+    TextJustify, TextSizeAdjust, TextTransform,
 };
 pub use self::time::{NoCalcTime, Time};
 pub use self::transform::{Rotate, Scale, Transform};

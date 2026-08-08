@@ -482,7 +482,12 @@ spec = "https://drafts.csswg.org/css-multicol/#propdef-column-rule"
 derive_serialize = true
 
 [text-decoration]
-sub_properties = ["text-decoration-color", "text-decoration-line", "text-decoration-style", "text-decoration-thickness"]
+sub_properties = [
+  "text-decoration-color",
+  "text-decoration-line",
+  "text-decoration-style",
+  "text-decoration-thickness",
+]
 spec = "https://drafts.csswg.org/css-text-decor/#propdef-text-decoration"
 
 [font]

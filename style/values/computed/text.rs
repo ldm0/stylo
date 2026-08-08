@@ -27,8 +27,8 @@ use thin_vec::ThinVec;
 pub use crate::values::specified::text::{
     HyphenateCharacter, LineBreak, MozControlCharacterVisibility, OverflowWrap, RubyPosition,
     TextAlignLast, TextAutospace, TextBoxEdge, TextBoxTrim, TextDecorationLine,
-    TextDecorationSkipInk, TextEmphasisPosition, TextJustify, TextOverflow, TextSizeAdjust,
-    TextTransform, TextUnderlinePosition, WordBreak,
+    TextDecorationSkipInk, TextDecorationSkipSpaces, TextEmphasisPosition, TextJustify,
+    TextOverflow, TextSizeAdjust, TextTransform, TextUnderlinePosition, WordBreak,
 };
 
 /// A computed value for the `initial-letter` property.
