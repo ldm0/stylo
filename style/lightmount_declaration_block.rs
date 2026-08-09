@@ -946,6 +946,190 @@ mod tests {
     }
 
     #[test]
+    fn lightmount_property_surface_matches_chromium_for_former_gecko_gates() {
+        let chromium_supported = [
+            "-webkit-line-clamp",
+            "anchor-name",
+            "anchor-scope",
+            "clip-rule",
+            "column-rule-color",
+            "column-rule-style",
+            "contain-intrinsic-block-size",
+            "contain-intrinsic-height",
+            "contain-intrinsic-inline-size",
+            "contain-intrinsic-width",
+            "content-visibility",
+            "counter-set",
+            "flood-color",
+            "flood-opacity",
+            "font-palette",
+            "font-synthesis-small-caps",
+            "font-synthesis-style",
+            "lighting-color",
+            "marker-end",
+            "marker-mid",
+            "marker-start",
+            "offset-anchor",
+            "offset-distance",
+            "offset-position",
+            "offset-rotate",
+            "overflow-anchor",
+            "page",
+            "paint-order",
+            "position-anchor",
+            "position-try-order",
+            "position-visibility",
+            "resize",
+            "scroll-snap-stop",
+            "scroll-snap-type",
+            "scrollbar-gutter",
+            "shape-image-threshold",
+            "shape-outside",
+            "stop-color",
+            "stop-opacity",
+            "transform-box",
+            "scroll-timeline-axis",
+            "scroll-timeline-name",
+            "view-timeline-axis",
+            "view-timeline-inset",
+            "view-timeline-name",
+            "vector-effect",
+            "hyphenate-character",
+            "hyphenate-limit-chars",
+            "ruby-position",
+            "text-autospace",
+            "text-box-edge",
+            "text-box-trim",
+            "initial-letter",
+            "column-fill",
+            "math-shift",
+            "image-orientation",
+            "text-anchor",
+            "color-interpolation",
+            "color-interpolation-filters",
+            "shape-rendering",
+            "hyphens",
+            "ruby-align",
+            "text-combine-upright",
+            "text-wrap-style",
+            "field-sizing",
+            "dominant-baseline",
+            "timeline-scope",
+            "scroll-margin",
+            "scroll-margin-block",
+            "scroll-margin-inline",
+            "scroll-padding",
+            "scroll-padding-block",
+            "scroll-padding-inline",
+            "offset",
+            "contain-intrinsic-size",
+            "position-try",
+            "marker",
+            "scroll-timeline",
+            "view-timeline",
+            "column-rule",
+            "font-synthesis",
+            "text-box",
+            "text-wrap",
+        ];
+        for name in chromium_supported {
+            let mut block = CssDeclarationBlock::default();
+            let projection = block.set_property_with_projection(name, "initial", false);
+            assert_ne!(
+                projection.set_result,
+                CssSetResult::ParseError,
+                "Chromium-supported property should be parsed for Lightmount: {name}"
+            );
+            assert!(
+                !block.css_text().is_empty(),
+                "Chromium-supported property should be retained: {name}"
+            );
+        }
+
+        let chromium_unsupported = [
+            "-moz-box-flex",
+            "-moz-box-ordinal-group",
+            "font-synthesis-position",
+            "-moz-image-decoding",
+            "masonry-auto-flow",
+            "-moz-context-properties",
+            "-moz-inert",
+            "-moz-user-focus",
+            "-moz-theme",
+            "-moz-force-broken-image-icon",
+            "-moz-subtree-hidden-only-visually",
+            "-moz-window-input-region-margin",
+            "-moz-window-opacity",
+            "-moz-window-transform",
+            "-moz-control-character-visibility",
+            "-x-span",
+            "-moz-float-edge",
+            "-moz-top-layer",
+            "-moz-orient",
+            "-moz-osx-font-smoothing",
+            "-moz-box-collapse",
+            "-moz-text-size-adjust",
+            "ime-mode",
+            "-moz-window-dragging",
+            "-moz-window-shadow",
+            "-moz-box-align",
+            "-moz-box-direction",
+            "-moz-box-orient",
+            "-moz-box-pack",
+            "-moz-math-variant",
+        ];
+        for name in chromium_unsupported {
+            let mut block = CssDeclarationBlock::default();
+            let projection = block.set_property_with_projection(name, "initial", false);
+            assert_eq!(
+                projection.set_result,
+                CssSetResult::ParseError,
+                "Gecko-only property must not leak into Lightmount: {name}"
+            );
+            assert!(
+                block.is_empty(),
+                "rejected property must not be retained: {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn lightmount_chromium_shorthands_parse_non_wide_values() {
+        for (name, value) in [
+            ("scroll-margin", "1px 2px"),
+            ("scroll-margin-block", "1px 2px"),
+            ("scroll-margin-inline", "1px 2px"),
+            ("scroll-padding", "1px 2px"),
+            ("scroll-padding-block", "1px 2px"),
+            ("scroll-padding-inline", "1px 2px"),
+            ("offset", "none"),
+            ("contain-intrinsic-size", "100px 200px"),
+            ("position-try", "--fallback"),
+            ("marker", "none"),
+            ("scroll-timeline", "--scroll block"),
+            ("view-timeline", "--view inline"),
+            ("column-rule", "1px solid red"),
+            ("font-synthesis", "weight style small-caps"),
+            ("text-box", "normal"),
+            ("text-wrap", "wrap balance"),
+        ] {
+            let mut block = CssDeclarationBlock::default();
+            let projection = block.set_property_with_projection(name, value, false);
+            assert_ne!(
+                projection.set_result,
+                CssSetResult::ParseError,
+                "Chromium shorthand value should parse: {name}: {value}"
+            );
+            assert!(
+                block
+                    .property_value(name)
+                    .is_some_and(|serialized| !serialized.is_empty()),
+                "Chromium shorthand should serialize after parsing: {name}: {value}"
+            );
+        }
+    }
+
+    #[test]
     fn declaration_block_set_property_reports_cssom_mutation_results() {
         let mut block = parse_declaration_block("color: red;");
 

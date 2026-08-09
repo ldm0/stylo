@@ -719,7 +719,6 @@ pub mod page_break_inside {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod offset {
     use super::*;
     pub use crate::properties::generated::shorthands::offset::*;
@@ -931,7 +930,6 @@ pub mod columns {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod column_rule {
     pub use crate::properties::generated::shorthands::column_rule::*;
 
@@ -966,7 +964,6 @@ pub mod column_rule {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod text_wrap {
     pub use crate::properties::generated::shorthands::text_wrap::*;
 
@@ -1300,7 +1297,6 @@ pub mod gap {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod marker {
     pub use crate::properties::generated::shorthands::marker::*;
 
@@ -1744,7 +1740,6 @@ pub mod grid_area {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod position_try {
     pub use crate::properties::generated::shorthands::position_try::*;
 
@@ -1755,12 +1750,15 @@ pub mod position_try {
         context: &ParserContext,
         input: &mut Parser<'i, 't>,
     ) -> Result<Longhands, ParseError<'i>> {
+        #[cfg(feature = "gecko")]
         let order =
             if static_prefs::pref!("layout.css.anchor-positioning.position-try-order.enabled") {
                 input.try_parse(PositionTryOrder::parse).ok()
             } else {
                 None
             };
+        #[cfg(feature = "servo")]
+        let order = input.try_parse(PositionTryOrder::parse).ok();
         let fallbacks = PositionTryFallbacks::parse(context, input)?;
         Ok(expanded! {
             position_try_order: order.unwrap_or(PositionTryOrder::normal()),
@@ -1773,18 +1771,23 @@ pub mod position_try {
         where
             W: fmt::Write,
         {
+            #[cfg(feature = "gecko")]
             if let Some(o) = self.position_try_order {
                 if *o != PositionTryOrder::Normal {
                     o.to_css(dest)?;
                     dest.write_char(' ')?;
                 }
             }
+            #[cfg(feature = "servo")]
+            if *self.position_try_order != PositionTryOrder::Normal {
+                self.position_try_order.to_css(dest)?;
+                dest.write_char(' ')?;
+            }
             self.position_try_fallbacks.to_css(dest)
         }
     }
 }
 
-#[cfg(feature = "gecko")]
 fn timeline_to_css<W>(
     name: &[specified::TimelineName],
     axes: &[specified::ScrollAxis],
@@ -1809,7 +1812,6 @@ where
     Ok(())
 }
 
-#[cfg(feature = "gecko")]
 pub mod scroll_timeline {
     pub use crate::properties::generated::shorthands::scroll_timeline::*;
 
@@ -1852,7 +1854,6 @@ pub mod scroll_timeline {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod view_timeline {
     pub use crate::properties::generated::shorthands::view_timeline::*;
 
@@ -3009,7 +3010,6 @@ pub mod font_variant {
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod font_synthesis {
     pub use crate::properties::generated::shorthands::font_synthesis::*;
 
@@ -3023,6 +3023,7 @@ pub mod font_synthesis {
         let mut weight = FontSynthesis::None;
         let mut style = FontSynthesisStyle::None;
         let mut small_caps = FontSynthesis::None;
+        #[cfg(feature = "gecko")]
         let mut position = FontSynthesis::None;
 
         if !input
@@ -3047,6 +3048,7 @@ pub mod font_synthesis {
                         small_caps = FontSynthesis::Auto;
                         continue;
                     },
+                    #[cfg(feature = "gecko")]
                     "position" if position == FontSynthesis::None => {
                         has_custom_value = true;
                         position = FontSynthesis::Auto;
@@ -3064,6 +3066,13 @@ pub mod font_synthesis {
             }
         }
 
+        #[cfg(feature = "servo")]
+        return Ok(expanded! {
+            font_synthesis_weight: weight,
+            font_synthesis_style: style,
+            font_synthesis_small_caps: small_caps,
+        });
+        #[cfg(feature = "gecko")]
         Ok(expanded! {
             font_synthesis_weight: weight,
             font_synthesis_style: style,
@@ -3091,8 +3100,11 @@ pub mod font_synthesis {
             if self.font_synthesis_small_caps == &FontSynthesis::Auto {
                 writer.raw_item("small-caps")?;
             }
-            if self.font_synthesis_position == &FontSynthesis::Auto {
-                writer.raw_item("position")?;
+            #[cfg(feature = "gecko")]
+            {
+                if self.font_synthesis_position == &FontSynthesis::Auto {
+                    writer.raw_item("position")?;
+                }
             }
             if !writer.has_written() {
                 writer.raw_item("none")?;
@@ -3105,6 +3117,7 @@ pub mod font_synthesis {
     // 'auto' keyword like they do, so we can't automatically derive this.
     impl SpecifiedValueInfo for Longhands {
         fn collect_completion_keywords(f: KeywordsCollectFn) {
+            #[cfg(feature = "gecko")]
             f(&[
                 "none",
                 "oblique-only",
@@ -3113,11 +3126,12 @@ pub mod font_synthesis {
                 "style",
                 "weight",
             ]);
+            #[cfg(feature = "servo")]
+            f(&["none", "oblique-only", "small-caps", "style", "weight"]);
         }
     }
 }
 
-#[cfg(feature = "gecko")]
 pub mod text_box {
     pub use crate::properties::generated::shorthands::text_box::*;
 

@@ -18,19 +18,16 @@ rule_types_allowed = ["style", "keyframe", "page", "scope", "position-try"]
 kind = "two_properties"
 
 [scroll-margin]
-engine = "gecko"
 sub_properties = ["scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-margin"
 kind = "four_sides"
 
 [scroll-margin-block]
-engine = "gecko"
 sub_properties = ["scroll-margin-block-start", "scroll-margin-block-end"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-margin-block"
 kind = "two_properties"
 
 [scroll-margin-inline]
-engine = "gecko"
 sub_properties = ["scroll-margin-inline-start", "scroll-margin-inline-end"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-margin-inline"
 kind = "two_properties"
@@ -54,19 +51,16 @@ rule_types_allowed = ["style", "keyframe", "page", "scope", "position-try"]
 kind = "two_properties"
 
 [scroll-padding]
-engine = "gecko"
 sub_properties = ["scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding"
 kind = "four_sides"
 
 [scroll-padding-block]
-engine = "gecko"
 sub_properties = ["scroll-padding-block-start", "scroll-padding-block-end"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-block"
 kind = "two_properties"
 
 [scroll-padding-inline]
-engine = "gecko"
 sub_properties = ["scroll-padding-inline-start", "scroll-padding-inline-end"]
 spec = "https://drafts.csswg.org/css-scroll-snap-1/#propdef-scroll-padding-inline"
 kind = "two_properties"
@@ -231,7 +225,6 @@ sub_properties = ["break-inside"]
 spec = "https://drafts.csswg.org/css-break-3/#page-break-properties"
 
 [offset]
-engine = "gecko"
 sub_properties = ["offset-path", "offset-distance", "offset-rotate", "offset-anchor", "offset-position"]
 spec = "https://drafts.fxtf.org/motion-1/#offset-shorthand"
 
@@ -280,7 +273,6 @@ rule_types_allowed = ["style", "keyframe", "scope", "position-try"]
 kind = "two_properties"
 
 [contain-intrinsic-size]
-engine = "gecko"
 sub_properties = ["contain-intrinsic-width", "contain-intrinsic-height"]
 spec = "https://drafts.csswg.org/css-sizing-4/#intrinsic-size-override"
 kind = "two_properties"
@@ -340,13 +332,11 @@ sub_properties = ["align-items", "justify-items"]
 spec = "https://drafts.csswg.org/css-align/#place-items-property"
 
 [position-try]
-engine = "gecko"
 sub_properties = ["position-try-order", "position-try-fallbacks"]
 spec = "https://drafts.csswg.org/css-anchor-position-1/#position-try-prop"
 gecko_pref = "layout.css.anchor-positioning.enabled"
 
 [marker]
-engine = "gecko"
 sub_properties = ["marker-start", "marker-end", "marker-mid"]
 spec = "https://svgwg.org/svg2-draft/painting.html#MarkerShorthand"
 
@@ -362,13 +352,11 @@ extra_prefixes = ["moz:layout.css.prefixes.animations", "webkit"]
 rule_types_allowed = ["style"]
 
 [scroll-timeline]
-engine = "gecko"
 sub_properties = ["scroll-timeline-name", "scroll-timeline-axis"]
 spec = "https://drafts.csswg.org/scroll-animations-1/#scroll-timeline-shorthand"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
 
 [view-timeline]
-engine = "gecko"
 sub_properties = ["view-timeline-name", "view-timeline-axis"]
 spec = "https://drafts.csswg.org/scroll-animations-1/#view-timeline-shorthand"
 gecko_pref = "layout.css.scroll-driven-animations.enabled"
@@ -476,7 +464,6 @@ spec = "https://drafts.csswg.org/css-multicol/#propdef-columns"
 servo_pref = "layout.columns.enabled"
 
 [column-rule]
-engine = "gecko"
 sub_properties = ["column-rule-width", "column-rule-style", "column-rule-color"]
 spec = "https://drafts.csswg.org/css-multicol/#propdef-column-rule"
 derive_serialize = true
@@ -530,13 +517,12 @@ sub_properties = [
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font-variant"
 
 [font-synthesis]
-engine = "gecko"
-sub_properties = ["font-synthesis-weight", "font-synthesis-style", "font-synthesis-small-caps", "font-synthesis-position"]
+sub_properties = ["font-synthesis-weight", "font-synthesis-style", "font-synthesis-small-caps"]
+extra_gecko_sub_properties = ["font-synthesis-position"]
 spec = "https://drafts.csswg.org/css-fonts-3/#propdef-font-variant"
 derive_value_info = false
 
 [text-box]
-engine = "gecko"
 sub_properties = ["text-box-trim", "text-box-edge"]
 spec = "https://drafts.csswg.org/css-inline/#text-box-shorthand"
 gecko_pref = "layout.css.text-box.enabled"
@@ -547,7 +533,6 @@ spec = "https://drafts.csswg.org/css-text-decor-3/#text-emphasis-property"
 derive_serialize = true
 
 [text-wrap]
-engine = "gecko"
 sub_properties = ["text-wrap-mode", "text-wrap-style"]
 spec = "https://www.w3.org/TR/css-text-4/#text-wrap"
 
