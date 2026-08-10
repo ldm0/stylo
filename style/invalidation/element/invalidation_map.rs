@@ -328,18 +328,18 @@ pub struct InvalidationMap {
     pub document_state_selectors: Vec<DocumentStateDependency>,
     /// A map of other attribute affecting selectors.
     pub other_attribute_affecting_selectors: LocalNameDependencyMap,
-    /// A map of local-name dependencies used by Lightmount's external
+    /// A map of local-name dependencies used by Moli's external
     /// invalidation consumer.
     ///
     /// Servo's own normal restyle flow does not need this for element type
-    /// changes because element type is immutable. Lightmount consumes the
+    /// changes because element type is immutable. Moli consumes the
     /// dependency map for child-list insertion/removal cache invalidation,
     /// where the inserted/removed element's type is a useful key.
     pub type_to_selector: LocalNameDependencyMap,
     /// Normal dependencies for universal selectors.
     ///
     /// Servo's own restyle flow handles universal selector dependencies through
-    /// its broader child-list restyle ranges. Lightmount consumes invalidation
+    /// its broader child-list restyle ranges. Moli consumes invalidation
     /// maps as an external cache-invalidation oracle, so it needs to query
     /// universal dependencies explicitly for child-list insertion/removal.
     pub any_to_selector: AnyDependencyMap,
@@ -624,7 +624,7 @@ trait Collector {
 
     // Servo's normal invalidation doesn't need type-based dependencies for its
     // own restyle flow because elements don't change type, and child-list
-    // mutations already restyle descendant / later-sibling ranges. Lightmount's
+    // mutations already restyle descendant / later-sibling ranges. Moli's
     // external cache invalidation consumes this map directly, so it tracks
     // normal type dependencies too.
     fn type_map(&mut self) -> &mut LocalNameDependencyMap {
@@ -719,7 +719,7 @@ fn add_local_name(
 
 fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Result<(), AllocErr> {
     collector.update_states(
-        lightmount_state_flag_for_pseudo_class(pc),
+        moli_state_flag_for_pseudo_class(pc),
         pc.document_state_flag(),
     );
 
@@ -746,7 +746,7 @@ fn on_pseudo_class<C: Collector>(pc: &NonTSPseudoClass, collector: &mut C) -> Re
     add_attr_dependency(attr_name, collector)
 }
 
-fn lightmount_state_flag_for_pseudo_class(pc: &NonTSPseudoClass) -> ElementState {
+fn moli_state_flag_for_pseudo_class(pc: &NonTSPseudoClass) -> ElementState {
     match *pc {
         NonTSPseudoClass::Checked => ElementState::CHECKED,
         NonTSPseudoClass::Default => ElementState::DEFAULT,
@@ -1101,7 +1101,7 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
             return;
         }
         let dependency = self.dependency();
-        if lightmount_dependency_is_sibling_sensitive(&dependency) {
+        if moli_dependency_is_sibling_sensitive(&dependency) {
             if !self.note_type_sibling_dependency_if_possible(dependency.clone())
                 && self.alloc_error.is_none()
             {
@@ -1142,7 +1142,7 @@ impl<'a, 'b, 'c> SelectorDependencyCollector<'a, 'b, 'c> {
     }
 }
 
-fn lightmount_dependency_is_sibling_sensitive(dependency: &Dependency) -> bool {
+fn moli_dependency_is_sibling_sensitive(dependency: &Dependency) -> bool {
     match dependency.invalidation_kind() {
         DependencyInvalidationKind::Normal(NormalDependencyInvalidationKind::Siblings) => true,
         _ => dependency.right_combinator_is_next_sibling(),

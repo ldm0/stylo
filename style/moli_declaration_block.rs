@@ -1,4 +1,4 @@
-//! Lightmount-facing CSS declaration block hooks.
+//! Moli-facing CSS declaration block hooks.
 
 use std::borrow::Cow;
 
@@ -270,11 +270,11 @@ fn affected_names_for_property_id(property: &PropertyId) -> Vec<String> {
         },
         Err(id) => vec![id.name().into_owned()],
     };
-    append_lightmount_cssom_affected_names(&name, &mut names);
+    append_moli_cssom_affected_names(&name, &mut names);
     names
 }
 
-fn append_lightmount_cssom_affected_names(name: &str, names: &mut Vec<String>) {
+fn append_moli_cssom_affected_names(name: &str, names: &mut Vec<String>) {
     match name {
         "border" => append_unique_name(names, "border-image"),
         "font" => append_unique_name(names, "font-variant"),
@@ -473,7 +473,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_block_exposes_lightmount_cssom_compat_properties() {
+    fn declaration_block_exposes_moli_cssom_compat_properties() {
         static_prefs::set_pref!("layout.columns.enabled", true);
         static_prefs::set_pref!("layout.css.tree-counting-functions.enabled", true);
         let block = parse_declaration_block(
@@ -682,7 +682,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_block_handles_lightmount_cssom_compat_edge_values() {
+    fn declaration_block_handles_moli_cssom_compat_edge_values() {
         static_prefs::set_pref!("layout.css.tree-counting-functions.enabled", true);
 
         let block = parse_declaration_block(
@@ -725,7 +725,7 @@ mod tests {
     }
 
     #[test]
-    fn declaration_block_rejects_invalid_lightmount_cssom_compat_values() {
+    fn declaration_block_rejects_invalid_moli_cssom_compat_values() {
         let block = parse_declaration_block(
             "bookmark-level: 0; bookmark-state: none; \
              text-size-adjust: -100%; text-size-adjust: 10px; \
@@ -946,7 +946,7 @@ mod tests {
     }
 
     #[test]
-    fn lightmount_property_surface_matches_chromium_for_former_gecko_gates() {
+    fn moli_property_surface_matches_chromium_for_former_gecko_gates() {
         let chromium_supported = [
             "-webkit-line-clamp",
             "anchor-name",
@@ -1038,7 +1038,7 @@ mod tests {
             assert_ne!(
                 projection.set_result,
                 CssSetResult::ParseError,
-                "Chromium-supported property should be parsed for Lightmount: {name}"
+                "Chromium-supported property should be parsed for Moli: {name}"
             );
             assert!(
                 !block.css_text().is_empty(),
@@ -1084,7 +1084,7 @@ mod tests {
             assert_eq!(
                 projection.set_result,
                 CssSetResult::ParseError,
-                "Gecko-only property must not leak into Lightmount: {name}"
+                "Gecko-only property must not leak into Moli: {name}"
             );
             assert!(
                 block.is_empty(),
@@ -1094,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn lightmount_chromium_shorthands_parse_non_wide_values() {
+    fn moli_chromium_shorthands_parse_non_wide_values() {
         for (name, value) in [
             ("scroll-margin", "1px 2px"),
             ("scroll-margin-block", "1px 2px"),

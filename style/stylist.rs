@@ -26,11 +26,11 @@ use crate::invalidation::media_queries::{
     EffectiveMediaQueryResults, MediaListKey, ToMediaListKey,
 };
 use crate::invalidation::stylesheets::{RuleChangeKind, StylesheetInvalidationSet};
-use crate::lightmount_invalidation::{
-    lightmount_dependency_summary_for_invalidation_map,
-    lightmount_dependency_summary_for_relative_invalidation_map,
-    LightmountChildListStructuralBoundaryDependencySummary,
-    LightmountDependencyInvalidationSummary,
+use crate::moli_invalidation::{
+    moli_dependency_summary_for_invalidation_map,
+    moli_dependency_summary_for_relative_invalidation_map,
+    MoliChildListStructuralBoundaryDependencySummary,
+    MoliDependencyInvalidationSummary,
 };
 #[cfg(feature = "gecko")]
 use crate::properties::StyleBuilder;
@@ -2691,7 +2691,7 @@ fn component_has_child_list_structural_dependency(c: &Component<SelectorImpl>) -
 }
 
 #[derive(Clone)]
-enum LightmountStructuralBoundaryKey {
+enum MoliStructuralBoundaryKey {
     Id(Atom),
     Class(Atom),
     Attribute(LocalName),
@@ -2699,7 +2699,7 @@ enum LightmountStructuralBoundaryKey {
     Universal,
 }
 
-impl LightmountStructuralBoundaryKey {
+impl MoliStructuralBoundaryKey {
     fn specificity(&self) -> u8 {
         match self {
             Self::Universal => 0,
@@ -2710,7 +2710,7 @@ impl LightmountStructuralBoundaryKey {
         }
     }
 
-    fn note_in(self, summary: &mut LightmountChildListStructuralBoundaryDependencySummary) {
+    fn note_in(self, summary: &mut MoliChildListStructuralBoundaryDependencySummary) {
         match self {
             Self::Id(id) => summary.note_id_dependency(id),
             Self::Class(class) => summary.note_class_dependency(class),
@@ -2721,25 +2721,25 @@ impl LightmountStructuralBoundaryKey {
     }
 }
 
-fn lightmount_structural_boundary_key_for_compound(
+fn moli_structural_boundary_key_for_compound(
     components: &[&Component<SelectorImpl>],
-) -> LightmountStructuralBoundaryKey {
-    let mut selected = LightmountStructuralBoundaryKey::Universal;
+) -> MoliStructuralBoundaryKey {
+    let mut selected = MoliStructuralBoundaryKey::Universal;
     for component in components {
         let candidate = match component {
-            Component::ID(id) => LightmountStructuralBoundaryKey::Id(id.0.clone()),
-            Component::Class(class) => LightmountStructuralBoundaryKey::Class(class.0.clone()),
+            Component::ID(id) => MoliStructuralBoundaryKey::Id(id.0.clone()),
+            Component::Class(class) => MoliStructuralBoundaryKey::Class(class.0.clone()),
             Component::AttributeInNoNamespaceExists {
                 local_name_lower, ..
-            } => LightmountStructuralBoundaryKey::Attribute(local_name_lower.clone()),
+            } => MoliStructuralBoundaryKey::Attribute(local_name_lower.clone()),
             Component::AttributeInNoNamespace { local_name, .. } => {
-                LightmountStructuralBoundaryKey::Attribute(local_name.clone())
+                MoliStructuralBoundaryKey::Attribute(local_name.clone())
             },
             Component::AttributeOther(attribute) => {
-                LightmountStructuralBoundaryKey::Attribute(attribute.local_name.clone())
+                MoliStructuralBoundaryKey::Attribute(attribute.local_name.clone())
             },
             Component::LocalName(local_name) => {
-                LightmountStructuralBoundaryKey::Type(local_name.lower_name.clone())
+                MoliStructuralBoundaryKey::Type(local_name.lower_name.clone())
             },
             _ => continue,
         };
@@ -2750,14 +2750,14 @@ fn lightmount_structural_boundary_key_for_compound(
     selected
 }
 
-fn lightmount_selector_has_nested_child_list_structural_dependency(
+fn moli_selector_has_nested_child_list_structural_dependency(
     selector: &Selector<SelectorImpl>,
 ) -> bool {
     let mut iter = selector.iter();
     loop {
         for component in &mut iter {
             if component_has_child_list_structural_dependency(component)
-                || lightmount_component_has_nested_child_list_structural_dependency(component)
+                || moli_component_has_nested_child_list_structural_dependency(component)
             {
                 return true;
             }
@@ -2768,7 +2768,7 @@ fn lightmount_selector_has_nested_child_list_structural_dependency(
     }
 }
 
-fn lightmount_component_has_nested_child_list_structural_dependency(
+fn moli_component_has_nested_child_list_structural_dependency(
     component: &Component<SelectorImpl>,
 ) -> bool {
     match component {
@@ -2776,23 +2776,23 @@ fn lightmount_component_has_nested_child_list_structural_dependency(
             selectors
                 .slice()
                 .iter()
-                .any(lightmount_selector_has_nested_child_list_structural_dependency)
+                .any(moli_selector_has_nested_child_list_structural_dependency)
         },
         Component::Slotted(selector)
         | Component::Host(Some(selector))
         | Component::HostContext(selector) => {
-            lightmount_selector_has_nested_child_list_structural_dependency(selector)
+            moli_selector_has_nested_child_list_structural_dependency(selector)
         },
         Component::Has(selectors) => selectors.iter().any(|selector| {
-            lightmount_selector_has_nested_child_list_structural_dependency(&selector.selector)
+            moli_selector_has_nested_child_list_structural_dependency(&selector.selector)
         }),
         _ => false,
     }
 }
 
-fn lightmount_note_child_list_structural_boundary_dependencies(
+fn moli_note_child_list_structural_boundary_dependencies(
     selector: &Selector<SelectorImpl>,
-    summary: &mut LightmountChildListStructuralBoundaryDependencySummary,
+    summary: &mut MoliChildListStructuralBoundaryDependencySummary,
 ) {
     let mut iter = selector.iter();
     let mut compounds = Vec::new();
@@ -2810,7 +2810,7 @@ fn lightmount_note_child_list_structural_boundary_dependencies(
             .iter()
             .any(|component| matches!(component, Component::Empty))
         {
-            lightmount_structural_boundary_key_for_compound(components).note_in(summary);
+            moli_structural_boundary_key_for_compound(components).note_in(summary);
         }
         if components
             .iter()
@@ -2820,16 +2820,16 @@ fn lightmount_note_child_list_structural_boundary_dependencies(
                 compounds
                     .get(index + 1)
                     .map(|(parent_components, _)| {
-                        lightmount_structural_boundary_key_for_compound(parent_components)
+                        moli_structural_boundary_key_for_compound(parent_components)
                     })
-                    .unwrap_or(LightmountStructuralBoundaryKey::Universal)
+                    .unwrap_or(MoliStructuralBoundaryKey::Universal)
                     .note_in(summary);
             } else {
                 summary.note_universal_dependency();
             }
         }
         if components.iter().any(|component| {
-            lightmount_component_has_nested_child_list_structural_dependency(component)
+            moli_component_has_nested_child_list_structural_dependency(component)
         }) {
             // Nested selector-list structural state can change direction and
             // scope (notably through :has()). Keep this branch conservative
@@ -3513,8 +3513,8 @@ pub struct CascadeData {
 
     /// Selector-derived keys for boundaries whose children can affect
     /// tree-structural selector matching.
-    lightmount_child_list_structural_boundary_dependencies:
-        LightmountChildListStructuralBoundaryDependencySummary,
+    moli_child_list_structural_boundary_dependencies:
+        MoliChildListStructuralBoundaryDependencySummary,
 
     /// The attribute local names that appear in attribute selectors.  Used
     /// to avoid taking element snapshots when an irrelevant attribute changes.
@@ -3650,8 +3650,8 @@ impl CascadeData {
             additional_relative_selector_invalidation_map:
                 AdditionalRelativeSelectorInvalidationMap::new(),
             has_child_list_structural_dependency: false,
-            lightmount_child_list_structural_boundary_dependencies:
-                LightmountChildListStructuralBoundaryDependencySummary::default(),
+            moli_child_list_structural_boundary_dependencies:
+                MoliChildListStructuralBoundaryDependencySummary::default(),
             nth_of_mapped_ids: PrecomputedHashSet::default(),
             nth_of_class_dependencies: PrecomputedHashSet::default(),
             nth_of_attribute_dependencies: PrecomputedHashSet::default(),
@@ -3773,25 +3773,25 @@ impl CascadeData {
     }
 
     /// Returns selector-derived child-list structural boundary keys for
-    /// Lightmount source dependency planning.
+    /// Moli source dependency planning.
     #[inline]
-    pub(crate) fn lightmount_child_list_structural_boundary_dependency_summary(
+    pub(crate) fn moli_child_list_structural_boundary_dependency_summary(
         &self,
-    ) -> &LightmountChildListStructuralBoundaryDependencySummary {
-        &self.lightmount_child_list_structural_boundary_dependencies
+    ) -> &MoliChildListStructuralBoundaryDependencySummary {
+        &self.moli_child_list_structural_boundary_dependencies
     }
 
-    /// Returns keyed selector dependency query data for Lightmount style
+    /// Returns keyed selector dependency query data for Moli style
     /// invalidation.
-    pub(crate) fn lightmount_dependency_invalidation_summary(
+    pub(crate) fn moli_dependency_invalidation_summary(
         &self,
-    ) -> LightmountDependencyInvalidationSummary {
+    ) -> MoliDependencyInvalidationSummary {
         let mut summary =
-            lightmount_dependency_summary_for_invalidation_map(&self.invalidation_map);
-        summary.extend(lightmount_dependency_summary_for_invalidation_map(
+            moli_dependency_summary_for_invalidation_map(&self.invalidation_map);
+        summary.extend(moli_dependency_summary_for_invalidation_map(
             &self.relative_selector_invalidation_map,
         ));
-        summary.extend(lightmount_dependency_summary_for_relative_invalidation_map(
+        summary.extend(moli_dependency_summary_for_relative_invalidation_map(
             &self.additional_relative_selector_invalidation_map,
         ));
         for class in &self.nth_of_class_dependencies {
@@ -4202,9 +4202,9 @@ impl CascadeData {
                 rule.selector.visit(&mut visitor);
                 self.has_child_list_structural_dependency |= has_child_list_structural_dependency;
                 if has_child_list_structural_dependency {
-                    lightmount_note_child_list_structural_boundary_dependencies(
+                    moli_note_child_list_structural_boundary_dependencies(
                         &rule.selector,
-                        &mut self.lightmount_child_list_structural_boundary_dependencies,
+                        &mut self.moli_child_list_structural_boundary_dependencies,
                     );
                 }
 
@@ -4753,7 +4753,7 @@ impl CascadeData {
                     self.has_child_list_structural_dependency |=
                         has_child_list_structural_dependency;
                     if has_child_list_structural_dependency {
-                        self.lightmount_child_list_structural_boundary_dependencies
+                        self.moli_child_list_structural_boundary_dependencies
                             .note_universal_dependency();
                     }
 
@@ -4816,10 +4816,10 @@ impl CascadeData {
     /// Adds every style rule in a stylesheet to this cascade data, ignoring
     /// device-dependent nested-rule filtering.
     ///
-    /// This is intended for Lightmount source metadata extraction. It builds
+    /// This is intended for Moli source metadata extraction. It builds
     /// conservative invalidation summaries from selector syntax without tying
     /// those summaries to a particular viewport, media type, or color scheme.
-    pub fn add_stylesheet_for_lightmount_source_metadata<S>(
+    pub fn add_stylesheet_for_moli_source_metadata<S>(
         &mut self,
         device: &Device,
         quirks_mode: QuirksMode,
@@ -5046,8 +5046,8 @@ impl CascadeData {
         self.relative_selector_invalidation_map.clear();
         self.additional_relative_selector_invalidation_map.clear();
         self.has_child_list_structural_dependency = false;
-        self.lightmount_child_list_structural_boundary_dependencies =
-            LightmountChildListStructuralBoundaryDependencySummary::default();
+        self.moli_child_list_structural_boundary_dependencies =
+            MoliChildListStructuralBoundaryDependencySummary::default();
         self.attribute_dependencies.clear();
         self.nth_of_attribute_dependencies.clear();
         self.nth_of_custom_state_dependencies.clear();
@@ -5327,7 +5327,7 @@ pub fn needs_revalidation_for_testing(s: &Selector<SelectorImpl>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lightmount_invalidation::LightmountStyleInvalidationQuery;
+    use crate::moli_invalidation::MoliStyleInvalidationQuery;
     use crate::selector_parser::SelectorParser;
 
     fn url_data() -> UrlExtraData {
@@ -5336,34 +5336,34 @@ mod tests {
 
     fn structural_boundary_summary_for_selector(
         selector_text: &str,
-    ) -> LightmountChildListStructuralBoundaryDependencySummary {
+    ) -> MoliChildListStructuralBoundaryDependencySummary {
         let selectors =
             SelectorParser::parse_author_origin_no_namespace(selector_text, &url_data())
                 .expect("selector should parse");
-        let mut summary = LightmountChildListStructuralBoundaryDependencySummary::default();
+        let mut summary = MoliChildListStructuralBoundaryDependencySummary::default();
         for selector in selectors.slice() {
-            lightmount_note_child_list_structural_boundary_dependencies(selector, &mut summary);
+            moli_note_child_list_structural_boundary_dependencies(selector, &mut summary);
         }
         summary
     }
 
     #[test]
-    fn lightmount_structural_boundary_summary_keys_selector_relationships() {
+    fn moli_structural_boundary_summary_keys_selector_relationships() {
         let details = structural_boundary_summary_for_selector("details > summary:first-of-type");
-        assert!(details.matches_query(LightmountStyleInvalidationQuery::Type("details")));
-        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("summary")));
-        assert!(!details.matches_query(LightmountStyleInvalidationQuery::Type("section")));
+        assert!(details.matches_query(MoliStyleInvalidationQuery::Type("details")));
+        assert!(!details.matches_query(MoliStyleInvalidationQuery::Type("summary")));
+        assert!(!details.matches_query(MoliStyleInvalidationQuery::Type("section")));
 
         let empty = structural_boundary_summary_for_selector("section:empty");
-        assert!(empty.matches_query(LightmountStyleInvalidationQuery::Type("section")));
-        assert!(!empty.matches_query(LightmountStyleInvalidationQuery::Universal));
+        assert!(empty.matches_query(MoliStyleInvalidationQuery::Type("section")));
+        assert!(!empty.matches_query(MoliStyleInvalidationQuery::Universal));
 
         let keyed_nth = structural_boundary_summary_for_selector(".items > .item:last-child");
-        assert!(keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("items")));
-        assert!(!keyed_nth.matches_query(LightmountStyleInvalidationQuery::Class("item")));
+        assert!(keyed_nth.matches_query(MoliStyleInvalidationQuery::Class("items")));
+        assert!(!keyed_nth.matches_query(MoliStyleInvalidationQuery::Class("item")));
 
         let unscoped_nth = structural_boundary_summary_for_selector(".item:last-child");
-        assert!(unscoped_nth.matches_query(LightmountStyleInvalidationQuery::Universal));
+        assert!(unscoped_nth.matches_query(MoliStyleInvalidationQuery::Universal));
     }
 
     fn assert_registration_valid(syntax: &str, initial_value: Option<&str>) {

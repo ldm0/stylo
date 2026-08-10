@@ -86,28 +86,28 @@ pub mod font_metrics;
 pub mod gecko_bindings;
 pub mod global_style_data;
 pub mod invalidation;
-/// Lightmount-facing CSS declaration block hooks.
+/// Moli-facing CSS declaration block hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
-pub mod lightmount_declaration_block;
-/// Lightmount-facing `@font-face` parser hooks.
+pub mod moli_declaration_block;
+/// Moli-facing `@font-face` parser hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
-pub mod lightmount_font_face;
-/// Lightmount-facing selector invalidation hooks.
-pub mod lightmount_invalidation;
-/// Lightmount-facing numeric value parser and used-value resolver hooks.
+pub mod moli_font_face;
+/// Moli-facing selector invalidation hooks.
+pub mod moli_invalidation;
+/// Moli-facing numeric value parser and used-value resolver hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
-pub mod lightmount_numeric;
-/// Lightmount-facing stylesheet rule tree hooks.
+pub mod moli_numeric;
+/// Moli-facing stylesheet rule tree hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
-pub mod lightmount_rule_tree;
-/// Lightmount-facing transform parser hooks.
+pub mod moli_rule_tree;
+/// Moli-facing transform parser hooks.
 #[cfg(feature = "servo")]
 #[allow(missing_docs)]
-pub mod lightmount_transform;
+pub mod moli_transform;
 #[allow(missing_docs)] // TODO.
 pub mod logical_geometry;
 pub mod matching;

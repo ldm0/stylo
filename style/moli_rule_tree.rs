@@ -1,4 +1,4 @@
-//! Lightmount-facing stylesheet rule tree hooks.
+//! Moli-facing stylesheet rule tree hooks.
 
 use std::{
     borrow::Cow,
@@ -204,7 +204,7 @@ pub struct CssStylesheetMutationResult {
     pub first_declaration_text: Option<String>,
 }
 
-/// Compatibility name for the Lightmount CSSOM helper surface.
+/// Compatibility name for the Moli CSSOM helper surface.
 ///
 /// The parsed object is the same Stylo stylesheet that an embedding installs
 /// into its document style set. This alias must not grow renderer ownership or
@@ -867,7 +867,7 @@ fn parse_stylesheet_rule_for_insert_rule(
     constructed: bool,
 ) -> Result<ParsedRuleForInsert, CssRuleInsertError> {
     let parsed = parse_stylesheet_for_mutation(existing_rule_texts, constructed)?;
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let stylesheet_loader = match parsed.allow_import_rules {
         AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
         AllowImportRules::No => None,
@@ -911,7 +911,7 @@ fn parse_stylesheet_for_mutation(
     existing_rule_texts: &[String],
     constructed: bool,
 ) -> Result<ParsedStylesheetForMutation, CssRuleInsertError> {
-    ensure_lightmount_rule_tree_prefs();
+    ensure_moli_rule_tree_prefs();
     let allow_import_rules = if constructed {
         AllowImportRules::No
     } else {
@@ -921,7 +921,7 @@ fn parse_stylesheet_for_mutation(
         return Err(CssRuleInsertError::Syntax);
     };
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let stylesheet_loader = match allow_import_rules {
         AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
         AllowImportRules::No => None,
@@ -949,9 +949,9 @@ fn parse_stylesheet_rule_tree_with_import_policy(
     css_text: &str,
     allow_import_rules: AllowImportRules,
 ) -> CssStylesheetRuleTree {
-    ensure_lightmount_rule_tree_prefs();
+    ensure_moli_rule_tree_prefs();
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let stylesheet_loader = match allow_import_rules {
         AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
         AllowImportRules::No => None,
@@ -1110,12 +1110,12 @@ fn parse_nested_rules_for_mutation(
     containing_rule_type_bits: u32,
     parse_relative_rule_type: Option<CssRuleType>,
 ) -> Result<ParsedNestedRulesForMutation, CssRuleInsertError> {
-    ensure_lightmount_rule_tree_prefs();
+    ensure_moli_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Err(CssRuleInsertError::Syntax);
     };
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let parent_css = parent_stylesheet_rule_texts.join(" ");
     let contents = StylesheetContents::from_str(
         &parent_css,
@@ -1158,12 +1158,12 @@ fn parse_keyframe_rules_for_mutation(
     parent_stylesheet_rule_texts: &[String],
     existing_rule_texts: &[String],
 ) -> Result<ParsedKeyframeRulesForMutation, CssRuleInsertError> {
-    ensure_lightmount_rule_tree_prefs();
+    ensure_moli_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Err(CssRuleInsertError::Syntax);
     };
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let parent_css = parent_stylesheet_rule_texts.join(" ");
     let contents = StylesheetContents::from_str(
         &parent_css,
@@ -1274,12 +1274,12 @@ fn parse_stylesheet_rule_views_with_import_policy(
     css_text: &str,
     allow_import_rules: AllowImportRules,
 ) -> Vec<CssStylesheetRuleView> {
-    ensure_lightmount_rule_tree_prefs();
+    ensure_moli_rule_tree_prefs();
     let Some(url_data) = about_blank_url_data() else {
         return Vec::new();
     };
     let shared_lock = SharedRwLock::new();
-    let import_loader = LightmountImportLoader;
+    let import_loader = MoliImportLoader;
     let stylesheet_loader = match allow_import_rules {
         AllowImportRules::Yes => Some(&import_loader as &dyn StylesheetLoader),
         AllowImportRules::No => None,
@@ -1303,7 +1303,7 @@ fn parse_stylesheet_rule_views_with_import_policy(
         .collect()
 }
 
-fn ensure_lightmount_rule_tree_prefs() {
+fn ensure_moli_rule_tree_prefs() {
     static ENABLE: Once = Once::new();
     ENABLE.call_once(|| {
         static_prefs::set_pref!("layout.container-queries.enabled", true);
@@ -1801,9 +1801,9 @@ impl From<RulesMutateError> for CssRuleInsertError {
     }
 }
 
-struct LightmountImportLoader;
+struct MoliImportLoader;
 
-impl StylesheetLoader for LightmountImportLoader {
+impl StylesheetLoader for MoliImportLoader {
     fn request_stylesheet(
         &self,
         url: CssUrl,

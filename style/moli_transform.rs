@@ -1,4 +1,4 @@
-//! Lightmount-facing CSS transform parsing hooks.
+//! Moli-facing CSS transform parsing hooks.
 
 use std::borrow::Cow;
 
@@ -208,7 +208,7 @@ mod tests {
     }
 
     #[test]
-    fn transform_functions_keep_lightmount_compat_splitter_for_whitespace_arguments() {
+    fn transform_functions_keep_moli_compat_splitter_for_whitespace_arguments() {
         let functions =
             parse_transform_function_list("translate(calc(10px + 2px) 20px) matrix(1 0 0 1 5 6)")
                 .unwrap();

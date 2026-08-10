@@ -1,4 +1,4 @@
-//! Lightmount-facing `@font-face` parsing hooks.
+//! Moli-facing `@font-face` parsing hooks.
 
 use std::borrow::Cow;
 

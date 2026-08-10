@@ -1,7 +1,7 @@
-//! Lightmount-facing numeric value parsing and used-value resolution.
+//! Moli-facing numeric value parsing and used-value resolution.
 //!
 //! This module deliberately keeps the CSS grammar and value type interaction in
-//! Stylo while accepting the small set of runtime facts that Lightmount can
+//! Stylo while accepting the small set of runtime facts that Moli can
 //! provide without a full layout engine.
 
 use std::borrow::Cow;
@@ -373,7 +373,7 @@ fn resolve_unitless_length(raw: &str, unitless: UnitlessLength) -> Option<f64> {
 }
 
 fn parse_stylo_numeric_node(raw: &str, units: CalcUnits) -> Option<CalcNode> {
-    ensure_lightmount_numeric_prefs();
+    ensure_moli_numeric_prefs();
     // CalcNode::parse is Stylo's public numeric AST boundary. Wrapping plain
     // dimensions and percentages in calc() lets this adapter use that same
     // boundary without unpacking NumericUnion's private storage variants.
@@ -394,7 +394,7 @@ fn parse_stylo_numeric_node(raw: &str, units: CalcUnits) -> Option<CalcNode> {
     })?
 }
 
-fn ensure_lightmount_numeric_prefs() {
+fn ensure_moli_numeric_prefs() {
     static ENABLE: Once = Once::new();
     ENABLE.call_once(|| {
         static_prefs::set_pref!("layout.css.tree-counting-functions.enabled", true);
