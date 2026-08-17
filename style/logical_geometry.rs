@@ -50,10 +50,20 @@ pub enum WritingModeProperty {
     #[parse(aliases = "tb,tb-rl")]
     VerticalRl,
     VerticalLr,
-    #[cfg(feature = "gecko")]
     SidewaysRl,
-    #[cfg(feature = "gecko")]
     SidewaysLr,
+}
+
+#[cfg(test)]
+mod writing_mode_property_tests {
+    use super::WritingModeProperty;
+    use style_traits::ToCss;
+
+    #[test]
+    fn sideways_values_are_available_to_standalone_consumers() {
+        assert_eq!(WritingModeProperty::SidewaysRl.to_css_string(), "sideways-rl");
+        assert_eq!(WritingModeProperty::SidewaysLr.to_css_string(), "sideways-lr");
+    }
 }
 
 // TODO: improve the readability of the WritingMode serialization, refer to the Debug:fmt()
@@ -163,14 +173,12 @@ impl WritingMode {
                     flags.insert(WritingMode::INLINE_REVERSED);
                 }
             },
-            #[cfg(feature = "gecko")]
             WritingModeProperty::SidewaysRl => {
                 flags.insert(WritingMode::WRITING_MODE_SIDEWAYS_RL);
                 if direction == Direction::Rtl {
                     flags.insert(WritingMode::INLINE_REVERSED);
                 }
             },
-            #[cfg(feature = "gecko")]
             WritingModeProperty::SidewaysLr => {
                 flags.insert(WritingMode::WRITING_MODE_SIDEWAYS_LR);
                 if direction == Direction::Ltr {
