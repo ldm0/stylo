@@ -1009,11 +1009,31 @@ impl FontSize {
                     }
                 },
             };
-        let size = NonNegative(Self::quantize_font_size(size));
+        let size = NonNegative(Self::font_size_for_computed_value(size));
         computed::FontSize {
             computed_size: size,
             used_size: size,
             keyword_info: info,
+        }
+    }
+
+    /// Apply the engine-owned font-cache precision policy.
+    ///
+    /// Gecko deliberately reduces computed font-size precision to bound the
+    /// number of font instances its caches can observe. Standalone Servo does
+    /// not own those caches, and preserving the CSS computed value here keeps
+    /// root-relative units responsive to subpixel font-size changes. Geometry
+    /// consumers remain free to quantize their used layout values later.
+    #[inline]
+    fn font_size_for_computed_value(size: CSSPixelLength) -> CSSPixelLength {
+        #[cfg(feature = "gecko")]
+        {
+            return Self::quantize_font_size(size);
+        }
+
+        #[cfg(not(feature = "gecko"))]
+        {
+            size
         }
     }
 
@@ -1038,6 +1058,19 @@ impl FontSize {
         let d = size.px() * SCALE_PLUS_ONE;
         let t = d - size.px();
         CSSPixelLength::new(d - t)
+    }
+}
+
+#[cfg(all(test, feature = "servo", not(feature = "gecko")))]
+mod tests {
+    use super::{CSSPixelLength, FontSize};
+
+    #[test]
+    fn standalone_servo_preserves_subpixel_font_size_precision() {
+        let specified = CSSPixelLength::new(16.1);
+        let computed = FontSize::font_size_for_computed_value(specified);
+
+        assert_eq!(computed.px().to_bits(), specified.px().to_bits());
     }
 }
 
