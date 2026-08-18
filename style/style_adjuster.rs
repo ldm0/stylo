@@ -8,13 +8,13 @@
 use crate::computed_value_flags::ComputedValueFlags;
 use crate::dom::TElement;
 use crate::logical_geometry::PhysicalSide;
+use crate::properties::longhands::content_visibility::computed_value::T as ContentVisibility;
 use crate::properties::longhands::display::computed_value::T as Display;
 use crate::properties::longhands::float::computed_value::T as Float;
 use crate::properties::longhands::position::computed_value::T as Position;
 #[cfg(feature = "gecko")]
 use crate::properties::longhands::{
     contain::computed_value::T as Contain, container_type::computed_value::T as ContainerType,
-    content_visibility::computed_value::T as ContentVisibility,
 };
 #[cfg(feature = "gecko")]
 use crate::properties::LonghandId;
@@ -485,7 +485,6 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
     /// an auto value
     ///
     /// <https://github.com/w3c/csswg-drafts/issues/8407>
-    #[cfg(feature = "gecko")]
     fn adjust_for_contain_intrinsic_size(&mut self) {
         let content_visibility = self.style.get_box().clone_content_visibility();
         if content_visibility != ContentVisibility::Auto {
@@ -1066,11 +1065,10 @@ impl<'a, 'b: 'a> StyleAdjuster<'a, 'b> {
         self.adjust_for_position();
         self.adjust_for_overflow();
         #[cfg(feature = "gecko")]
-        {
-            self.adjust_for_contain();
-            self.adjust_for_contain_intrinsic_size();
-            self.adjust_for_justify_items();
-        }
+        self.adjust_for_contain();
+        self.adjust_for_contain_intrinsic_size();
+        #[cfg(feature = "gecko")]
+        self.adjust_for_justify_items();
         self.adjust_for_table_text_align();
         self.adjust_for_writing_mode(layout_parent_style);
         #[cfg(feature = "gecko")]
