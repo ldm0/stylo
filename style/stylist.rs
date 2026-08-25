@@ -3803,6 +3803,9 @@ impl CascadeData {
         for attribute in &self.nth_of_attribute_dependencies {
             summary.note_nth_of_attribute_dependency(attribute.clone());
         }
+        for state in &self.nth_of_custom_state_dependencies {
+            summary.note_nth_of_custom_state_dependency(state.clone());
+        }
         summary.note_nth_of_state_dependency(self.nth_of_state_dependencies);
         summary.note_unrepresented_state_dependencies(self.state_dependencies);
         summary
@@ -5364,6 +5367,21 @@ mod tests {
 
         let unscoped_nth = structural_boundary_summary_for_selector(".item:last-child");
         assert!(unscoped_nth.matches_query(MoliStyleInvalidationQuery::Universal));
+    }
+
+    #[test]
+    fn moli_dependency_summary_exports_nth_of_custom_state_dependencies() {
+        let mut cascade_data = CascadeData::new();
+        let state = AtomIdent::from("--active");
+        cascade_data
+            .nth_of_custom_state_dependencies
+            .insert(state.clone());
+
+        let dependency = cascade_data
+            .moli_dependency_invalidation_summary()
+            .query_custom_state(&state);
+
+        assert!(dependency.requires_fallback());
     }
 
     fn assert_registration_valid(syntax: &str, initial_value: Option<&str>) {

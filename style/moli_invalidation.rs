@@ -7005,6 +7005,10 @@ impl MoliDependencyInvalidationSummary {
         self.note_attribute_dependency(attribute, moli_nth_of_dependency_query_result());
     }
 
+    pub(crate) fn note_nth_of_custom_state_dependency(&mut self, state: AtomIdent) {
+        self.note_custom_state_dependency(state, moli_nth_of_dependency_query_result());
+    }
+
     pub(crate) fn note_nth_of_state_dependency(&mut self, state: ElementState) {
         if state.is_empty() {
             return;
@@ -10765,10 +10769,12 @@ mod tests {
         let other_class = Atom::from("other");
         let id = Atom::from("target");
         let attribute = LocalName::from("data-active");
+        let custom_state = AtomIdent::from("--active");
 
         summary.note_nth_of_class_dependency(class.clone());
         summary.note_nth_of_id_dependency(id.clone());
         summary.note_nth_of_attribute_dependency(attribute.clone());
+        summary.note_nth_of_custom_state_dependency(custom_state.clone());
         summary.note_nth_of_state_dependency(ElementState::FOCUS);
         summary.note_nth_of_state_dependency(ElementState::empty());
 
@@ -10792,6 +10798,10 @@ mod tests {
         assert_eq!(
             summary.query_attribute(&attribute).kinds(),
             &[MoliDependencyKind::Siblings]
+        );
+        assert_eq!(
+            summary.query_custom_state(&custom_state).fallback_reasons(),
+            &[MoliDependencyFallbackReason::NthOfDependency]
         );
         assert_eq!(
             summary.query_focus().kinds(),
