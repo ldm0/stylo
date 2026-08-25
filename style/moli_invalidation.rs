@@ -3827,20 +3827,32 @@ where
                     );
                     let context_roots = fallback.roots();
                     if !context_roots.is_empty() {
-                        // `NthOfDependency` and
-                        // `NestedRelativeSelectorDependency` are conservative
-                        // source-summary classifications, not proof that the
-                        // retained invalidators cannot answer this concrete
-                        // query. Run the query first and retain the
-                        // mutation-context roots only as its safety net. The
-                        // source result will use them if execution reports an
-                        // unsupported dependency or an inexact empty result.
-                        moli_push_unique_roots(
-                            &mut exact_safety_fallback_roots,
-                            &mut exact_safety_fallback_seen,
-                            context_roots,
-                        );
-                        exact_queries.push((*request.query()).clone());
+                        if dependency.tries_retained_query_before_context_fallback() {
+                            // Nested relative-selector classifications come
+                            // from the conservative source summary. The
+                            // retained relative invalidator can still answer a
+                            // concrete query exactly, so run it first and keep
+                            // these mutation-context roots only as its safety
+                            // net.
+                            moli_push_unique_roots(
+                                &mut exact_safety_fallback_roots,
+                                &mut exact_safety_fallback_seen,
+                                context_roots,
+                            );
+                            exact_queries.push((*request.query()).clone());
+                        } else {
+                            fallback_kind =
+                                moli_merge_retained_source_invalidation_fallback_kind(
+                                    fallback_kind,
+                                    Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
+                                );
+                            fallback_reasons.extend(reasons);
+                            moli_push_unique_roots(
+                                &mut reasoned_fallback_roots,
+                                &mut reasoned_fallback_seen,
+                                context_roots,
+                            );
+                        }
                         continue;
                     }
                     if selected_fallback_roots.is_empty() {
@@ -6701,6 +6713,19 @@ impl MoliDependencyQueryResult {
         }
     }
 
+    /// Return whether this summary-only fallback may first be attempted by
+    /// the retained invalidator with mutation-context roots as a safety net.
+    #[inline]
+    fn tries_retained_query_before_context_fallback(&self) -> bool {
+        !self.fallback_reasons.is_empty()
+            && self.fallback_reasons.iter().all(|reason| {
+                matches!(
+                    reason,
+                    MoliDependencyFallbackReason::NestedRelativeSelectorDependency
+                )
+            })
+    }
+
     /// Returns explicit fallback reasons, or conservative shape-derived reasons
     /// when the caller has already determined this query needs fallback handling.
     #[inline]
@@ -7582,6 +7607,15 @@ mod tests {
             panic!("nth-of dependency should use context fallback roots");
         };
         assert!(reasons.contains(&MoliSourceInvalidationFallbackReason::NthOfDependency));
+        assert!(!nth_of.tries_retained_query_before_context_fallback());
+
+        let mut nested_relative = MoliDependencyQueryResult::default();
+        nested_relative.add_fallback_reason(
+            MoliDependencyFallbackReason::NestedRelativeSelectorDependency,
+        );
+        assert!(nested_relative.tries_retained_query_before_context_fallback());
+        nested_relative.add_fallback_reason(MoliDependencyFallbackReason::NthOfDependency);
+        assert!(!nested_relative.tries_retained_query_before_context_fallback());
 
         let mut scope = MoliDependencyQueryResult::default();
         scope.add_kind(MoliDependencyKind::Scope);
@@ -9652,7 +9686,8 @@ mod tests {
         }
 
         let mut dependency = MoliDependencyQueryResult::default();
-        dependency.add_fallback_reason(MoliDependencyFallbackReason::NthOfDependency);
+        dependency
+            .add_fallback_reason(MoliDependencyFallbackReason::NestedRelativeSelectorDependency);
         let mut dependency_summary = MoliDependencyInvalidationSummary::default();
         dependency_summary.note_class_dependency(Atom::from("active"), dependency);
         let source_summary = MoliSourceDependencySummary::from_parts(
