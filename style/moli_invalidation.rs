@@ -3827,16 +3827,20 @@ where
                     );
                     let context_roots = fallback.roots();
                     if !context_roots.is_empty() {
-                        fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
-                            fallback_kind,
-                            Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
-                        );
-                        fallback_reasons.extend(reasons);
+                        // `NthOfDependency` and
+                        // `NestedRelativeSelectorDependency` are conservative
+                        // source-summary classifications, not proof that the
+                        // retained invalidators cannot answer this concrete
+                        // query. Run the query first and retain the
+                        // mutation-context roots only as its safety net. The
+                        // source result will use them if execution reports an
+                        // unsupported dependency or an inexact empty result.
                         moli_push_unique_roots(
-                            &mut reasoned_fallback_roots,
-                            &mut reasoned_fallback_seen,
+                            &mut exact_safety_fallback_roots,
+                            &mut exact_safety_fallback_seen,
                             context_roots,
                         );
+                        exact_queries.push((*request.query()).clone());
                         continue;
                     }
                     if selected_fallback_roots.is_empty() {
@@ -9623,7 +9627,7 @@ mod tests {
     }
 
     #[test]
-    fn moli_source_dependency_batch_plan_uses_context_root_provider() {
+    fn moli_source_dependency_batch_plan_uses_context_roots_as_exact_query_safety() {
         #[derive(Default)]
         struct ContextRootsProviderForTest {
             calls: usize,
@@ -9693,12 +9697,12 @@ mod tests {
         );
         assert_eq!(
             target.target_kind,
-            Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback)
+            Some(MoliRetainedSourceStyleInvalidationKind::RetainedQueries)
         );
-        assert_eq!(target.fallback_roots, vec![10]);
-        assert!(target
-            .fallback_reasons
-            .contains(&MoliSourceInvalidationFallbackReason::NthOfDependency));
+        assert_eq!(target.exact_queries, vec![query]);
+        assert!(target.reasoned_fallback_roots.is_empty());
+        assert_eq!(target.exact_safety_fallback_roots, vec![10]);
+        assert!(target.fallback_reasons.is_empty());
     }
 
     #[test]
