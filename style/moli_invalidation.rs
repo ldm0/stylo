@@ -2504,6 +2504,9 @@ enum MoliRetainedSourceStyleInvalidationInput<'a, Root, Snapshot> {
         shadow_root: Option<Root>,
         /// Source-local retained invalidation queries.
         queries: &'a IndexSet<MoliRetainedStyleInvalidationQuery<Root>>,
+        /// Whether the runtime request and source plan together prove that no
+        /// matched active dependency is an exact no-op.
+        zero_matched_dependency_result_is_exact: bool,
         /// Reasoned fallback roots from source/cause planning.
         reasoned_fallback_roots: &'a IndexSet<Root>,
         /// Exact-safety fallback roots used when exact query capability is
@@ -2551,6 +2554,7 @@ pub trait MoliRetainedSourceStyleInvalidationSink<'a, Root, Snapshot> {
         cascade_data: Option<&'a ServoArc<CascadeData>>,
         shadow_root: Option<Root>,
         queries: &'a IndexSet<MoliRetainedStyleInvalidationQuery<Root>>,
+        zero_matched_dependency_result_is_exact: bool,
         reasoned_fallback_roots: &'a IndexSet<Root>,
         exact_safety_fallback_roots: &'a IndexSet<Root>,
         fallback_reasons: &'a IndexSet<MoliSourceInvalidationFallbackReason>,
@@ -2589,6 +2593,7 @@ pub fn moli_retained_source_style_invalidation_from_parts<'a, Root, Snapshot>(
     cascade_data: Option<&'a ServoArc<CascadeData>>,
     shadow_root: Option<Root>,
     retained_queries: Option<&'a IndexSet<MoliRetainedStyleInvalidationQuery<Root>>>,
+    zero_matched_dependency_result_is_exact: bool,
     reasoned_fallback_roots: &'a IndexSet<Root>,
     exact_safety_fallback_roots: &'a IndexSet<Root>,
     fallback_reasons: &'a IndexSet<MoliSourceInvalidationFallbackReason>,
@@ -2602,6 +2607,7 @@ pub fn moli_retained_source_style_invalidation_from_parts<'a, Root, Snapshot>(
             cascade_data,
             shadow_root,
             queries,
+            zero_matched_dependency_result_is_exact,
             reasoned_fallback_roots,
             exact_safety_fallback_roots,
             fallback_reasons,
@@ -2624,6 +2630,7 @@ impl<'a, Root, Snapshot> MoliRetainedSourceStyleInvalidation<'a, Root, Snapshot>
         cascade_data: Option<&'a ServoArc<CascadeData>>,
         shadow_root: Option<Root>,
         queries: &'a IndexSet<MoliRetainedStyleInvalidationQuery<Root>>,
+        zero_matched_dependency_result_is_exact: bool,
         reasoned_fallback_roots: &'a IndexSet<Root>,
         exact_safety_fallback_roots: &'a IndexSet<Root>,
         fallback_reasons: &'a IndexSet<MoliSourceInvalidationFallbackReason>,
@@ -2643,6 +2650,7 @@ impl<'a, Root, Snapshot> MoliRetainedSourceStyleInvalidation<'a, Root, Snapshot>
                 cascade_data,
                 shadow_root,
                 queries,
+                zero_matched_dependency_result_is_exact,
                 reasoned_fallback_roots,
                 exact_safety_fallback_roots,
                 fallback_reasons,
@@ -2683,6 +2691,7 @@ impl<'a, Root, Snapshot> MoliRetainedSourceStyleInvalidation<'a, Root, Snapshot>
                 cascade_data,
                 shadow_root,
                 queries,
+                zero_matched_dependency_result_is_exact,
                 reasoned_fallback_roots,
                 exact_safety_fallback_roots,
                 fallback_reasons,
@@ -2693,6 +2702,7 @@ impl<'a, Root, Snapshot> MoliRetainedSourceStyleInvalidation<'a, Root, Snapshot>
                     cascade_data,
                     shadow_root,
                     queries,
+                    zero_matched_dependency_result_is_exact,
                     reasoned_fallback_roots,
                     exact_safety_fallback_roots,
                     fallback_reasons,
@@ -4009,18 +4019,6 @@ where
                 &mut exact_safety_fallback_roots,
                 &mut exact_safety_fallback_seen,
                 selected_fallback_roots,
-            );
-        }
-        if request.requires_child_list_structural_dependency()
-            || request.requires_relative_previous_sibling_dependency()
-        {
-            // These requests use ordinary dependency keys to approximate a
-            // structural mutation boundary. A zero match from the retained
-            // cascade does not prove that the structural effect is empty, so
-            // preserve the mutation-context safety roots.
-            fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
-                fallback_kind,
-                Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
             );
         }
         exact_queries.push((*request.query()).clone());
@@ -8602,6 +8600,7 @@ mod tests {
             retained_fallback_kind: Option<Option<MoliRetainedSourceStyleInvalidationKind>>,
             retained_shadow_root: Option<u32>,
             retained_query_count: usize,
+            retained_zero_matched_dependency_result_is_exact: Option<bool>,
             retained_reasoned_roots: Vec<u32>,
             retained_exact_safety_roots: Vec<u32>,
             retained_fallback_reasons: Vec<MoliSourceInvalidationFallbackReason>,
@@ -8618,6 +8617,7 @@ mod tests {
                 cascade_data: Option<&'a ServoArc<CascadeData>>,
                 shadow_root: Option<u32>,
                 queries: &'a IndexSet<MoliRetainedStyleInvalidationQuery<u32>>,
+                zero_matched_dependency_result_is_exact: bool,
                 reasoned_fallback_roots: &'a IndexSet<u32>,
                 exact_safety_fallback_roots: &'a IndexSet<u32>,
                 fallback_reasons: &'a IndexSet<MoliSourceInvalidationFallbackReason>,
@@ -8627,6 +8627,8 @@ mod tests {
                 self.retained_fallback_kind = Some(fallback_kind);
                 self.retained_shadow_root = shadow_root;
                 self.retained_query_count = queries.len();
+                self.retained_zero_matched_dependency_result_is_exact =
+                    Some(zero_matched_dependency_result_is_exact);
                 self.retained_reasoned_roots
                     .extend(reasoned_fallback_roots.iter().copied());
                 self.retained_exact_safety_roots
@@ -8663,6 +8665,7 @@ mod tests {
             None,
             Some(4_u32),
             Some(&queries),
+            true,
             &reasoned_roots,
             &exact_safety_roots,
             &fallback_reasons,
@@ -8679,6 +8682,10 @@ mod tests {
         );
         assert_eq!(sink.retained_shadow_root, Some(4));
         assert_eq!(sink.retained_query_count, 1);
+        assert_eq!(
+            sink.retained_zero_matched_dependency_result_is_exact,
+            Some(true)
+        );
         assert_eq!(sink.retained_reasoned_roots, vec![2]);
         assert_eq!(sink.retained_exact_safety_roots, vec![3]);
         assert_eq!(
@@ -8693,6 +8700,7 @@ mod tests {
             None,
             None,
             None,
+            false,
             &reasoned_roots,
             &exact_safety_roots,
             &fallback_reasons,
