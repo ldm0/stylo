@@ -4011,6 +4011,18 @@ where
                 selected_fallback_roots,
             );
         }
+        if request.requires_child_list_structural_dependency()
+            || request.requires_relative_previous_sibling_dependency()
+        {
+            // These requests use ordinary dependency keys to approximate a
+            // structural mutation boundary. A zero match from the retained
+            // cascade does not prove that the structural effect is empty, so
+            // preserve the mutation-context safety roots.
+            fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
+                fallback_kind,
+                Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
+            );
+        }
         exact_queries.push((*request.query()).clone());
     }
     if !missing_fallback_root_reasons.is_empty() {
