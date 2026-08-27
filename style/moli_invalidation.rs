@@ -3950,7 +3950,24 @@ where
             if fallback.requires_source_fallback() {
                 let context_roots = fallback.roots();
                 let reasons = dependency.source_invalidation_fallback_reasons();
-                if dependency.has_only_direct_relative_previous_sibling_dependency()
+                if dependency.tries_retained_query_before_source_fallback()
+                    && !selected_fallback_roots.is_empty()
+                {
+                    // The context summary cannot express @scope boundaries,
+                    // but the retained processor walks the exact scope
+                    // dependency chain. Source roots are used only if that
+                    // source-local query later proves unavailable or inexact.
+                    fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
+                        fallback_kind,
+                        Some(MoliRetainedSourceStyleInvalidationKind::FallbackOnly),
+                    );
+                    moli_push_unique_roots(
+                        &mut exact_safety_fallback_roots,
+                        &mut exact_safety_fallback_seen,
+                        selected_fallback_roots,
+                    );
+                    exact_queries.push((*request.query()).clone());
+                } else if dependency.has_only_direct_relative_previous_sibling_dependency()
                     && !context_roots.is_empty()
                 {
                     fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
@@ -6793,6 +6810,18 @@ impl MoliDependencyQueryResult {
                     MoliDependencyFallbackReason::NestedRelativeSelectorDependency
                 )
             })
+    }
+
+    /// Return whether the retained dependency walker can answer a query whose
+    /// coarse mutation-context plan had to request source fallback.
+    ///
+    /// Scope dependencies need their raw selector offset and next-dependency
+    /// chain, so the summary cannot derive complete context roots. The retained
+    /// walker still has that data and supports every scope action. Try it first
+    /// while keeping the source roots solely as an inexact-result safety net.
+    #[inline]
+    fn tries_retained_query_before_source_fallback(&self) -> bool {
+        !self.requires_fallback() && self.kinds.contains(&MoliDependencyKind::Scope)
     }
 
     /// Return whether mutation-local structural roots fully cover this
@@ -10009,7 +10038,7 @@ mod tests {
     }
 
     #[test]
-    fn moli_source_dependency_batch_plan_keeps_scope_on_source_fallback() {
+    fn moli_source_dependency_batch_plan_tries_retained_scope_before_source_fallback() {
         #[derive(Default)]
         struct ContextRootsProviderForTest {
             calls: usize,
@@ -10079,12 +10108,58 @@ mod tests {
         );
         assert_eq!(
             target.target_kind,
+            Some(MoliRetainedSourceStyleInvalidationKind::RetainedQueries)
+        );
+        assert_eq!(
+            target.fallback_kind,
             Some(MoliRetainedSourceStyleInvalidationKind::FallbackOnly)
         );
-        assert_eq!(target.fallback_roots, vec![99]);
+        assert_eq!(target.exact_queries, vec![query.clone()]);
+        assert_eq!(target.exact_safety_fallback_roots, vec![99]);
+        assert!(target.reasoned_fallback_roots.is_empty());
+        assert!(target.fallback_reasons.is_empty());
+
+        let no_source_roots = [];
+        let source_without_fallback_roots = MoliSourceDependencyInvalidationBatchSource::new(
+            &source_summary,
+            &no_source_roots,
+            &[],
+        );
+        let request_without_fallback_roots = MoliSourceDependencyInvalidationRequest::new(
+            &query,
+            Some(MoliDependencyInvalidationFallbackContext::from_mutation_relation(
+                Some(2),
+                Some(3),
+                Some(4),
+            )),
+            MoliSourceDependencyRequestRequirement::exact(),
+        );
+        let mut provider = ContextRootsProviderForTest::default();
+        let plan = moli_source_dependency_invalidation_batch_plan(
+            &[source_without_fallback_roots],
+            &[request_without_fallback_roots],
+            MoliSourceDependencyBoundaryRoots::default(),
+            &mut provider,
+        );
+
+        assert_eq!(provider.calls, 1);
+        let mut plan = source_dependency_batch_plan_for_test(plan);
+        assert!(plan.work_sources.is_empty());
+        let target = planned_source_dependency_parts_for_test(
+            plan.requires_source_fallback
+                .take()
+                .expect("scope without safety roots must stay conservative"),
+        );
+        assert_eq!(
+            target.target_kind,
+            Some(MoliRetainedSourceStyleInvalidationKind::MissingFallbackRoots)
+        );
         assert!(target
             .fallback_reasons
             .contains(&MoliSourceInvalidationFallbackReason::ScopeDependency));
+        assert!(target
+            .fallback_reasons
+            .contains(&MoliSourceInvalidationFallbackReason::MissingFallbackRoots));
     }
 
     #[derive(Default)]
