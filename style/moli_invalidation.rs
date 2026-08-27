@@ -3864,6 +3864,11 @@ where
                             // concrete query exactly, so run it first and keep
                             // these mutation-context roots only as its safety
                             // net.
+                            fallback_kind =
+                                moli_merge_retained_source_invalidation_fallback_kind(
+                                    fallback_kind,
+                                    Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
+                                );
                             moli_push_unique_roots(
                                 &mut exact_safety_fallback_roots,
                                 &mut exact_safety_fallback_seen,
@@ -5226,11 +5231,30 @@ where
     /// policy Moli should apply for this stylesheet source.
     #[inline]
     pub fn into_source_result(
-        mut self,
+        self,
         exact_safety_fallback_roots: &IndexSet<Root>,
     ) -> MoliSourceStyleInvalidationResult<Root> {
-        let needs_source_fallback =
-            !self.fallback_reasons.is_empty() || self.has_inexact_empty_result();
+        self.into_source_result_with_zero_matched_dependency_exactness(
+            exact_safety_fallback_roots,
+            false,
+        )
+    }
+
+    /// Convert accumulated query results using the source plan's proof for a
+    /// zero matched-dependency result.
+    ///
+    /// `zero_matched_dependency_result_is_exact` must only be true when every
+    /// retained query was selected from a fully supported source dependency
+    /// branch. Optimistic retained queries that carry a fallback policy must
+    /// keep this false so their exact-safety roots remain effective.
+    #[inline]
+    pub fn into_source_result_with_zero_matched_dependency_exactness(
+        mut self,
+        exact_safety_fallback_roots: &IndexSet<Root>,
+        zero_matched_dependency_result_is_exact: bool,
+    ) -> MoliSourceStyleInvalidationResult<Root> {
+        let needs_source_fallback = !self.fallback_reasons.is_empty()
+            || self.has_inexact_empty_result(zero_matched_dependency_result_is_exact);
         if needs_source_fallback && self.fallback_reasons.is_empty() {
             self.fallback_reasons
                 .insert(MoliSourceInvalidationFallbackReason::InexactEmptyResult);
@@ -5275,8 +5299,14 @@ where
         )
     }
 
-    fn has_inexact_empty_result(&self) -> bool {
-        self.affected_roots.is_empty() && !self.empty_result_is_exact
+    fn has_inexact_empty_result(
+        &self,
+        zero_matched_dependency_result_is_exact: bool,
+    ) -> bool {
+        self.affected_roots.is_empty()
+            && (!self.empty_result_is_exact
+                || (self.matched_dependency_count == 0
+                    && !zero_matched_dependency_result_is_exact))
     }
 }
 
@@ -9787,6 +9817,10 @@ mod tests {
             Some(MoliRetainedSourceStyleInvalidationKind::RetainedQueries)
         );
         assert_eq!(target.exact_queries, vec![query]);
+        assert_eq!(
+            target.fallback_kind,
+            Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback)
+        );
         assert!(target.reasoned_fallback_roots.is_empty());
         assert_eq!(target.exact_safety_fallback_roots, vec![10]);
         assert!(target.fallback_reasons.is_empty());
@@ -10450,7 +10484,10 @@ mod tests {
         accumulated.merge_query_result(Vec::<u32>::new(), true, 0, IndexSet::new());
 
         let result = source_style_invalidation_result_parts_for_test(
-            accumulated.into_source_result(&IndexSet::from([1])),
+            accumulated.into_source_result_with_zero_matched_dependency_exactness(
+                &IndexSet::from([1]),
+                true,
+            ),
         );
 
         assert!(result.affected_roots.is_empty());
@@ -10458,6 +10495,26 @@ mod tests {
         assert!(result.fallback_reasons.is_empty());
         assert!(result.empty_result_is_exact);
         assert_eq!(result.matched_dependency_count, 0);
+    }
+
+    #[test]
+    fn moli_source_result_accumulator_keeps_zero_match_without_source_proof_as_fallback() {
+        let mut accumulated = MoliSourceStyleInvalidationResultAccumulator::new();
+        accumulated.merge_query_result(Vec::<u32>::new(), true, 0, IndexSet::new());
+
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::from([1])),
+        );
+
+        assert_eq!(result.affected_roots, vec![1]);
+        assert_eq!(
+            result.fallback_kind,
+            Some(MoliSourceStyleInvalidationSourceResultKind::Fallback)
+        );
+        assert_eq!(
+            result.fallback_reasons,
+            IndexSet::from([MoliSourceInvalidationFallbackReason::InexactEmptyResult])
+        );
     }
 
     #[test]
