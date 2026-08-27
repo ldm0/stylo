@@ -96,6 +96,10 @@ pub(super) struct ExtraDeviceData {
     /// Whether the user prefers light mode or dark mode
     #[ignore_malloc_size_of = "Pure stack type"]
     prefers_color_scheme: PrefersColorScheme,
+    /// Color schemes supported by the page when an element's computed
+    /// `color-scheme` is `normal`.
+    #[ignore_malloc_size_of = "Pure stack type"]
+    page_color_schemes: ColorSchemeFlags,
     /// The capabilities of the primary pointer input
     #[ignore_malloc_size_of = "Pure stack type"]
     primary_pointer_capabilities: PointerCapabilities,
@@ -149,6 +153,7 @@ impl Device {
                 device_pixel_ratio,
                 quirks_mode,
                 prefers_color_scheme,
+                page_color_schemes: ColorSchemeFlags::empty(),
                 primary_pointer_capabilities,
                 all_pointer_capabilities,
                 media_feature_preferences: ServoMediaFeaturePreferences::default(),
@@ -331,6 +336,15 @@ impl Device {
         self.extra.prefers_color_scheme = new_color_scheme;
     }
 
+    /// Set the color schemes supported by the page.
+    ///
+    /// These schemes are used for system colors and `light-dark()` when an
+    /// element's computed `color-scheme` is `normal`. This is separate from
+    /// the user's preferred color scheme used by media queries.
+    pub fn set_page_color_schemes(&mut self, color_schemes: ColorSchemeFlags) {
+        self.extra.page_color_schemes = color_schemes;
+    }
+
     /// Returns the color scheme of this [`Device`].
     pub fn color_scheme(&self) -> PrefersColorScheme {
         self.extra.prefers_color_scheme
@@ -378,8 +392,13 @@ impl Device {
         self.extra.all_pointer_capabilities
     }
 
-    pub(crate) fn is_dark_color_scheme(&self, _: ColorSchemeFlags) -> bool {
-        false
+    pub(crate) fn is_dark_color_scheme(&self, color_schemes: ColorSchemeFlags) -> bool {
+        let color_schemes = if color_schemes.is_empty() {
+            self.extra.page_color_schemes
+        } else {
+            color_schemes
+        };
+        used_color_scheme_is_dark(color_schemes, self.extra.prefers_color_scheme)
     }
 
     pub(crate) fn system_color(
@@ -394,7 +413,6 @@ impl Device {
         // Refer to spec
         // <https://www.w3.org/TR/css-color-4/#css-system-colors>
         if self.is_dark_color_scheme(color_scheme_flags) {
-            // Note: is_dark_color_scheme always returns true, so this code is dead code.
             match system_color {
                 SystemColor::Accentcolor => srgb(10, 132, 255),
                 SystemColor::Accentcolortext => srgb(255, 255, 255),
@@ -537,5 +555,39 @@ impl Device {
     #[inline]
     pub fn link_parameters(&self) -> Option<&LinkParameters> {
         None
+    }
+}
+
+fn used_color_scheme_is_dark(
+    color_schemes: ColorSchemeFlags,
+    preferred: PrefersColorScheme,
+) -> bool {
+    let supports_light = color_schemes.contains(ColorSchemeFlags::LIGHT);
+    let supports_dark = color_schemes.contains(ColorSchemeFlags::DARK);
+    supports_dark && (!supports_light || matches!(preferred, PrefersColorScheme::Dark))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn used_color_scheme_honors_supported_schemes_and_user_preference() {
+        assert!(!used_color_scheme_is_dark(
+            ColorSchemeFlags::empty(),
+            PrefersColorScheme::Dark,
+        ));
+        assert!(!used_color_scheme_is_dark(
+            ColorSchemeFlags::LIGHT,
+            PrefersColorScheme::Dark,
+        ));
+        assert!(used_color_scheme_is_dark(
+            ColorSchemeFlags::DARK,
+            PrefersColorScheme::Light,
+        ));
+
+        let both = ColorSchemeFlags::LIGHT | ColorSchemeFlags::DARK;
+        assert!(!used_color_scheme_is_dark(both, PrefersColorScheme::Light,));
+        assert!(used_color_scheme_is_dark(both, PrefersColorScheme::Dark,));
     }
 }
