@@ -5276,8 +5276,7 @@ where
     }
 
     fn has_inexact_empty_result(&self) -> bool {
-        self.affected_roots.is_empty()
-            && (self.matched_dependency_count == 0 || !self.empty_result_is_exact)
+        self.affected_roots.is_empty() && !self.empty_result_is_exact
     }
 }
 
@@ -10446,9 +10445,25 @@ mod tests {
     }
 
     #[test]
-    fn moli_source_result_accumulator_converts_empty_inexact_result_to_reason() {
+    fn moli_source_result_accumulator_accepts_proven_exact_zero_match_result() {
         let mut accumulated = MoliSourceStyleInvalidationResultAccumulator::new();
         accumulated.merge_query_result(Vec::<u32>::new(), true, 0, IndexSet::new());
+
+        let result = source_style_invalidation_result_parts_for_test(
+            accumulated.into_source_result(&IndexSet::from([1])),
+        );
+
+        assert!(result.affected_roots.is_empty());
+        assert_eq!(result.fallback_kind, None);
+        assert!(result.fallback_reasons.is_empty());
+        assert!(result.empty_result_is_exact);
+        assert_eq!(result.matched_dependency_count, 0);
+    }
+
+    #[test]
+    fn moli_source_result_accumulator_keeps_unproven_empty_result_as_fallback() {
+        let mut accumulated = MoliSourceStyleInvalidationResultAccumulator::new();
+        accumulated.merge_query_result(Vec::<u32>::new(), false, 0, IndexSet::new());
 
         let result = source_style_invalidation_result_parts_for_test(
             accumulated.into_source_result(&IndexSet::from([1])),
