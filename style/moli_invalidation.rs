@@ -3122,6 +3122,9 @@ enum MoliSourceDependencyInvalidationSourcePlan<Root> {
     Work {
         /// Planned source dependency target, if this source has work.
         target: Option<MoliPlannedSourceDependencyInvalidationTarget<Root>>,
+        /// Mutation-local structural roots that are already known to cover
+        /// every affected subtree without widening to the stylesheet scope.
+        exact_structural_cleanup_roots: Vec<Root>,
     },
     /// The source requires fallback and no roots are available at the requested
     /// boundary.
@@ -3629,8 +3632,14 @@ impl<Root> MoliPlannedFallbackRootInvalidationTargetParts<Root> {
 impl<Root> MoliSourceDependencyInvalidationSourcePlan<Root> {
     /// Create a source-local work plan.
     #[inline]
-    fn work(target: Option<MoliPlannedSourceDependencyInvalidationTarget<Root>>) -> Self {
-        Self::Work { target }
+    fn work(
+        target: Option<MoliPlannedSourceDependencyInvalidationTarget<Root>>,
+        exact_structural_cleanup_roots: Vec<Root>,
+    ) -> Self {
+        Self::Work {
+            target,
+            exact_structural_cleanup_roots,
+        }
     }
 
     /// Create a source-local plan that requires source fallback.
@@ -3756,6 +3765,12 @@ where
     // returns an inexact result.
     let mut exact_safety_fallback_roots = Vec::new();
     let mut exact_safety_fallback_seen = HashSet::new();
+    // Some structural selector dependencies have a complete mutation-local
+    // candidate region even though Stylo's retained invalidator cannot derive
+    // every affected sibling from the changed element alone. Keep those roots
+    // separate from reasoned fallback roots so the result remains exact.
+    let mut exact_structural_cleanup_roots = Vec::new();
+    let mut exact_structural_cleanup_seen = HashSet::new();
     let mut fallback_reasons = IndexSet::new();
     let mut missing_fallback_root_reasons = IndexSet::new();
     for request in requests {
@@ -3774,11 +3789,9 @@ where
         {
             continue;
         }
-        if moli_custom_state_nth_of_dependency_needs_context_fallback(
-            summary,
-            request,
-            &dependency,
-        ) {
+        let uses_exact_nth_of_structural_roots =
+            dependency.can_use_exact_nth_of_structural_roots();
+        if uses_exact_nth_of_structural_roots {
             if let Some(context) = request.context() {
                 let context_plan = MoliDependencyContextRootPlan::new(
                     &dependency,
@@ -3786,26 +3799,43 @@ where
                         .query()
                         .allows_direct_previous_following_sibling_fallback(),
                 );
-                let fallback = context_roots_provider.context_roots_for_source_dependency(
-                    request.query().root(),
-                    context_plan,
-                    context,
+                let structural_roots =
+                    context_roots_provider.context_roots_for_source_dependency(
+                        request.query().root(),
+                        context_plan,
+                        context,
+                    );
+                let query_root = [request.query().root()];
+                // `requires_source_fallback` is derived from the presence of
+                // the nth-of classification itself. This branch has already
+                // proved that no other fallback reason is present, so the
+                // mutation-local sibling region supersedes that generic bit.
+                // Membership changes can alter the changed element's own nth
+                // match and every following element sibling's rank.
+                moli_push_unique_roots(
+                    &mut exact_structural_cleanup_roots,
+                    &mut exact_structural_cleanup_seen,
+                    &query_root,
                 );
-                let context_roots = fallback.roots();
-                if !context_roots.is_empty() {
-                    fallback_kind = moli_merge_retained_source_invalidation_fallback_kind(
-                        fallback_kind,
-                        Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback),
-                    );
-                    fallback_reasons
-                        .insert(MoliSourceInvalidationFallbackReason::NthOfDependency);
-                    moli_push_unique_roots(
-                        &mut reasoned_fallback_roots,
-                        &mut reasoned_fallback_seen,
-                        context_roots,
-                    );
-                    continue;
-                }
+                moli_push_unique_roots(
+                    &mut exact_structural_cleanup_roots,
+                    &mut exact_structural_cleanup_seen,
+                    structural_roots.roots(),
+                );
+                // Keep the same narrow region as the retained query's safety
+                // net if its per-source cascade is temporarily unavailable.
+                moli_push_unique_roots(
+                    &mut exact_safety_fallback_roots,
+                    &mut exact_safety_fallback_seen,
+                    &query_root,
+                );
+                moli_push_unique_roots(
+                    &mut exact_safety_fallback_roots,
+                    &mut exact_safety_fallback_seen,
+                    structural_roots.roots(),
+                );
+                exact_queries.push((*request.query()).clone());
+                continue;
             }
         }
         if dependency.requires_fallback() {
@@ -3992,6 +4022,7 @@ where
             exact_safety_fallback_roots,
             fallback_reasons,
         ),
+        exact_structural_cleanup_roots,
     )
 }
 
@@ -4053,16 +4084,28 @@ where
             requests,
             context_roots_provider,
         ) {
-            MoliSourceDependencyInvalidationSourcePlan::Work { target } => {
+            MoliSourceDependencyInvalidationSourcePlan::Work {
+                target,
+                exact_structural_cleanup_roots,
+            } => {
                 let Some(target) = target else {
                     continue;
                 };
-                let structural_boundary_cleanup_roots = source
+                let mut structural_boundary_cleanup_roots = source
                     .dependency_summary()
                     .structural_boundary_cleanup_roots_for_requests(
                         requests,
                         boundary_roots.relative_previous_sibling_cleanup_roots,
                     );
+                let mut structural_boundary_cleanup_seen = structural_boundary_cleanup_roots
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>();
+                moli_push_unique_roots(
+                    &mut structural_boundary_cleanup_roots,
+                    &mut structural_boundary_cleanup_seen,
+                    &exact_structural_cleanup_roots,
+                );
                 let planned_source = MoliPlannedSourceDependencyInvalidation::from_target(
                     source_index,
                     target,
@@ -4123,19 +4166,6 @@ fn moli_source_dependency_requires_source_fallback_plan<Root: Copy>(
             fallback_reasons,
         ),
     )
-}
-
-fn moli_custom_state_nth_of_dependency_needs_context_fallback<Root: Copy>(
-    summary: &MoliSourceDependencySummary,
-    request: &MoliSourceDependencyInvalidationRequest<'_, Root>,
-    dependency: &MoliDependencyQueryResult,
-) -> bool {
-    matches!(
-        request.query().as_stylo_query(),
-        MoliStyleInvalidationQuery::CustomState(_)
-    ) && summary.has_child_list_structural_dependency()
-        && dependency.has_sibling_dependency()
-        && !dependency.requires_fallback()
 }
 
 fn moli_push_unique_roots<Root: Copy + Eq + Hash>(
@@ -6724,6 +6754,17 @@ impl MoliDependencyQueryResult {
                     MoliDependencyFallbackReason::NestedRelativeSelectorDependency
                 )
             })
+    }
+
+    /// Return whether mutation-local structural roots fully cover this
+    /// query's otherwise unsupported `:nth-child(... of ...)` dependency.
+    #[inline]
+    fn can_use_exact_nth_of_structural_roots(&self) -> bool {
+        !self.fallback_reasons.is_empty()
+            && self
+                .fallback_reasons
+                .iter()
+                .all(|reason| matches!(reason, MoliDependencyFallbackReason::NthOfDependency))
     }
 
     /// Returns explicit fallback reasons, or conservative shape-derived reasons
@@ -9422,16 +9463,24 @@ mod tests {
             .fallback_reasons
             .contains(&MoliSourceInvalidationFallbackReason::MissingFallbackRoots));
 
-        let source_plan = MoliSourceDependencyInvalidationSourcePlan::work(Some(
-            MoliPlannedSourceDependencyInvalidationTarget::source_dependency_fallback(
-                vec![11],
-                [MoliSourceInvalidationFallbackReason::FullSelector],
+        let source_plan = MoliSourceDependencyInvalidationSourcePlan::work(
+            Some(
+                MoliPlannedSourceDependencyInvalidationTarget::source_dependency_fallback(
+                    vec![11],
+                    [MoliSourceInvalidationFallbackReason::FullSelector],
+                ),
             ),
-        ));
-        let MoliSourceDependencyInvalidationSourcePlan::Work { target } = source_plan else {
+            vec![12],
+        );
+        let MoliSourceDependencyInvalidationSourcePlan::Work {
+            target,
+            exact_structural_cleanup_roots,
+        } = source_plan
+        else {
             panic!("source-local work plan should expose work target");
         };
         assert!(target.is_some());
+        assert_eq!(exact_structural_cleanup_roots, vec![12]);
 
         let source_plan =
             MoliSourceDependencyInvalidationSourcePlan::requires_source_fallback(
@@ -9822,7 +9871,7 @@ mod tests {
     }
 
     #[test]
-    fn moli_source_dependency_batch_plan_uses_context_roots_for_custom_state_nth_of() {
+    fn moli_source_dependency_batch_plan_uses_exact_structural_roots_for_custom_state_nth_of() {
         #[derive(Default)]
         struct ContextRootsProviderForTest {
             calls: usize,
@@ -9842,12 +9891,16 @@ mod tests {
                 assert_eq!(context.parent(), Some(2));
                 assert_eq!(context.previous_sibling(), None);
                 assert_eq!(context.next_sibling(), Some(3));
-                MoliDependencyInvalidationContextRoots::new(false, vec![3, 4])
+                // The generic context-root builder mirrors the nth fallback
+                // classification in this bit. Nth-only planning must still
+                // recognize that the sibling region is complete.
+                MoliDependencyInvalidationContextRoots::new(true, vec![3, 4])
             }
         }
 
         let mut dependency = MoliDependencyQueryResult::default();
         dependency.add_kind(MoliDependencyKind::Siblings);
+        dependency.add_fallback_reason(MoliDependencyFallbackReason::NthOfDependency);
         let mut dependency_summary = MoliDependencyInvalidationSummary::default();
         dependency_summary.note_custom_state_dependency(AtomIdent::from("--active"), dependency);
         let source_summary = MoliSourceDependencySummary::from_parts(
@@ -9893,12 +9946,13 @@ mod tests {
         );
         assert_eq!(
             target.target_kind,
-            Some(MoliRetainedSourceStyleInvalidationKind::ContextFallback)
+            Some(MoliRetainedSourceStyleInvalidationKind::RetainedQueries)
         );
-        assert_eq!(target.fallback_roots, vec![3, 4]);
-        assert!(target
-            .fallback_reasons
-            .contains(&MoliSourceInvalidationFallbackReason::NthOfDependency));
+        assert_eq!(target.exact_queries, vec![query]);
+        assert_eq!(target.structural_boundary_cleanup_roots, vec![1, 3, 4]);
+        assert_eq!(target.exact_safety_fallback_roots, vec![1, 3, 4]);
+        assert!(target.reasoned_fallback_roots.is_empty());
+        assert!(target.fallback_reasons.is_empty());
     }
 
     #[test]
