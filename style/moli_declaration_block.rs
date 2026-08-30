@@ -421,6 +421,15 @@ mod tests {
     }
 
     #[test]
+    fn webkit_text_orientation_alias_resolves_to_the_canonical_longhand() {
+        use crate::properties::{LonghandId, PropertyId};
+
+        let property = PropertyId::parse_unchecked_for_testing("-webkit-text-orientation")
+            .expect("the compatibility spelling should be a known property");
+        assert_eq!(property.longhand_id(), Some(LonghandId::TextOrientation));
+    }
+
+    #[test]
     fn opacity_cssom_serialization_preserves_calc_percentage_type() {
         let mut block = CssDeclarationBlock::default();
         for (value, expected) in [

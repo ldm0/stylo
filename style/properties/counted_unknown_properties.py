@@ -38,7 +38,6 @@ COUNTED_UNKNOWN_PROPERTIES = [
     "-webkit-transform-origin-y",
     "-webkit-text-emphasis-position",
     "buffered-rendering",
-    "-webkit-text-orientation",
     "-webkit-text-combine",
     "-webkit-text-emphasis-style",
     "-webkit-text-emphasis",
