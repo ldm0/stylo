@@ -91,6 +91,80 @@ pub struct Device {
     extra: ExtraDeviceData,
 }
 
+/// Changes to the document root's font-relative unit bases after publishing a
+/// new root style or transferring the state to a replacement [`Device`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[must_use]
+pub struct RootFontRelativeStateChanges {
+    font_size: bool,
+    line_height: bool,
+    font_metrics: bool,
+}
+
+impl RootFontRelativeStateChanges {
+    /// Whether the basis used by `rem` changed.
+    pub fn font_size_changed(self) -> bool {
+        self.font_size
+    }
+
+    /// Whether the basis used by `rlh` changed.
+    pub fn line_height_changed(self) -> bool {
+        self.line_height
+    }
+
+    /// Whether a basis used by `rex`, `rch`, `rcap`, or `ric` changed.
+    pub fn font_metrics_changed(self) -> bool {
+        self.font_metrics
+    }
+
+    /// Whether any root font-relative unit basis changed.
+    pub fn any(self) -> bool {
+        self.font_size || self.line_height || self.font_metrics
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct FontStyleChanges {
+    /// Whether the computed font-size changed.
+    pub(crate) font_size: bool,
+    /// Whether the used line-height may have changed.
+    pub(crate) line_height: bool,
+}
+
+/// Compare the font properties that determine inherited and root-relative
+/// font bases without eagerly resolving a potentially metric-backed `normal`
+/// line-height.
+pub(crate) fn font_style_changes(
+    old_style: Option<&Arc<ComputedValues>>,
+    new_style: &Arc<ComputedValues>,
+) -> FontStyleChanges {
+    let new_font_size = new_style.get_font().clone_font_size();
+    let font_size = old_style
+        .map(|style| style.get_font().clone_font_size())
+        .is_none_or(|font_size| font_size != new_font_size);
+    let old_line_height = old_style.map(|style| style.get_font().clone_line_height());
+    let new_line_height = new_style.get_font().clone_line_height();
+    let line_height = font_size
+        || old_line_height.is_none_or(|line_height| line_height != new_line_height)
+        || (new_line_height.is_normal() && {
+            macro_rules! font_property_changed {
+                ($getter: ident) => {
+                    old_style
+                        .map(|style| style.get_font().$getter())
+                        .is_none_or(|value| value != new_style.get_font().$getter())
+                };
+            }
+            font_property_changed!(clone_font_family)
+                || font_property_changed!(clone_font_style)
+                || font_property_changed!(clone_font_weight)
+                || font_property_changed!(clone_font_stretch)
+        });
+    FontStyleChanges {
+        font_size,
+        line_height,
+    }
+}
+
 impl Device {
     /// Get the relevant environment to resolve `env()` functions.
     #[inline]
@@ -113,6 +187,112 @@ impl Device {
     /// calculation of root font-relative metrics.
     pub fn set_root_style(&self, style: &Arc<ComputedValues>) {
         *self.root_style.write() = style.clone();
+    }
+
+    /// Publish a newly computed document-root style and update every root
+    /// font-relative unit basis owned by this device.
+    ///
+    /// Embedders that resolve individual elements without running Stylo's
+    /// traversal must call this at the same commit boundary where they publish
+    /// the root's [`ComputedValues`], before resolving any descendants.
+    pub fn update_root_font_relative_state(
+        &self,
+        old_style: Option<&Arc<ComputedValues>>,
+        new_style: &Arc<ComputedValues>,
+    ) -> RootFontRelativeStateChanges {
+        self.update_root_font_relative_state_with_changes(
+            new_style,
+            font_style_changes(old_style, new_style),
+        )
+    }
+
+    /// Publish a root style using font-property changes already computed by
+    /// Stylo's traversal.
+    pub(crate) fn update_root_font_relative_state_with_changes(
+        &self,
+        new_style: &Arc<ComputedValues>,
+        changes: FontStyleChanges,
+    ) -> RootFontRelativeStateChanges {
+        self.set_root_style(new_style);
+        if changes.font_size {
+            let size = new_style.get_font().clone_font_size().computed_size();
+            self.set_root_font_size(new_style.effective_zoom.unzoom(size.px()));
+        }
+        if changes.line_height {
+            let line_height = self
+                .calc_line_height(&new_style.get_font(), new_style.writing_mode, None)
+                .0;
+            self.set_root_line_height(new_style.effective_zoom.unzoom(line_height.px()));
+        }
+
+        // Font availability can change without changing ComputedValues. Keep
+        // the existing lazy metric query, but refresh an already-used basis at
+        // every root-style commit so callers can invalidate affected styles.
+        let font_metrics_changed = self.used_root_font_metrics() && self.update_root_font_metrics();
+        RootFontRelativeStateChanges {
+            font_size: changes.font_size,
+            line_height: changes.line_height,
+            font_metrics: font_metrics_changed,
+        }
+    }
+
+    /// Transfer the current document-root font state from the device being
+    /// replaced.
+    ///
+    /// Root style and numeric bases belong to the document, not to a viewport
+    /// snapshot. Usage flags are preserved so later root changes retain their
+    /// invalidation semantics. Previously-used glyph metrics are copied first
+    /// and then recomputed with the replacement device's font provider.
+    pub fn inherit_root_font_relative_state_from(
+        &self,
+        previous: &Device,
+    ) -> RootFontRelativeStateChanges {
+        if std::ptr::eq(self, previous) {
+            return RootFontRelativeStateChanges::default();
+        }
+
+        let root_style = previous.root_style.read().clone();
+        *self.root_style.write() = root_style;
+        self.root_font_size.store(
+            previous.root_font_size.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.root_line_height.store(
+            previous.root_line_height.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.root_font_metrics_ex.store(
+            previous.root_font_metrics_ex.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.root_font_metrics_cap.store(
+            previous.root_font_metrics_cap.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.root_font_metrics_ch.store(
+            previous.root_font_metrics_ch.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.root_font_metrics_ic.store(
+            previous.root_font_metrics_ic.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+
+        self.used_root_font_size.store(
+            previous.used_root_font_size.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        self.used_root_line_height.store(
+            previous.used_root_line_height.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        let used_root_font_metrics = *previous.used_root_font_metrics.read();
+        *self.used_root_font_metrics.write() = used_root_font_metrics;
+
+        RootFontRelativeStateChanges {
+            font_metrics: used_root_font_metrics && self.update_root_font_metrics(),
+            ..RootFontRelativeStateChanges::default()
+        }
     }
 
     /// Get the font size of the root element (for rem)
