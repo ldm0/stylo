@@ -13,6 +13,7 @@ use crate::context::CascadeInputs;
 use crate::context::{ElementCascadeInputs, QuirksMode};
 use crate::context::{SharedStyleContext, StyleContext};
 use crate::data::{ElementData, ElementStyles};
+use crate::device::font_style_changes;
 use crate::dom::TElement;
 #[cfg(feature = "servo")]
 use crate::dom::TNode;
@@ -962,40 +963,6 @@ pub trait MatchMethods: TElement {
         }
     }
 
-    /// Rather than comparing the resolved line-height, which can be expensive to compute
-    /// as it involves locking and font metrics access, we consider that line-height may have
-    /// changed if the font-size or line-height property itself has changed, or if the value
-    /// is 'normal' and one of the properties that affects font selection (family, style,
-    /// weight, stretch) has changed.
-    fn line_height_likely_changed(
-        old_style: Option<&Arc<ComputedValues>>,
-        new_style: &Arc<ComputedValues>,
-    ) -> bool {
-        let old_line_height = old_style.map(|s| s.get_font().clone_line_height());
-        let new_line_height = new_style.get_font().clone_line_height();
-        // Return true if the old value was missing, or if the computed values are different.
-        if old_line_height.is_none_or(|lh| lh != new_line_height) {
-            return true;
-        }
-        // If the value isn't `normal`, it doesn't depend on font metrics: return false.
-        if !new_line_height.is_normal() {
-            return false;
-        }
-        // Check the font-selection properties, which could affect metrics used to resolve
-        // `normal` line-height.
-        macro_rules! font_property_changed {
-            ($getter: ident) => {
-                old_style
-                    .map(|s| s.get_font().$getter())
-                    .is_none_or(|v| v != new_style.get_font().$getter())
-            };
-        }
-        font_property_changed!(clone_font_family)
-            || font_property_changed!(clone_font_style)
-            || font_property_changed!(clone_font_weight)
-            || font_property_changed!(clone_font_stretch)
-    }
-
     /// Updates the styles with the new ones, diffs them, and stores the restyle
     /// damage.
     fn finish_restyle(
@@ -1023,53 +990,22 @@ pub trait MatchMethods: TElement {
             .contains(ComputedValueFlags::IS_ROOT_ELEMENT_STYLE);
 
         let device = context.shared.stylist.device();
-        let new_font_size = new_primary_style.get_font().clone_font_size();
         let new_container_type = new_primary_style.clone_container_type();
 
         let old_style = old_styles.primary.as_ref();
-        let old_font_size = old_style.map(|s| s.get_font().clone_font_size());
-        let font_size_changed = old_font_size.is_none_or(|fs| fs != new_font_size);
-
-        let line_height_likely_changed =
-            font_size_changed || Self::line_height_likely_changed(old_style, new_primary_style);
+        let font_changes = font_style_changes(old_style, new_primary_style);
+        let root_font_changes = is_root.then(|| {
+            debug_assert!(self.owner_doc_matches_for_testing(device));
+            device.update_root_font_relative_state_with_changes(new_primary_style, font_changes)
+        });
 
         // Update root font-relative units. If any of these unit values changed
         // since last time, ensure that we recascade the entire tree.
-        if is_root {
-            debug_assert!(self.owner_doc_matches_for_testing(device));
-            device.set_root_style(new_primary_style);
-
-            // Update root font size for rem units
-            if font_size_changed {
-                let size = new_font_size.computed_size();
-                device.set_root_font_size(new_primary_style.effective_zoom.unzoom(size.px()));
-            }
-
-            // Update root line height for rlh units
-            if line_height_likely_changed {
-                let new_line_height = device
-                    .calc_line_height(
-                        &new_primary_style.get_font(),
-                        new_primary_style.writing_mode,
-                        None,
-                    )
-                    .0;
-                device.set_root_line_height(
-                    new_primary_style
-                        .effective_zoom
-                        .unzoom(new_line_height.px()),
-                );
-            }
-
-            // Update root font metrics for rcap, rch, rex, ric units. Since querying
-            // font metrics can be an expensive call, they are only updated if these
-            // units are used in the document.
-            if device.used_root_font_metrics() && device.update_root_font_metrics() {
-                child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_ANCESTOR_FONT;
-            }
+        if root_font_changes.is_some_and(|changes| changes.font_metrics_changed()) {
+            child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_ANCESTOR_FONT;
         }
 
-        if font_size_changed || line_height_likely_changed {
+        if font_changes.font_size || font_changes.line_height {
             child_restyle_hint |= RestyleHint::RESTYLE_IF_AFFECTED_BY_ANCESTOR_FONT;
         }
 
