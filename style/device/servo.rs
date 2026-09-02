@@ -579,9 +579,18 @@ fn used_color_scheme_is_dark(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc as StdArc,
+    };
 
     #[derive(Debug)]
     struct FixedFontMetricsProvider;
+
+    #[derive(Debug)]
+    struct MutableFontMetricsProvider {
+        normal_line_height: StdArc<AtomicU32>,
+    }
 
     impl FontMetricsProvider for FixedFontMetricsProvider {
         fn query_font_metrics(
@@ -593,6 +602,27 @@ mod tests {
         ) -> FontMetrics {
             FontMetrics {
                 normal_line_height: Some(Length::new(23.5)),
+                ..FontMetrics::default()
+            }
+        }
+
+        fn base_size_for_generic(&self, _generic: GenericFontFamily) -> Length {
+            Length::new(16.0)
+        }
+    }
+
+    impl FontMetricsProvider for MutableFontMetricsProvider {
+        fn query_font_metrics(
+            &self,
+            _vertical: bool,
+            _font: &Font,
+            _base_size: CSSPixelLength,
+            _flags: QueryFontMetricsFlags,
+        ) -> FontMetrics {
+            FontMetrics {
+                normal_line_height: Some(Length::new(f32::from_bits(
+                    self.normal_line_height.load(Ordering::Relaxed),
+                ))),
                 ..FontMetrics::default()
             }
         }
@@ -627,6 +657,41 @@ mod tests {
             23.5
         );
         assert!(device.used_font_metrics());
+    }
+
+    #[test]
+    fn used_root_normal_line_height_refreshes_when_font_metrics_change() {
+        let font = Font::initial_values();
+        let root_style = ComputedValues::initial_values_with_font_override(font);
+        let normal_line_height = StdArc::new(AtomicU32::new(20.0f32.to_bits()));
+        let device = Device::new(
+            MediaType::screen(),
+            QuirksMode::NoQuirks,
+            Size2D::new(800.0, 600.0),
+            Size2D::new(800.0, 600.0),
+            Scale::new(1.0),
+            Box::new(MutableFontMetricsProvider {
+                normal_line_height: StdArc::clone(&normal_line_height),
+            }),
+            root_style.clone(),
+            PrefersColorScheme::Light,
+            PointerCapabilities::default(),
+            PointerCapabilities::default(),
+        );
+
+        assert!(device
+            .update_root_font_relative_state(None, &root_style)
+            .line_height_changed());
+        assert_eq!(device.root_line_height().px(), 20.0);
+
+        assert!(!device
+            .update_root_font_relative_state(Some(&root_style), &root_style)
+            .line_height_changed());
+
+        normal_line_height.store(24.0f32.to_bits(), Ordering::Relaxed);
+        let changes = device.update_root_font_relative_state(Some(&root_style), &root_style);
+        assert!(changes.line_height_changed());
+        assert_eq!(device.root_line_height().px(), 24.0);
     }
 
     #[test]
