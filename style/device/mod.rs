@@ -218,12 +218,15 @@ impl Device {
             let size = new_style.get_font().clone_font_size().computed_size();
             self.set_root_font_size(new_style.effective_zoom.unzoom(size.px()));
         }
-        if changes.line_height {
+        let refresh_line_height = changes.line_height
+            || (self.used_root_line_height()
+                && new_style.get_font().clone_line_height().is_normal());
+        let line_height_changed = refresh_line_height && {
             let line_height = self
                 .calc_line_height(&new_style.get_font(), new_style.writing_mode, None)
                 .0;
-            self.set_root_line_height(new_style.effective_zoom.unzoom(line_height.px()));
-        }
+            self.set_root_line_height(new_style.effective_zoom.unzoom(line_height.px()))
+        };
 
         // Font availability can change without changing ComputedValues. Keep
         // the existing lazy metric query, but refresh an already-used basis at
@@ -231,7 +234,7 @@ impl Device {
         let font_metrics_changed = self.used_root_font_metrics() && self.update_root_font_metrics();
         RootFontRelativeStateChanges {
             font_size: changes.font_size,
-            line_height: changes.line_height,
+            line_height: line_height_changed,
             font_metrics: font_metrics_changed,
         }
     }
@@ -289,7 +292,20 @@ impl Device {
         let used_root_font_metrics = *previous.used_root_font_metrics.read();
         *self.used_root_font_metrics.write() = used_root_font_metrics;
 
+        let line_height = {
+            let root_style = self.root_style.read();
+            (self.used_root_line_height() && root_style.get_font().clone_line_height().is_normal())
+                .then(|| {
+                    let line_height = self
+                        .calc_line_height(&root_style.get_font(), root_style.writing_mode, None)
+                        .0;
+                    self.set_root_line_height(root_style.effective_zoom.unzoom(line_height.px()))
+                })
+                .unwrap_or(false)
+        };
+
         RootFontRelativeStateChanges {
+            line_height,
             font_metrics: used_root_font_metrics && self.update_root_font_metrics(),
             ..RootFontRelativeStateChanges::default()
         }
@@ -315,9 +331,9 @@ impl Device {
     }
 
     /// Set the line height of the root element (for rlh), in zoom-independent CSS pixels.
-    pub fn set_root_line_height(&self, size: f32) {
-        self.root_line_height
-            .store(size.to_bits(), Ordering::Relaxed);
+    pub fn set_root_line_height(&self, size: f32) -> bool {
+        let size = size.to_bits();
+        self.root_line_height.swap(size, Ordering::Relaxed) != size
     }
 
     /// Get the x-height of the root element (for rex)
