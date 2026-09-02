@@ -218,9 +218,13 @@ impl Device {
             let size = new_style.get_font().clone_font_size().computed_size();
             self.set_root_font_size(new_style.effective_zoom.unzoom(size.px()));
         }
-        let refresh_line_height = changes.line_height
-            || (self.used_root_line_height()
-                && new_style.get_font().clone_line_height().is_normal());
+        // A normal line height depends on font availability even when the
+        // root's ComputedValues are unchanged. Keep the stored basis current
+        // before its first `rlh` use as well as after it: otherwise a font that
+        // loads between the root-style commit and the first descendant using
+        // `rlh` would expose the old fallback value indefinitely.
+        let refresh_line_height =
+            changes.line_height || new_style.get_font().clone_line_height().is_normal();
         let line_height_changed = refresh_line_height && {
             let line_height = self
                 .calc_line_height(&new_style.get_font(), new_style.writing_mode, None)
@@ -294,7 +298,10 @@ impl Device {
 
         let line_height = {
             let root_style = self.root_style.read();
-            (self.used_root_line_height() && root_style.get_font().clone_line_height().is_normal())
+            root_style
+                .get_font()
+                .clone_line_height()
+                .is_normal()
                 .then(|| {
                     let line_height = self
                         .calc_line_height(&root_style.get_font(), root_style.writing_mode, None)

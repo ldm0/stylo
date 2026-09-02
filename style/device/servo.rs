@@ -682,7 +682,7 @@ mod tests {
         assert!(device
             .update_root_font_relative_state(None, &root_style)
             .line_height_changed());
-        assert_eq!(device.root_line_height().px(), 20.0);
+        assert!(!device.used_root_line_height());
 
         assert!(!device
             .update_root_font_relative_state(Some(&root_style), &root_style)
@@ -691,6 +691,10 @@ mod tests {
         normal_line_height.store(24.0f32.to_bits(), Ordering::Relaxed);
         let changes = device.update_root_font_relative_state(Some(&root_style), &root_style);
         assert!(changes.line_height_changed());
+        assert!(
+            !device.used_root_line_height(),
+            "refreshing the stored basis must not pretend that rlh was used"
+        );
         assert_eq!(device.root_line_height().px(), 24.0);
     }
 
