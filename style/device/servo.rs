@@ -168,12 +168,21 @@ impl Device {
     pub fn calc_line_height(
         &self,
         font: &crate::properties::style_structs::Font,
-        _writing_mode: WritingMode,
+        writing_mode: WritingMode,
         _element: Option<()>,
     ) -> NonNegativeLength {
         (match font.line_height {
-            // TODO: compute `normal` from the font metrics
-            LineHeight::Normal => CSSPixelLength::new(0.),
+            LineHeight::Normal => {
+                let font_size = font.font_size.used_size();
+                self.query_font_metrics(
+                    writing_mode.is_vertical(),
+                    font,
+                    font_size,
+                    QueryFontMetricsFlags::USE_USER_FONT_SET,
+                    true,
+                )
+                .normal_line_height_or_default(font_size)
+            },
             LineHeight::Number(number) => font.font_size.computed_size() * number.0,
             LineHeight::Length(length) => length.0,
         })
@@ -570,6 +579,55 @@ fn used_color_scheme_is_dark(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug)]
+    struct FixedFontMetricsProvider;
+
+    impl FontMetricsProvider for FixedFontMetricsProvider {
+        fn query_font_metrics(
+            &self,
+            _vertical: bool,
+            _font: &Font,
+            _base_size: CSSPixelLength,
+            _flags: QueryFontMetricsFlags,
+        ) -> FontMetrics {
+            FontMetrics {
+                normal_line_height: Some(Length::new(23.5)),
+                ..FontMetrics::default()
+            }
+        }
+
+        fn base_size_for_generic(&self, _generic: GenericFontFamily) -> Length {
+            Length::new(16.0)
+        }
+    }
+
+    #[test]
+    fn normal_line_height_comes_from_the_embedding_font_metrics() {
+        let font = Font::initial_values();
+        let default_values = ComputedValues::initial_values_with_font_override(font.clone());
+        let device = Device::new(
+            MediaType::screen(),
+            QuirksMode::NoQuirks,
+            Size2D::new(800.0, 600.0),
+            Size2D::new(800.0, 600.0),
+            Scale::new(1.0),
+            Box::new(FixedFontMetricsProvider),
+            default_values,
+            PrefersColorScheme::Light,
+            PointerCapabilities::default(),
+            PointerCapabilities::default(),
+        );
+
+        assert_eq!(
+            device
+                .calc_line_height(&font, WritingMode::empty(), None)
+                .0
+                .px(),
+            23.5
+        );
+        assert!(device.used_font_metrics());
+    }
 
     #[test]
     fn used_color_scheme_honors_supported_schemes_and_user_preference() {
