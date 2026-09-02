@@ -149,6 +149,7 @@ impl Device {
         let gecko_metrics =
             unsafe { bindings::Gecko_GetFontMetrics(pc, vertical, &**font, base_size, flags) };
         FontMetrics {
+            normal_line_height: None,
             x_height: Some(gecko_metrics.mXSize),
             zero_advance_measure: if gecko_metrics.mChSize.px() >= 0. {
                 Some(gecko_metrics.mChSize)

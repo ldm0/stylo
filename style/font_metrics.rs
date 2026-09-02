@@ -12,6 +12,8 @@ use crate::values::computed::Length;
 /// value of certain CSS units like `ex`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FontMetrics {
+    /// The font's recommended line spacing for `line-height: normal`.
+    pub normal_line_height: Option<Length>,
     /// The x-height of the font.
     pub x_height: Option<Length>,
     /// The zero advance. This is usually writing mode dependent
@@ -33,6 +35,7 @@ pub struct FontMetrics {
 impl Default for FontMetrics {
     fn default() -> Self {
         FontMetrics {
+            normal_line_height: None,
             x_height: None,
             zero_advance_measure: None,
             cap_height: None,
@@ -45,6 +48,13 @@ impl Default for FontMetrics {
 }
 
 impl FontMetrics {
+    /// Returns the normal line height, using the conventional UA fallback
+    /// when the embedding cannot provide font line metrics.
+    pub fn normal_line_height_or_default(&self, reference_font_size: Length) -> Length {
+        self.normal_line_height
+            .unwrap_or_else(|| reference_font_size * 1.2)
+    }
+
     /// Returns the x-height, computing a fallback value if not present
     pub fn x_height_or_default(&self, reference_font_size: Length) -> Length {
         // https://drafts.csswg.org/css-values/#ex
@@ -107,6 +117,27 @@ impl FontMetrics {
         // Same caveat about computed vs. used as for other
         // metric-dependent units.
         self.ic_width.unwrap_or_else(|| reference_font_size)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normal_line_height_prefers_font_metrics_and_has_a_nonzero_fallback() {
+        let mut metrics = FontMetrics::default();
+        let font_size = Length::new(20.0);
+        assert_eq!(
+            metrics.normal_line_height_or_default(font_size),
+            Length::new(24.0)
+        );
+
+        metrics.normal_line_height = Some(Length::new(23.5));
+        assert_eq!(
+            metrics.normal_line_height_or_default(font_size),
+            Length::new(23.5)
+        );
     }
 }
 
