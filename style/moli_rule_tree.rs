@@ -252,6 +252,13 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
     let [CssRule::Property(rule)] = rules.0.as_slice() else {
         return None;
     };
+    property_rule_view(rule, &guard)
+}
+
+fn property_rule_view(
+    rule: &crate::properties_and_values::registry::PropertyRegistration,
+    guard: &crate::shared_lock::SharedRwLockReadGuard<'_>,
+) -> Option<CssPropertyRuleView> {
     let syntax = rule
         .descriptors
         .syntax
@@ -265,7 +272,7 @@ pub fn parse_property_rule_view(css_text: &str) -> Option<CssPropertyRuleView> {
         .filter(|syntax| !syntax.is_empty())?;
     Some(CssPropertyRuleView {
         css_text: rule.to_css_string(&guard),
-        name: rule.name.to_css_string(),
+        name: format!("--{}", rule.name.0),
         syntax,
         inherits: rule.descriptors.inherits(),
         initial_value: rule
@@ -568,29 +575,8 @@ pub fn stylesheet_rule_tree_property_rule_view(
 ) -> Option<CssPropertyRuleView> {
     match rule_at_path(rule_tree, rule_path)? {
         CssRule::Property(rule) => {
-            let syntax = rule
-                .descriptors
-                .syntax
-                .as_ref()
-                .map(|syntax| {
-                    syntax
-                        .specified_string()
-                        .map(ToOwned::to_owned)
-                        .unwrap_or_else(|| syntax.to_css_string())
-                })
-                .filter(|syntax| !syntax.is_empty())?;
             let guard = rule_tree.shared_lock.read();
-            Some(CssPropertyRuleView {
-                css_text: rule.to_css_string(&guard),
-                name: rule.name.to_css_string(),
-                syntax,
-                inherits: rule.descriptors.inherits(),
-                initial_value: rule
-                    .descriptors
-                    .initial_value
-                    .as_ref()
-                    .map(|value| value.css_text().trim().to_owned()),
-            })
+            property_rule_view(&rule, &guard)
         },
         _ => None,
     }
@@ -2196,6 +2182,22 @@ mod tests {
             )
             .is_none(),
             "Stylo rejects initial values that do not match the syntax descriptor"
+        );
+    }
+
+    #[test]
+    fn property_rule_views_expose_decoded_names_without_changing_css_text() {
+        let property_rule = r#"@property --tab\9 tab { syntax: "*"; inherits: true; }"#;
+        let parsed = parse_property_rule_view(property_rule)
+            .expect("escaped @property name should produce a CSSOM view");
+
+        assert_eq!(parsed.name, "--tab\ttab");
+        assert_eq!(parsed.css_text, property_rule);
+
+        let rule_tree = parse_stylesheet_rule_tree(property_rule);
+        assert_eq!(
+            stylesheet_rule_tree_property_rule_view(&rule_tree, &[0]),
+            Some(parsed),
         );
     }
 
