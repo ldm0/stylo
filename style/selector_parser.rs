@@ -270,6 +270,7 @@ impl ToCss for Direction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cssparser::ToCss as _;
 
     #[test]
     fn can_build_and_set_arbitrary_index() {
@@ -317,5 +318,15 @@ mod tests {
         assert!(parse("::details-content:nth-of-type(slot)").is_err());
         assert!(parse("::details-content:has(a)").is_err());
         assert!(parse("::details-content::part(a)").is_err());
+    }
+
+    #[test]
+    fn servo_parser_accepts_webkit_autofill_alias() {
+        let url_data = UrlExtraData::from(url::Url::parse("https://example.test/").unwrap());
+        for selector in [":-webkit-autofill", ":-WeBkIt-AuToFiLl"] {
+            let parsed = SelectorParser::parse_author_origin_no_namespace(selector, &url_data)
+                .unwrap();
+            assert_eq!(parsed.to_css_string(), ":autofill");
+        }
     }
 }

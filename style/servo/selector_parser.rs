@@ -787,6 +787,7 @@ impl<'a, 'i> ::selectors::Parser<'i> for SelectorParser<'a> {
             "active" => NonTSPseudoClass::Active,
             "any-link" => NonTSPseudoClass::AnyLink,
             "autofill" => NonTSPseudoClass::Autofill,
+            "-webkit-autofill" => NonTSPseudoClass::Autofill,
             "checked" => NonTSPseudoClass::Checked,
             "default" => NonTSPseudoClass::Default,
             "defined" => NonTSPseudoClass::Defined,
