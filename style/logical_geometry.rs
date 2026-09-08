@@ -128,6 +128,58 @@ bitflags!(
     }
 );
 
+#[cfg(all(test, feature = "servo"))]
+mod text_orientation_tests {
+    use super::*;
+    use crate::properties::longhands::{
+        direction::computed_value::T as Direction,
+        text_orientation::computed_value::T as TextOrientation,
+    };
+
+    #[test]
+    fn standalone_writing_mode_carries_text_orientation_and_upright_direction() {
+        for writing_mode in [
+            WritingModeProperty::HorizontalTb,
+            WritingModeProperty::VerticalRl,
+            WritingModeProperty::VerticalLr,
+        ] {
+            for direction in [Direction::Ltr, Direction::Rtl] {
+                for orientation in [
+                    TextOrientation::Mixed,
+                    TextOrientation::Upright,
+                    TextOrientation::Sideways,
+                ] {
+                    let initial =
+                        crate::properties::ComputedValues::initial_values_with_font_override(
+                            style_structs::Font::initial_values(),
+                        );
+                    let mut style = initial.get_inherited_box().clone();
+                    style.writing_mode = writing_mode;
+                    style.direction = direction;
+                    style.text_orientation = orientation;
+                    let mode = WritingMode::new(&style);
+                    let vertical = writing_mode != WritingModeProperty::HorizontalTb;
+                    assert_eq!(
+                        mode.is_upright(),
+                        vertical && orientation == TextOrientation::Upright
+                    );
+                    assert_eq!(
+                        mode.intersects(WritingMode::TEXT_SIDEWAYS),
+                        vertical && orientation == TextOrientation::Sideways
+                    );
+                    assert_eq!(
+                        !mode.is_bidi_ltr(),
+                        direction == Direction::Rtl && !mode.is_upright()
+                    );
+                    if mode.is_upright() {
+                        assert!(mode.is_inline_tb());
+                    }
+                }
+            }
+        }
+    }
+}
+
 impl WritingMode {
     /// Return a WritingMode bitflags from the relevant CSS properties.
     pub fn new(inheritedbox_style: &style_structs::InheritedBox) -> Self {
@@ -179,7 +231,6 @@ impl WritingMode {
             },
         }
 
-        #[cfg(feature = "gecko")]
         {
             use crate::properties::longhands::text_orientation::computed_value::T as TextOrientation;
 
