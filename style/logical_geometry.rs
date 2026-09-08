@@ -50,9 +50,7 @@ pub enum WritingModeProperty {
     #[parse(aliases = "tb,tb-rl")]
     VerticalRl,
     VerticalLr,
-    #[cfg(feature = "gecko")]
     SidewaysRl,
-    #[cfg(feature = "gecko")]
     SidewaysLr,
 }
 
@@ -135,6 +133,7 @@ mod text_orientation_tests {
         direction::computed_value::T as Direction,
         text_orientation::computed_value::T as TextOrientation,
     };
+    use style_traits::ToCss;
 
     #[test]
     fn standalone_writing_mode_carries_text_orientation_and_upright_direction() {
@@ -142,6 +141,8 @@ mod text_orientation_tests {
             WritingModeProperty::HorizontalTb,
             WritingModeProperty::VerticalRl,
             WritingModeProperty::VerticalLr,
+            WritingModeProperty::SidewaysRl,
+            WritingModeProperty::SidewaysLr,
         ] {
             for direction in [Direction::Ltr, Direction::Rtl] {
                 for orientation in [
@@ -158,7 +159,14 @@ mod text_orientation_tests {
                     style.direction = direction;
                     style.text_orientation = orientation;
                     let mode = WritingMode::new(&style);
-                    let vertical = writing_mode != WritingModeProperty::HorizontalTb;
+                    let vertical = matches!(
+                        writing_mode,
+                        WritingModeProperty::VerticalRl | WritingModeProperty::VerticalLr
+                    );
+                    let sideways = matches!(
+                        writing_mode,
+                        WritingModeProperty::SidewaysRl | WritingModeProperty::SidewaysLr
+                    );
                     assert_eq!(
                         mode.is_upright(),
                         vertical && orientation == TextOrientation::Upright
@@ -174,9 +182,33 @@ mod text_orientation_tests {
                     if mode.is_upright() {
                         assert!(mode.is_inline_tb());
                     }
+                    assert_eq!(
+                        mode.is_sideways(),
+                        sideways || (vertical && orientation == TextOrientation::Sideways)
+                    );
+                    if sideways {
+                        assert_eq!(
+                            mode.is_inline_tb(),
+                            (writing_mode == WritingModeProperty::SidewaysRl)
+                                == (direction == Direction::Ltr)
+                        );
+                        assert!(!mode.is_text_vertical());
+                    }
                 }
             }
         }
+    }
+
+    #[test]
+    fn standalone_sideways_writing_modes_serialize_canonically() {
+        assert_eq!(
+            WritingModeProperty::SidewaysRl.to_css_string(),
+            "sideways-rl"
+        );
+        assert_eq!(
+            WritingModeProperty::SidewaysLr.to_css_string(),
+            "sideways-lr"
+        );
     }
 }
 
@@ -215,14 +247,12 @@ impl WritingMode {
                     flags.insert(WritingMode::INLINE_REVERSED);
                 }
             },
-            #[cfg(feature = "gecko")]
             WritingModeProperty::SidewaysRl => {
                 flags.insert(WritingMode::WRITING_MODE_SIDEWAYS_RL);
                 if direction == Direction::Rtl {
                     flags.insert(WritingMode::INLINE_REVERSED);
                 }
             },
-            #[cfg(feature = "gecko")]
             WritingModeProperty::SidewaysLr => {
                 flags.insert(WritingMode::WRITING_MODE_SIDEWAYS_LR);
                 if direction == Direction::Ltr {
