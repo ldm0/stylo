@@ -4,6 +4,21 @@
 
 //! Supported CSS properties and the cascade.
 
+#[cfg(test)]
+mod tests {
+    use super::{LonghandId, PrioritaryPropertyId};
+
+    #[test]
+    fn variable_font_axes_are_applied_before_font_relative_lengths() {
+        let variations = PrioritaryPropertyId::from_longhand(LonghandId::FontVariationSettings)
+            .expect("variable axes affect font metrics before ordinary lengths are resolved");
+        assert!(PrioritaryPropertyId::LineHeight
+            .dependencies()
+            .contains(variations));
+        assert!(PrioritaryPropertyId::from_longhand(LonghandId::Width).is_none());
+    }
+}
+
 pub mod cascade;
 pub mod declaration_block;
 pub mod shorthands;

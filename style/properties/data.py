@@ -50,6 +50,7 @@ PRIORITARY_PROPERTIES = set(
         "font-weight",
         "font-stretch",
         "font-style",
+        "font-variation-settings",
         "font-family",
         # color-scheme affects how system colors and light-dark() resolve.
         "color-scheme",
@@ -112,6 +113,8 @@ PRIORITARY_PROPERTY_DEPENDENCIES = {
     "font-weight": ["appearance"],
     "font-stretch": ["appearance"],
     "font-style": ["appearance"],
+    # Explicit variable axes change the metrics used by font-relative lengths.
+    "font-variation-settings": ["appearance"],
     # Writing-mode properties affect logical -> physical property conversions, but also
     # font metrics.
     "direction": [],
@@ -127,6 +130,7 @@ PRIORITARY_PROPERTY_DEPENDENCIES = {
         "font-weight",
         "font-stretch",
         "font-style",
+        "font-variation-settings",
         "font-size-adjust",
     ],
 }
